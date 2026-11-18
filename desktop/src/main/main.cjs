@@ -3,7 +3,11 @@ const { app, BrowserWindow, dialog, ipcMain, nativeImage, net, Notification, pow
 // cached and refreshed whenever the account changes (account-store onChange below).
 let trialAccountSignedIn = false;
 let notifyTrialBlocked = () => {};
-require("./demo-mode-guard.cjs").installDemoModeGuard(ipcMain, { isDemo: () => trialAccountSignedIn, onBlocked: (channel) => notifyTrialBlocked(channel) });
+// A request no one classified for the trial is reported as an error once the logger exists.
+const unclassifiedTrialChannels = [];
+let reportUnclassifiedTrialChannel = (channel) => unclassifiedTrialChannels.push(channel);
+require("./demo-mode-guard.cjs").installDemoModeGuard(ipcMain, { isDemo: () => trialAccountSignedIn, onBlocked: (channel) => notifyTrialBlocked(channel),
+  onUnclassified: (channel) => reportUnclassifiedTrialChannel(channel) });
 if (!app.isPackaged) require("./development-dependencies.cjs").configureDevelopmentDependencies();
 const fs = require("node:fs");
 const startupTiming = global.__xiaoxiStartupTiming ||= require('./startup-timing.cjs').createStartupTiming();
@@ -548,6 +552,11 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       } });
     try { const current = accountStore.status(); trialAccountSignedIn = current.authorized === true && current.demo === true; } catch { trialAccountSignedIn = false; }
     // A refused action in the trial: the page shows the advisor's contact once in a while, not per click.
+    reportUnclassifiedTrialChannel = (channel) => {
+      try { logger.event("app", "trial_channel_unclassified", { request_kind: String(channel).replace(/[^a-zA-Z0-9_-]/gu, "_").slice(0, 80) },
+        { level: "error", code: "trial_channel_unclassified" }); } catch {}
+    };
+    for (const channel of unclassifiedTrialChannels.splice(0)) reportUnclassifiedTrialChannel(channel);
     let trialPromptAt = 0;
     notifyTrialBlocked = () => {
       if (Date.now() - trialPromptAt < 4000 || !mainWindow || mainWindow.isDestroyed()) return;

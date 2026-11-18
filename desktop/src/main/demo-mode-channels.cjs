@@ -1,8 +1,10 @@
 // 免费体验 classification of every request the main process answers (2026-11-18). Each name is in
-// exactly one list; scripts/trial-channel-scan.cjs finds every name and demo-mode-guard.self_check
-// fails when one is missing, so a new feature has to decide here whether the trial may use it.
+// exactly one list; scripts/trial-channel-scan.cjs finds the names and demo-mode-guard.self_check
+// fails when one is missing, so a new feature has to decide here whether the trial may use it. The
+// guard also reports a registration it does not know at run time (trial_channel_unclassified).
 //   READS   pass: looking at examples, lists, status, opening a finished file, stopping.
-//   QUIET   refused without the advisor's card: requests a page makes on its own when it opens.
+//   QUIET   refused without the advisor's card: requests a page makes on its own when it opens and
+//           that act (resume unknown work, reach phones, cover backfill, path detection).
 //   ACTIONS refused with the advisor's card: anything that starts work, changes or removes what the
 //           customer made, brings files in, or acts on WeChat, phones or a platform.
 // A name in none of the lists is refused quietly. Workbench requests (geo:invoke, map-acquisition:invoke)
@@ -28,15 +30,15 @@ const READS = new Set([
   "content-engine:volcengine-asr-encryption", "content-engine:volcengine-asr-status",
   "content-engine:volcengine-tts-encryption", "content-engine:volcengine-tts-status", "deepseek-api:status",
   "digital-human:reference-assets", "digital-human:reference-capabilities", "digital-human:reference-cover-frame",
-  "digital-human:reference-get", "digital-human:reference-list", "digital-human:reference-refresh",
-  "digital-human:reference-repackageable", "digital-human:reference-script-quota", "digital-human:reference-source-status",
-  "digital-human:reference-viral-library", "digital-human:reference-viral-pipeline-cover",
-  "digital-human:reference-viral-pipeline-list", "digital-human:reference-viral-stop", "digital-human:reference-voice-status",
-  "digital-human:reference-workspace", "keyword-acquisition:status", "keyword-acquisition:stop", "moments-campaign:pause",
-  "moments-campaign:show-main", "moments-campaign:status", "moments-campaign:stop", "phone-matrix:batchStatus",
-  "phone-matrix:batchStop", "phone-matrix:checkPhones", "phone-matrix:openFolder", "phone-matrix:refresh",
-  "phone-matrix:status", "phone-matrix:watch", "product-detail-ai-settings:status", "product-detail:history",
-  "product-detail:restart", "product-detail:status", "product-detail:stop", "social-accounts:status",
+  "digital-human:reference-get", "digital-human:reference-list", "digital-human:reference-repackageable",
+  "digital-human:reference-script-quota", "digital-human:reference-source-status", "digital-human:reference-viral-library",
+  "digital-human:reference-viral-pipeline-cover", "digital-human:reference-viral-pipeline-list",
+  "digital-human:reference-viral-stop", "digital-human:reference-voice-status", "digital-human:reference-workspace",
+  "keyword-acquisition:status", "keyword-acquisition:stop", "moments-campaign:pause", "moments-campaign:show-main",
+  "moments-campaign:status", "moments-campaign:stop", "phone-matrix:batchStatus", "phone-matrix:batchStop",
+  "phone-matrix:openFolder", "phone-matrix:refresh", "phone-matrix:status", "product-detail-ai-settings:status",
+  "product-detail:history", "product-detail:restart", "product-detail:status", "product-detail:stop",
+  "product-video:capabilities", "product-video:get", "product-video:list", "product-video:media", "social-accounts:status",
   "social-acquisition:cancelQueued", "social-acquisition:status", "social-acquisition:stop", "social-nurture:status",
   "social-nurture:stop", "social-publish:cancel", "social-publish:status", "touch-task:close-floating", "touch-task:pause",
   "touch-task:show-main", "touch-task:status", "touch-task:stop", "wechat-workflow:cancel-task", "wechat-workflow:get-task",
@@ -47,7 +49,8 @@ const READS = new Set([
   "wechat-workflow:sprite-say", "wechat-workflow:sprite-walk", "wechat-workflow:sprite-walk-stop", "wechat-workflow:status"
 ]);
 const QUIET = new Set([
-  "content-engine:backfill-covers", "contact-sync:auto-detect-paths"
+  "contact-sync:auto-detect-paths", "content-engine:backfill-covers", "digital-human:reference-refresh",
+  "phone-matrix:checkPhones", "phone-matrix:watch", "product-video:refresh"
 ]);
 const ACTIONS = new Set([
   "ai-expert:chat", "ai-expert:choose-and-import", "ai-expert:remove", "ai-expert:save",
@@ -83,16 +86,18 @@ const ACTIONS = new Set([
   "digital-human:reference-viral-pipeline-retry", "digital-human:reference-viral-pipeline-start",
   "digital-human:reference-viral-pipeline-start-script", "digital-human:reference-viral-scan",
   "digital-human:reference-write-script", "digital-human:viral-pipeline", "digital-human:viral-progress", "geo:invoke",
-  "geo:update", "keyword-acquisition:generate-draft", "keyword-acquisition:open-browser",
-  "keyword-acquisition:open-conversation", "keyword-acquisition:open-source", "keyword-acquisition:refresh-account",
-  "keyword-acquisition:save-conversation", "keyword-acquisition:save-lead", "keyword-acquisition:save-task",
-  "keyword-acquisition:send-draft", "keyword-acquisition:start-task", "keyword-acquisition:sync-conversation",
-  "keyword-acquisition:update", "map-acquisition:invoke", "map-acquisition:update", "moments-campaign:configure-daily",
-  "moments-campaign:run-daily-now", "moments-campaign:start", "moments-campaign:update", "moments-publish:choose-media",
-  "moments-publish:update", "moments:campaign", "moments:comment", "moments:like", "moments:observe", "moments:publish",
-  "phone-matrix:batch", "phone-matrix:batchStart", "phone-matrix:forget", "phone-matrix:input", "phone-matrix:pickFiles",
-  "phone-matrix:screen", "phone-matrix:update", "product-detail-ai-settings:delete", "product-detail-ai-settings:save",
-  "product-detail-ai-settings:validate", "product-detail:download-update", "product-detail:start", "product-detail:update",
+  "geo:update", "input:checked", "internal:workbench-narration", "keyword-acquisition:generate-draft",
+  "keyword-acquisition:open-browser", "keyword-acquisition:open-conversation", "keyword-acquisition:open-source",
+  "keyword-acquisition:refresh-account", "keyword-acquisition:save-conversation", "keyword-acquisition:save-lead",
+  "keyword-acquisition:save-task", "keyword-acquisition:send-draft", "keyword-acquisition:start-task",
+  "keyword-acquisition:sync-conversation", "keyword-acquisition:update", "map-acquisition:invoke", "map-acquisition:update",
+  "moments-campaign:configure-daily", "moments-campaign:run-daily-now", "moments-campaign:start", "moments-campaign:update",
+  "moments-publish:choose-media", "moments-publish:update", "moments:campaign", "moments:comment", "moments:like",
+  "moments:observe", "moments:publish", "phone-matrix:batch", "phone-matrix:batchStart", "phone-matrix:forget",
+  "phone-matrix:input", "phone-matrix:pickFiles", "phone-matrix:screen", "phone-matrix:update",
+  "product-detail-ai-settings:delete", "product-detail-ai-settings:save", "product-detail-ai-settings:validate",
+  "product-detail:download-update", "product-detail:start", "product-detail:update", "product-video:create",
+  "product-video:export", "product-video:export-source", "product-video:import-facts", "product-video:import-image",
   "product-video:retry-shot", "product-video:start", "social-accounts:add", "social-accounts:login", "social-accounts:refresh",
   "social-accounts:remove", "social-accounts:rename", "social-accounts:update", "social-acquisition:exportCsv",
   "social-acquisition:openLead", "social-acquisition:queueActions", "social-acquisition:removeTask",
@@ -105,8 +110,8 @@ const ACTIONS = new Set([
   "wechat-workflow:add-task", "wechat-workflow:choose-touch-images", "wechat-workflow:delete-tasks",
   "wechat-workflow:remove-recipient", "wechat-workflow:resolve-touch-unknown", "wechat-workflow:retry-all-and-start",
   "wechat-workflow:retry-skipped", "wechat-workflow:retry-task", "wechat-workflow:set-reply-enabled", "wechat-workflow:start",
-  "wechat-workflow:update", "wechat-workflow:update-task"
+  "wechat-workflow:update", "wechat-workflow:update-task", "workflow:touch"
 ]);
-// Looking and stopping; every other workbench action is refused with the advisor's card.
-const WORKBENCH_READS = new Set(["status", "snapshot", "stop", "pause", "pause-task", "cancel"]);
+// Looking, copying a shown phone number and stopping; every other workbench action is refused with the card.
+const WORKBENCH_READS = new Set(["status", "snapshot", "return-results", "copy-phone", "stop", "pause", "pause-task", "cancel"]);
 module.exports = { READS, QUIET, ACTIONS, WORKBENCH_READS };

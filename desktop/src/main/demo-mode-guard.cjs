@@ -37,9 +37,23 @@ function promptsAdvisor(channel, ...args) { return trialDecision(channel, ...arg
 
 // Wraps ipcMain once, before any feature registers. isDemo is read on every call, so signing in or
 // out of the trial takes effect at once.
-function installDemoModeGuard(ipcMain, { isDemo = () => false, onBlocked = () => {} } = {}) {
+// A feature request nobody classified (the source scan missed it): reported once, refused quietly.
+function unclassified(channel) {
+  const text = String(channel || "");
+  const colon = text.indexOf(":");
+  return colon > 0 && !OPEN_AREAS.has(text.slice(0, colon)) && !text.endsWith(":invoke")
+    && !READS.has(text) && !QUIET.has(text) && !ACTIONS.has(text);
+}
+
+function installDemoModeGuard(ipcMain, { isDemo = () => false, onBlocked = () => {}, onUnclassified = () => {} } = {}) {
   if (ipcMain.__xiaoxiDemoGuard) return;
   ipcMain.__xiaoxiDemoGuard = true;
+  const reported = new Set();
+  const registering = (channel) => {
+    if (!unclassified(channel) || reported.has(channel)) return;
+    reported.add(channel);
+    try { onUnclassified(String(channel)); } catch { /* reporting never stops a feature from registering */ }
+  };
   const refused = (channel, args) => {
     let demo = false;
     try { demo = isDemo() === true; } catch { demo = false; }
@@ -55,7 +69,7 @@ function installDemoModeGuard(ipcMain, { isDemo = () => false, onBlocked = () =>
   for (const name of ["handle", "handleOnce"]) {
     if (typeof ipcMain[name] !== "function") continue;
     const original = ipcMain[name].bind(ipcMain);
-    ipcMain[name] = (channel, listener) => original(channel, answer(channel, listener));
+    ipcMain[name] = (channel, listener) => { registering(channel); return original(channel, answer(channel, listener)); };
   }
   // One-way messages (phone-matrix:input sends touches to phones) are dropped in the trial. The same
   // wrapper is reused per listener so removeListener/off with the original function still works.
@@ -71,7 +85,7 @@ function installDemoModeGuard(ipcMain, { isDemo = () => false, onBlocked = () =>
   for (const name of ["on", "addListener", "once", "prependListener", "prependOnceListener"]) {
     if (typeof ipcMain[name] !== "function") continue;
     const original = ipcMain[name].bind(ipcMain);
-    ipcMain[name] = (channel, listener) => original(channel, wrapped(channel, listener));
+    ipcMain[name] = (channel, listener) => { registering(channel); return original(channel, wrapped(channel, listener)); };
   }
   for (const name of ["removeListener", "off"]) {
     if (typeof ipcMain[name] !== "function") continue;
@@ -80,4 +94,4 @@ function installDemoModeGuard(ipcMain, { isDemo = () => false, onBlocked = () =>
   }
 }
 
-module.exports = { installDemoModeGuard, blocksInTrial, promptsAdvisor, trialDecision, DEMO_TEXT };
+module.exports = { installDemoModeGuard, blocksInTrial, promptsAdvisor, trialDecision, OPEN_AREAS, DEMO_TEXT };
