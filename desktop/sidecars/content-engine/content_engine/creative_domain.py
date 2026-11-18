@@ -427,13 +427,15 @@ def missing_file_evidence(path: Path) -> dict:
     try:
         anchor = path.anchor or ""
         unsafe = any(part in {".", ".."} for part in path.parts)
-        return {
+        network = str(path).startswith(("\\\\", "//")) or anchor.startswith("\\\\")
+        details = {
             "reason": "unsafe_path" if unsafe else "file_missing",
-            "drive_kind": "network" if anchor.startswith("\\\\") else "drive" if anchor else "relative",
-            "drive_present": bool(anchor) and Path(anchor).exists(),
-            "folder_present": path.parent.exists(),
+            "drive_kind": "network" if network else "drive" if anchor else "relative",
             "suffix": path.suffix.lower()[:8],
         }
+        if not network:  # an offline share can take tens of seconds to answer; not probed here
+            details.update(drive_present=bool(anchor) and Path(anchor).exists(), folder_present=path.parent.exists())
+        return details
     except OSError:
         return {"reason": "file_missing", "inspect_failed": True}
 

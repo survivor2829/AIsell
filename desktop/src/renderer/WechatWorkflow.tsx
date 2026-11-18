@@ -57,6 +57,8 @@ export type WorkflowTask = Omit<WorkflowTaskInput, "payload"> & {
   skipped_records?: TouchSkipRecord[];
   // The customer said 「这些人不再重试」; automatic reply may start after this touch.
   skippedSettledAt?: string;
+  // Finished by a version with the touch-first rule: its retryable skips hold automatic reply.
+  skipsHoldReply?: boolean;
   // Who blocked (消息被拒收) or deleted (需要朋友验证) the user; both are skipped by later tasks.
   unreachable_summary?: { blocked_count: number; deleted_count: number; blocked: { name: string; found: "this_task" | "earlier" }[]; deleted: { name: string; found: "this_task" | "earlier" }[] };
   reasonCode?: string;
@@ -513,7 +515,9 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   const settleSkipped = async (task: WorkflowTask) => {
     if (!api?.settleSkipped) return;
     const result = await run(() => api.settleSkipped!(task.id));
-    if (result?.ok) setNotice("好的，这些人不再重试，程序已启动。其他触达都做完后，自动回复会接着开始。");
+    if (result?.ok) setNotice((result as { started?: boolean; notice?: string }).started === false
+      ? `好的，这些人不再重试。${(result as { notice?: string }).notice || "程序还没启动。"}`
+      : "好的，这些人不再重试，程序已启动。其他触达都做完后，自动回复会接着开始。");
   };
 
   const retryAll = async () => {
@@ -569,7 +573,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
         {task.type === "touch" && Boolean(task.skipped_records?.length) && <section className="workflow-touch-skipped" aria-label={`本次跳过 ${task.skipped_records!.length} 位`}>
           <div className="workflow-touch-skipped-head"><strong>本次跳过 {task.skipped_records!.length} 位</strong>
             {retryableSkipped.length > 0 && <button type="button" className="text-button" data-xiaoxi-workflow-start disabled={busy || retryLocked} onClick={() => void retrySkipped(task, undefined, true)}>{canRetryWhileListening ? `暂停自动回复，全部重试并继续（${retryableSkipped.length} 人）` : `全部重试并继续（${retryableSkipped.length} 人）`}</button>}
-            {retryableSkipped.length > 0 && task.status === "completed" && !task.skippedSettledAt && <button type="button" className="text-button" data-xiaoxi-workflow-start disabled={busy} onClick={() => void settleSkipped(task)}>这些人不再重试，开始自动回复</button>}
+            {retryableSkipped.length > 0 && task.status === "completed" && task.skipsHoldReply && !task.skippedSettledAt && !task.accountMismatch && <button type="button" className="text-button" data-xiaoxi-workflow-start disabled={busy || retryLocked} onClick={() => void settleSkipped(task)}>这些人不再重试，开始自动回复</button>}
           </div>
           <p className="workflow-small-note">身份不唯一 {task.skipped_breakdown?.identity || 0} · AI 失败 {task.skipped_breakdown?.ai_failed || 0} · 发送前失败 {task.skipped_breakdown?.pre_send || 0} · 结果未知 {task.skipped_breakdown?.outcome_unknown || 0}{Boolean(task.skipped_breakdown?.partial_sent) && ` · 部分已发送 ${task.skipped_breakdown!.partial_sent}`}{Boolean(task.skipped_breakdown?.unreachable) && ` · 对方已不是好友 ${task.skipped_breakdown!.unreachable}`}</p>
           {updateWaiting > 0 && <p className="workflow-small-note">其中 {updateWaiting} 位用当前版本已经再试过、还是没认出本人，现在全部重试结果也一样，所以不算在内；软件更新了认人方法后会自动变回可重试，也可以在明细里单独点「重试」。</p>}

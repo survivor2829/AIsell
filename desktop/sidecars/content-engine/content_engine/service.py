@@ -59,8 +59,12 @@ TASK_TRANSITIONS = {
 def missing_file_evidence(path: Path) -> dict:
     """Shared with creative_domain; this side also knows the stricter unsafe-path rule."""
     details = _missing_file_evidence(path)
-    if path.exists() and has_unsafe_component(path):  # a missing file cannot be inspected
-        details["reason"] = "unsafe_path"
+    try:
+        if not details.get("inspect_failed") and details.get("drive_kind") != "network" \
+                and path.exists() and has_unsafe_component(path):
+            details["reason"] = "unsafe_path"  # the file is there but behind a link this app does not follow
+    except OSError:
+        details["inspect_failed"] = True
     return details
 
 
@@ -580,11 +584,12 @@ class ContentEngineService:
         The paused task is cancelled first (a submitted cover keeps it paused, which is
         fine: the archived batch is never resumed). Nothing is submitted again.
         """
-        result = self._narrated_batches().abandon(request)
-        if result.get("task_id") and result.get("task_status") == "paused":
+        def stop(task):
             # No error code of our own: a submitted cover keeps the task paused with its own
             # cover_submission_inflight reason. The abandoned batch refuses to run either way.
-            self.update_task(result["task_id"], "cancelled")
+            if task["status"] == "paused":
+                self.update_task(task["id"], "cancelled")
+        result = self._narrated_batches().abandon(request, before_archive=stop)
         return {"batch_id": result["batch_id"]}
 
     def save_narrated_batch(self, request):

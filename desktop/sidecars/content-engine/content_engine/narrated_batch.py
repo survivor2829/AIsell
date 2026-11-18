@@ -916,7 +916,7 @@ class NarratedBatchDomain:
         self._store(b)
         return {"batch_id": batch_id}
 
-    def abandon(self, request):
+    def abandon(self, request, before_archive=None):
         """The customer gives up on a batch that stopped with an uncertain provider call.
 
         Field report 09b30c69 (2026-11-18): a voice check ended outcome_unknown, the task
@@ -930,7 +930,12 @@ class NarratedBatchDomain:
                 "请先确认放弃这条视频。")
         b = self._load(request.get("batch_id"))
         require(not b.get("_archived_at"), "narrated_batch_archived", "这条视频已经放弃并归档。")
-        task = self.d._task_row(b["task_id"]) if b.get("task_id") else None
+        task = None
+        if b.get("task_id"):
+            try:
+                task = self.d._task_row(b["task_id"])
+            except ContentEngineError:
+                task = None  # the task row is gone: nothing to stop, the batch can still be given up
         # Only a batch that is not working right now; stopping comes first.
         require(task is None or task["status"] in {"completed", "failed", "cancelled", "paused"},
                 "narrated_batch_busy", "请等待当前操作完成，或先暂停。")
@@ -957,6 +962,9 @@ class NarratedBatchDomain:
             "planning_inflight": bool(b.get("_planning_inflight") or b.get("_planning_request")),
             "unresolved_artifacts": unresolved[:100],
         }
+        # Stopping the task comes first: if that fails the batch stays as it was and can be given up again.
+        if before_archive is not None and task is not None:
+            before_archive(task)
         b["_archived_at"] = b["_abandoned"]["abandoned_at"]
         self._store(b)
         return {"batch_id": b["batch_id"], "task_id": task["id"] if task else None,

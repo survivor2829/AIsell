@@ -40,8 +40,6 @@ function workflowFailureReason(failure, fallback = "workflow_exception") {
 
 // Shown while automatic reply waits for an unfinished touch (touch first, user 2026-11-14).
 const TOUCH_FIRST_STATUS = "触达完成后再开始自动回复";
-// Touches that finish from this release (1.3.42) on hold reply while they still have retryable skips.
-const TOUCH_SKIP_RULE_SINCE = Date.parse("2026-11-18T13:00:00.000Z");
 
 function localDate(value) {
   const date = new Date(value);
@@ -220,6 +218,7 @@ function createWechatWorkflowController(options) {
     task.error = "";
     task.status = outcome.completed ? "completed" : "pending";
     if (outcome.completed) {
+      if (task.type === "touch") task.skipsHoldReply = true;
       task.completedAt = String(outcome.resolvedAt || new Date(now()).toISOString());
       task.lastCompletedDate = localDate(task.completedAt);
       recordRun(task);
@@ -488,9 +487,9 @@ function createWechatWorkflowController(options) {
   // that could not reach people "finished" by skipping them and reply started at once. Now these also
   // hold reply for this account: a touch that missed its date (missedAt) and one that finished with
   // people who can still be retried, until the customer retries them or says 「这些人不再重试」
-  // (skippedSettledAt). Both only from this rule on (missedAt is new; completion after
-  // TOUCH_SKIP_RULE_SINCE), so an update never switches off the reception a customer relies on
-  // because of an old task. A stopped task without an account can be neither retried nor resolved,
+  // (skippedSettledAt). Both only for tasks this code finished or missed (missedAt, skipsHoldReply are
+  // written by it), so an update never switches off the reception a customer relies on because of a
+  // task an older version left behind, whatever the clock says. A stopped task without an account can be neither retried nor resolved,
   // so it never holds reply. Cancelled and deleted tasks never hold it.
   function touchHoldsReply(task) {
     if (task.type !== "touch") return false;
@@ -499,18 +498,20 @@ function createWechatWorkflowController(options) {
     if (!mine) return false;
     if (task.status === "needs_attention") return Boolean(task.attentionAt);
     if (task.status === "missed") return Boolean(task.missedAt);
-    return task.status === "completed" && !task.skippedSettledAt
-      && Date.parse(task.completedAt || "") >= TOUCH_SKIP_RULE_SINCE && retryableSkips(task) > 0;
+    return task.status === "completed" && task.skipsHoldReply === true && !task.skippedSettledAt && retryableSkips(task) > 0;
   }
   function touchUnfinished() {
-    for (const id of retryableSkipCache.keys()) if (!store.tasks.some((task) => task.id === id)) retryableSkipCache.delete(id);
+    if (retryableSkipCache.size > store.tasks.length) {
+      const ids = new Set(store.tasks.map((task) => task.id));
+      for (const id of retryableSkipCache.keys()) if (!ids.has(id)) retryableSkipCache.delete(id);
+    }
     return store.tasks.some(touchHoldsReply);
   }
-  // Counting the retryable people reads the task's records; it is remembered per task until anything in
-  // the workflow changes (revision), since another task can change who is retryable.
+  // Counting the retryable people reads the task's records. It is remembered per task until the task
+  // changes, and for at most a minute, since another task can change who is retryable (blocked, deleted).
   const retryableSkipCache = new Map();
   function retryableSkips(task) {
-    const key = [revision, task.status, task.progress?.done, task.progress?.total, task.completedAt, task.skippedSettledAt].join("|");
+    const key = [Math.floor(now() / 60_000), task.status, task.progress?.done, task.progress?.total, task.completedAt, task.skippedSettledAt].join("|");
     const cached = retryableSkipCache.get(task.id);
     if (cached?.key === key) return cached.count;
     const count = (skippedTouchState(task)?.skipped_records || []).filter((row) => (row.bulk_retryable ?? row.retryable) === true).length;
@@ -752,6 +753,8 @@ function createWechatWorkflowController(options) {
       } else { delete task.reasonCode; delete task.reasonClassification; }
       if (task.cancelRequested && result.status !== "needs_attention") task.status = "cancelled";
       if (task.status === "completed") {
+        // Finished by this code: its retryable skips hold reply until settled (2026-11-18 rule).
+        if (task.type === "touch") task.skipsHoldReply = true;
         task.completedAt = new Date(now()).toISOString();
         task.lastCompletedDate = localDate(now());
         recordRun(task);

@@ -1710,6 +1710,8 @@ async function checkRetryAndContinueIpc() {
       // The customer already said 「这些人不再重试」, so reply may run (2026-11-18 rule).
       if (rowFor(task).settled) task.skippedSettledAt = new Date().toISOString();
       if (task.status === "completed") task.completedAt = rowFor(task).completedAt || new Date().toISOString();
+      // Finished by this version unless the row is left from an older one.
+      if (task.status === "completed" && !rowFor(task).legacy) task.skipsHoldReply = true;
       if (task.status === "missed" && rowFor(task).missedAt !== null) task.missedAt = rowFor(task).missedAt || new Date().toISOString();
       // Stopped for attention today (as the workflow now records it), unless a row says otherwise.
       if (task.status === "needs_attention" && rowFor(task).attentionAt !== null) task.attentionAt = rowFor(task).attentionAt || new Date().toISOString();
@@ -1775,7 +1777,7 @@ async function checkRetryAndContinueIpc() {
   // task without an account (it can be neither retried nor resolved) never holds reply.
   for (const [label, row] of [["stopped before the attentionAt rule", { status: "needs_attention", attentionAt: null }],
     ["missed before the missedAt rule", { status: "missed", missedAt: null }],
-    ["finished with skips before this rule", { status: "completed", skipped: true, completedAt: "2026-11-01T00:00:00.000Z" }],
+    ["finished with skips by an older version (no skipsHoldReply), whatever its date", { status: "completed", skipped: true, legacy: true }],
     ["stopped without an account", { status: "needs_attention", accountName: "" }]]) {
     test = await fixture([{ title: "old", retryable: true, ...row }], { reply: true });
     try {
@@ -1790,6 +1792,16 @@ async function checkRetryAndContinueIpc() {
     assert.equal(test.control.status().phase, "listening", "after 「这些人不再重试」 reply may start");
     assert.ok(test.control.status().tasks[0].skippedSettledAt);
     assert.equal(test.controlEvents.some((entry) => entry.code === "touch_skipped_settled"), true);
+  } finally { await test.close(); }
+  // Settling while another touch still needs handling is saved and says why the program waits (review).
+  test = await fixture([{ title: "settle-a", status: "completed", retryable: true, skipped: true },
+    { title: "still-stopped", status: "needs_attention", retryable: true }], { reply: true });
+  try {
+    const settled = await test.invoke("settle-skipped", { id: test.rows.find((row) => row.title === "settle-a").id, clickToken: click() });
+    assert.equal(settled.ok, true);
+    assert.equal(settled.started, false);
+    assert.match(settled.notice, /触达任务还没完成/u);
+    assert.ok(test.control.status().tasks.find((row) => row.title === "settle-a").skippedSettledAt);
   } finally { await test.close(); }
   test = await fixture([{ title: "clean", status: "completed", retryable: true }], { reply: true });
   try {

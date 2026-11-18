@@ -151,6 +151,8 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
   const running = Boolean(batch?.task_id && activeStatuses.has(batch.task_status || ""));
   const paused = batch?.task_status === "paused";
   const [abandonConfirmed, setAbandonConfirmed] = useState(false);
+  // A tick is for the batch it was given on, never carried to another one.
+  useEffect(() => { setAbandonConfirmed(false); }, [batch?.batch_id]);
   const locked = busy || restoring || running || paused || Boolean(batch?.archived);
   const scriptFlow = !batch || settings.workflow_version === 2;
   const modern = !batch || batch.brief_version === 1;
@@ -562,7 +564,7 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
         <span>第三方配音或回听没有返回可用回执，系统已保留前面已完成的结果。请先核对对应平台记录，确认这次未生成可用音频后，仅重试未完成的语音步骤。{recoveryHeld ? ` ${recoveryHeld}` : ""}</span>
         <button type="button" data-batch-action="voice-resolve" className="batch-primary" disabled={busy || submitting || Boolean(recoveryHeld)} onClick={() => void recoverVoice()}>确认风险，仅重试未完成配音</button>
       </div>}
-      {batch.status === "outcome_unknown" && !batch.archived && <div className="batch-abandon">
+      {(batch.status === "outcome_unknown" || paused) && !batch.archived && <div className="batch-abandon">
         <strong>这条视频卡住了？可以放弃它，直接新建一条</strong>
         <label><input type="checkbox" checked={abandonConfirmed} onChange={(event) => setAbandonConfirmed(event.target.checked)} />确认放弃这条视频（已做好的成片会保留，不会重新提交，也不会重复扣费）</label>
         <button type="button" data-batch-action="abandon" className="batch-primary" disabled={busy || submitting || !abandonConfirmed} onClick={() => void abandonBatch()}>放弃这条，新建视频</button>

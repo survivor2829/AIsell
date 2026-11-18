@@ -842,8 +842,11 @@ async function main() {
   assert.match(page, /if \(notices\.some\(Boolean\)\) setNotice\(notices\.filter\(Boolean\)\.join\(" "\)\);/u);
   assert.match(page, /\}, \[dirty, busy, restoring, running, submitting, draftFingerprint\]\);/u, "the harness models the effect re-running when busy flips");
   assert.match(page, /if \(!dirty \|\| busy \|\| restoring \|\| running \|\| submitting\) return;/u, "autosave waits for draft recovery before writing");
-  assert.match(page, /await draftQueue\.flush\(\);\s*await callBatch\("archive", \{ batch_id: batch\.batch_id \}\);\s*draftOwner\.current \+= 1; draftQueue\.cancelPending\(\);/u,
+  // The reset after archiving (and giving up, and 新建视频) is one function since 2026-11-18.
+  assert.match(page, /await draftQueue\.flush\(\);\s*await callBatch\("archive", \{ batch_id: batch\.batch_id \}\);\s*clearToNewBatch\(\);/u,
     "archiving must let a waiting edit land first and ignore later responses for the old form");
+  assert.match(page, /function clearToNewBatch\(\) \{\s*draftOwner\.current \+= 1; draftQueue\.cancelPending\(\);/u,
+    "the shared reset ignores later responses for the old form");
   assert.match(page, /const \[draftSlot\] = useState\(\(\) => createPendingDraftSlot\(localStorage\)\)/u);
   assert.match(page, /hold: isDeterministicDraftError/u);
   assert.match(page, /draftSlot\.saved\(fingerprint, owner, value\)/u);
@@ -857,8 +860,8 @@ async function main() {
   assert.match(page, /setDirty\(false\); setNotice\(\[droppedNotice\.current, voiceWarning\(b\)\]\.filter\(Boolean\)\.join\(" "\)\);/u,
     "loading a batch shows the voice switch and keeps a dropped-edit notice");
 
-  assert.equal((page.match(/if \(!batch \|\| draftQueue\.busy\(\)\) return;\s*draftQueue\.cancelPending\(\);/gu) || []).length, 2,
-    "both retries handle the save queue the way start() does");
+  assert.equal((page.match(/if \(!batch \|\| draftQueue\.busy\(\)\) return;\s*draftQueue\.cancelPending\(\);/gu) || []).length, 3,
+    "both retries and giving up (2026-11-18) handle the save queue the way start() does");
   assert.match(page, /const editRejected = rejectedEdit && rejectedEdit\.owner === draftOwner\.current && rejectedEdit\.fingerprint === draftFingerprint \? rejectedEdit\.message : undefined;[\s\S]*?const recoveryHeld = retryHold\(\{ saving, dirty, rejected: editRejected \}\);/u,
     "the retry buttons wait for a save on its way and name a rejection");
   assert.match(page, /if \(isDeterministicDraftError\(error\)\) setRejectedEdit\(\{ fingerprint, owner, message: \(error as Error\)\.message \}\);/u);
