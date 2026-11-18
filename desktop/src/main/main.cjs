@@ -18,7 +18,9 @@ function reportUpdateRollback(logger) {
     const reason = String(selection?.failure || "");
     if (!reason) return;
     const code = (ROLLBACK_REASON_CODES.find(([pattern]) => pattern.test(reason)) || [null, "other"])[1];
-    logger.event("maintenance", "update.rolled_back", { reason_code: code, running_version: components.businessVersion(app) },
+    // Its own module: "maintenance" never becomes a field capsule, so the rollbacks that kept a
+    // customer on 1.3.0 for days (eb308612, 2026-11-16..18) never reached the reports.
+    logger.event("update", "update.rolled_back", { reason_code: code, running_version: components.businessVersion(app) },
       { level: "error", code: `update_rolled_back_${code}` });
   } catch { /* Reporting must never block startup. */ }
 }

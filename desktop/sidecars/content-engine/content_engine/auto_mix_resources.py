@@ -24,11 +24,30 @@ POPULAR_VOICE_PREVIEW_SAMPLE = (
 )
 SUPPORTED_VOICE_MODELS = {"bailian": {AUTO_MIX_TTS_MODEL}, "volcengine": {"seed-tts-1.0", "seed-tts-2.0"}}
 MAX_VOICE_PREVIEW_BYTES = 8 * 1024 * 1024
+# Never Path(__file__).resolve(): the desktop starts the engine through a short junction
+# (runtime-link.cjs) because the update folder is deep, and resolve() walks back into it. There
+# this file sits at 255 characters for the development machine's user name and past Windows' 260
+# for any name five letters longer ("Administrator"): reading it failed, the catalog came back
+# empty, every official voice was retired and narrated videos stopped with "这台电脑上没有可用的
+# 配音声音" (field eb308612, 1.3.33 and 1.3.38).
 BUILTIN_VOICE_CATALOG = (
-    Path(__file__).resolve().parent
+    Path(__file__).parent
     / "assets"
     / "auto-mix-voice-personas.v1.json"
 )
+
+
+def builtin_voice_catalog_unreadable() -> bool:
+    """True when the shipped voice catalog exists in the build but cannot be read here.
+
+    An empty catalog from a read failure must never retire the voices this computer already
+    has: only a catalog that was read can say a voice is gone.
+    """
+    try:
+        payload = json.loads(BUILTIN_VOICE_CATALOG.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return True
+    return not isinstance(payload, dict) or payload.get("schemaVersion") != 1
 
 
 def _clean(value: Any, maximum: int) -> str:
