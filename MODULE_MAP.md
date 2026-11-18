@@ -32,7 +32,7 @@
 | `desktop/src/main/auto-reply-ipc.cjs`、`auto-reply-{constants,text,diagnostics,state,contacts}.cjs` | 自动回复：控制器与 IPC 在 `auto-reply-ipc.cjs`；原因集合与数值、回复文字安全与 AI 决策规范化、诊断清洗与日志轮转、状态读取迁移与恢复、联系人别名与接待范围/限流/转人工文案分别在五个模块（2026-11-13 从 4377 行的单文件原样拆出），依赖方向自左向右 | 在模块之间复制规则；把可变运行状态（如已用点击令牌）放进拆出的模块 |
 | `desktop/rpa/contact_sync/` | 读取微信联系人并输出规范化联系人清单 | 自动回复、主动触达或朋友圈动作 |
 | `desktop/rpa/active_touch/` | 微信窗口观察/发送适配、主动触达状态机及测试版朋友圈执行器 | renderer 状态管理、API Key 持久化、跨业务混用发送账本 |
-| `desktop/sidecars/product-detail/app/line_ocr.py`、`desktop/src/main/line-ocr-service.cjs`、`line-ocr-report.cjs` | 触达聊天标题识字（PP-OCRv4 识别模型，跑在产品详情图运行时，回环+令牌），主进程按需启动并把地址交给微信脚本 | 读搜索下拉框或其他业务界面；把识字结果写日志 |
+| `desktop/sidecars/product-detail/app/line_ocr.py`、`desktop/src/main/line-ocr-service.cjs`、`line-ocr-report.cjs`、`line-ocr-launch.cjs` | 触达聊天标题识字（PP-OCRv4 识别模型，跑在产品详情图运行时，回环+令牌），主进程按需启动并把地址交给微信脚本 | 读搜索下拉框或其他业务界面；把识字结果写日志 |
 | `desktop/rpa/active_touch/powershell_host.cjs` | 只读微信观察（会话核对、发送前后快照、送达提示）共用的常驻 PowerShell，每次独立运行环境 | 点击、输入、发送；保存跨次执行的变量 |
 | `desktop/src/main/touch-unreachable.cjs` | 按微信账号记下拉黑、删除过用户的联系人，供以后触达排除和统计 | 判断拉黑或删除（由送达提示识别）；跨账号共用 |
 | `desktop/sidecars/product-detail/` | 产品详情图本地 sidecar、隔离工作台和用户数据迁移 | 向 renderer 暴露文件系统、密钥或任意本机进程能力 |

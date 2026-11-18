@@ -181,30 +181,6 @@ function productDetailRuntimePath() {
   return developmentProductDetailLaunch.runtimePath;
 }
 
-// The chat-title reader's model inside the packaged product-detail component (registered in
-// component-layout.json); missing on a component older than 1.3.30.
-function lineOcrModelFiles(runtimePath) {
-  const internal = path.join(path.dirname(runtimePath), "_internal");
-  const config = path.join(internal, "line_ocr_model.json");
-  try {
-    const file = String(JSON.parse(fs.readFileSync(config, "utf8")).file || "");
-    return [config, path.join(internal, "models", path.basename(file) || "missing-model")];
-  } catch {
-    return [config];
-  }
-}
-
-// The packaged runtime below the product-detail service's short junction; the long path only when
-// the junction cannot be made (then the reader may fail as before and says so in its report).
-function lineOcrLaunchPath() {
-  const runtimePath = productDetailRuntimePath();
-  try {
-    return require("./runtime-link.cjs").prepareRuntimeLaunch(runtimePath, path.join(app.getPath("userData"), "product-detail"), {}, { folder: "product-detail" }).runtimePath;
-  } catch {
-    return runtimePath;
-  }
-}
-
 function contentEngineRuntimePath() {
   if (app.isPackaged) {
     return path.join(
@@ -1014,13 +990,10 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     }
     // The chat-title reader shares the product-detail runtime; it starts on the first touch step.
     require("./line-ocr-service.cjs").configureLineOcrService({
-      // Started through the same short junction as the product-detail service (runtime-link.cjs):
-      // from the update folder itself onnxruntime's DLL path passed 252 characters for any Windows
-      // user name four letters longer than the development machine's, and Windows refused to load
-      // it ("文件名或扩展名太长", field 47d2578f 1.3.37; 1.3.30–1.3.37 never had the reader there).
-      resolveLaunch: () => app.isPackaged
-        ? { runtimePath: lineOcrLaunchPath(), runtimeArgs: [], requiredFiles: lineOcrModelFiles(productDetailRuntimePath()) }
-        : { runtimePath: productDetailRuntimePath(), runtimeArgs: developmentProductDetailLaunch?.runtimeArgs || [] },
+      // Packaged: through the product-detail service's short junction (line-ocr-launch.cjs).
+      resolveLaunch: app.isPackaged
+        ? require("./line-ocr-launch.cjs").createLineOcrLaunch({ runtimePath: productDetailRuntimePath, dataDir: path.join(app.getPath("userData"), "product-detail") })
+        : () => ({ runtimePath: productDetailRuntimePath(), runtimeArgs: developmentProductDetailLaunch?.runtimeArgs || [] }),
       onEvent: (event, details, local) => {
         // The first failure of each kind in a run is an error with a full report attached to its capsule (the
         // reader's own start-up output and what its folder holds); repeats only count as warnings.

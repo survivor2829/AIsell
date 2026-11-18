@@ -560,6 +560,10 @@ $dialogAccepted = Wait-PasteAccepted 1000
       // reachable on customer computers) is a named revision and frees earlier skips too.
       const unrevised = identityLogicVersion(["a.cjs"], codeDir, []);
       assert.notEqual(identityLogicVersion(["a.cjs"], codeDir, ["title-reader-short-launch"]), unrevised);
+      // The version records actually carry includes the revision (what frees the field skips).
+      const states = require("../../rpa/active_touch/touch_task_state.cjs");
+      assert.equal(states.IDENTITY_LOGIC_VERSION, identityLogicVersion());
+      assert.notEqual(states.IDENTITY_LOGIC_VERSION, identityLogicVersion(undefined, undefined, []), "the default version includes the named revisions");
     } finally {
       fs.rmSync(codeDir, { recursive: true, force: true });
     }

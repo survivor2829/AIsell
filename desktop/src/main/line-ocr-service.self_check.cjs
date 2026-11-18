@@ -135,6 +135,35 @@ function fakeChild() {
   assert.equal(probed.running(), true, "a touch step that asked meanwhile keeps it");
   probed.stop();
 
+  // The packaged reader starts below the short junction, never from the update folder itself
+  // (1.3.38: from there onnxruntime's DLL path was too long on most customer computers).
+  const { createLineOcrLaunch } = require("./line-ocr-launch.cjs");
+  const updateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "line-ocr-launch-"));
+  const deepResources = path.join(updateRoot, "generations", "a".repeat(64), "resources");
+  const deepRuntime = path.join(deepResources, "product-detail", "product-detail-server.exe");
+  fs.mkdirSync(path.join(path.dirname(deepRuntime), "_internal", "models"), { recursive: true });
+  fs.writeFileSync(deepRuntime, "exe");
+  fs.writeFileSync(path.join(path.dirname(deepRuntime), "_internal", "line_ocr_model.json"), JSON.stringify({ file: "m.onnx" }));
+  fs.writeFileSync(path.join(path.dirname(deepRuntime), "_internal", "models", "m.onnx"), "model");
+  const pdData = path.join(updateRoot, "pd-data");
+  let prepared = 0;
+  const realPrepare = require("./runtime-link.cjs").prepareRuntimeLaunch;
+  const launchFor = createLineOcrLaunch({ runtimePath: () => deepRuntime, dataDir: pdData, platform: "win32",
+    prepare: (...args) => { prepared += 1; return realPrepare(...args); } });
+  const linked = launchFor();
+  assert.equal(linked.shortLink, "linked");
+  assert.ok(linked.runtimePath.startsWith(path.join(pdData, ".runtime-links")), linked.runtimePath);
+  assert.ok(linked.runtimePath.length < deepRuntime.length);
+  assert.ok(linked.requiredFiles.every((file) => file.startsWith(pdData) && fs.existsSync(file)), "files are checked where they are loaded from");
+  assert.equal(launchFor(), linked);
+  assert.equal(prepared, 1, "the junction work is done once per runtime");
+  const failing = createLineOcrLaunch({ runtimePath: deepRuntime, dataDir: pdData, platform: "win32",
+    prepare: () => { throw Object.assign(new Error("x"), { code: "RUNTIME_LINK_FAILED" }); } })();
+  assert.equal(failing.runtimePath, deepRuntime);
+  assert.equal(failing.shortLink, "failed_runtime_link_failed", "the report says the link could not be made");
+  fs.unlinkSync(path.dirname(path.dirname(linked.runtimePath)));
+  assert.ok(fs.existsSync(deepRuntime), "removing the link leaves the component alone");
+
   // A failed check at launch (busy computer) does not hold back the first touch step for five minutes.
   const slowEnv = {};
   const slow = createLineOcrService({ resolveLaunch: () => ({ runtimePath: runtime }), env: slowEnv,
