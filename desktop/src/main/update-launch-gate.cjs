@@ -4,8 +4,13 @@
 // The gate keeps the update hold on while it runs, so no business work starts before it opens.
 const SETTLED = new Set(["current", "ready", "error", "blocked", "idle", "disabled"]);
 
+// 2026-11-18 (field): a computer whose download kept breaking (slow Wi-Fi or security software cutting the
+// connection) retried here without end and the customer could not use the software at all. After
+// downloadFailureLimit failures in a row the customer goes in on the current version; the download keeps
+// resuming in the background (bytes already fetched are kept) and installs as usual once it is ready.
 function createLaunchGate({ controller, request, setHold, onOpen = () => {}, publish = () => {}, now = Date.now,
-  checkTimeoutMs = 20_000, retryBaseMs = 2_000, retryMaxMs = 60_000, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
+  checkTimeoutMs = 20_000, retryBaseMs = 2_000, retryMaxMs = 60_000, downloadFailureLimit = 3,
+  backgroundRetryMs = 2 * 60_000, backgroundRetryMaxMs = 10 * 60_000, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
   let gate = { phase: "checking", reason: "", attempt: 0, retryAt: 0 };
   let started = false, startedAt = 0;
   function emit(patch) { gate = { ...gate, ...patch }; publish(status()); }
@@ -34,7 +39,18 @@ function createLaunchGate({ controller, request, setHold, onOpen = () => {}, pub
     void controller.check();
     return settle(state => !state.updateRequested && SETTLED.has(state.stage), gate.attempt ? 0 : checkTimeoutMs);
   }
+  // After the customer is let in: keep resuming the download quietly until it is ready (or current).
+  async function keepDownloading() {
+    let delay = backgroundRetryMs;
+    for (;;) {
+      await sleep(delay);
+      const state = await attempt().catch(() => null);
+      if (state && ["ready", "current", "blocked", "disabled"].includes(state.stage)) return;
+      delay = Math.min(backgroundRetryMaxMs, delay * 2);
+    }
+  }
   async function run() {
+    let downloadFailures = 0;
     try {
       const initial = controller.status();
       if (!initial.enabled || !initial.canInstall) return open("unsupported");
@@ -61,6 +77,12 @@ function createLaunchGate({ controller, request, setHold, onOpen = () => {}, pub
           // A full disk is cleared by the customer, not by retrying (field 2026-11-12): let them in with the numbers.
           if (/disk_space_insufficient/u.test(state.error || "")) return open("disk_full");
           if (!state.nextVersion) return open("offline");
+          downloadFailures += 1;
+          if (downloadFailures >= downloadFailureLimit) {
+            const opened = open("download_failing");
+            void keepDownloading();
+            return opened;
+          }
         } else {
           return open("unsupported");
         }

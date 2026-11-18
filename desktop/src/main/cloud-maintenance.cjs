@@ -124,7 +124,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
   // A detail line belongs to the stage that set it: a new stage clears it unless it brings its own.
   function notify(patch = {}) {
     const stageChanged = patch.stage && patch.stage !== view.stage && !Object.hasOwn(patch, "detail");
-    view = { ...view, ...(stageChanged ? { detail: "" } : {}), ...patch };
+    view = { ...view, ...(stageChanged ? { detail: "", ...(Object.hasOwn(patch, "errorCode") ? {} : { errorCode: "" }) } : {}), ...patch };
     for (const listener of listeners) { try { listener(status()); } catch {} }
   }
   function fullDownloadPaths(manifest) {
@@ -395,7 +395,8 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
         : DISK_FULL_CODES.includes(error?.code) ? diskFullMessage(error)
         : error?.code === "full_upgrade_required" ? "新版正在准备，请稍后重试。故障编号：full_upgrade_required"
         : error?.code === "cloud_signature_invalid" ? "更新签名校验失败，未安装此更新。请稍后重新检查。" : "更新检查或下载失败，已保留下载进度，请稍后重试。";
-      notify({ stage: "error", error: message });
+      // The code travels with the state so the launch gate can report why it let the customer in.
+      notify({ stage: "error", error: message, errorCode: updateFailure(error, "prepare").code });
     } finally {
       // Keep the hash-addressed partial file for a verified Range resume.
       checking = false;
