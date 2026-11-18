@@ -10,7 +10,7 @@ const crypto = require("node:crypto");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { scrubInternalDetails } = require("../shared/internal-diagnostics.cjs");
 const { classifyWechatFailureReason } = require("../shared/wechat-failure-policy.cjs");
-const { collectFlight, collectPassports, hasRecentFailureScreen, captureFailureScreen } = require("./flight-recorder.cjs");
+const { collectFlight, collectPassports, collectReports, hasRecentFailureScreen, captureFailureScreen } = require("./flight-recorder.cjs");
 
 const FAILURE_LEVELS = new Set(["error", "fatal"]);
 // Not failures: the customer closed a dialog, or upload itself is offline.
@@ -185,7 +185,7 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLog
   function attach(capsule, at) {
     const folder = path.join(dir, capsule.id);
     const flight = collectFlight(rootDir, { at });
-    const files = [...flight.files, ...collectPassports(rootDir, { at })];
+    const files = [...flight.files, ...collectPassports(rootDir, { at }), ...collectReports(rootDir, { at, module: capsule.module })];
     capsule.flight = flight.steps.map(step => ({ ts: step.ts, step: step.step, image: step.image || "", lossless: step.lossless === true,
       ...(step.imageOmitted ? { imageOmitted: step.imageOmitted } : {}) }));
     capsule.attachments = [];

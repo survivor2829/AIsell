@@ -102,6 +102,89 @@ function fakeChild() {
   assert.deepEqual(exitEvidence("[PYI-1234:ERROR] Failed to load Python DLL 'python311.dll'.\n"), { launcher_failed: true });
   assert.deepEqual(exitEvidence(""), {});
 
+  // The app gets the start-up output once, for its report; it never goes into the event itself.
+  const locals = [];
+  const reporting = createLineOcrService({
+    resolveLaunch: () => ({ runtimePath: runtime }),
+    spawnProcess: () => { const child = fakeChild(); spawned.push({ child }); return child; },
+    env: {}, onEvent: (event, detail, local) => locals.push({ event, detail, local })
+  });
+  const reported = reporting.ensure();
+  spawned.at(-1).child.stderr.emit("data", "ModuleNotFoundError: No module named 'numpy'\n");
+  spawned.at(-1).child.exitCode = 1;
+  spawned.at(-1).child.emit("exit", 1);
+  await reported;
+  assert.match(locals.at(-1).local.stderr, /No module named 'numpy'/u);
+  assert.equal(locals.at(-1).local.launch.runtimePath, runtime);
+  assert.ok(!JSON.stringify(locals.at(-1).detail).includes("numpy"));
+
+  // probe() after launch: a reader nobody asked for meanwhile is stopped again; one a touch step
+  // asked for during the check keeps running.
+  const probeEnv = {};
+  const probed = createLineOcrService({ resolveLaunch: () => ({ runtimePath: runtime }), env: probeEnv,
+    spawnProcess: () => { const child = fakeChild(); spawned.push({ child }); return child; } });
+  const check = probed.probe();
+  spawned.at(-1).child.stdout.emit("data", "{\"port\": 50200}\n");
+  assert.equal(await check, true);
+  assert.equal(probed.running(), false, "a probe alone does not keep the reader");
+  assert.equal(probeEnv[ENV_URL], undefined);
+  const check2 = probed.probe();
+  const wanted = probed.ensure();
+  spawned.at(-1).child.stdout.emit("data", "{\"port\": 50201}\n");
+  assert.deepEqual(await Promise.all([check2, wanted]), [true, true]);
+  assert.equal(probed.running(), true, "a touch step that asked meanwhile keeps it");
+  probed.stop();
+
+  // A failed check at launch (busy computer) does not hold back the first touch step for five minutes.
+  const slowEnv = {};
+  const slow = createLineOcrService({ resolveLaunch: () => ({ runtimePath: runtime }), env: slowEnv,
+    spawnProcess: () => { const child = fakeChild(); spawned.push({ child }); return child; } });
+  const slowCheck = slow.probe();
+  spawned.at(-1).child.exitCode = 1;
+  spawned.at(-1).child.emit("exit", 1);
+  assert.equal(await slowCheck, false);
+  const firstStep = slow.ensure();
+  spawned.at(-1).child.stdout.emit("data", "{\"port\": 50300}\n");
+  assert.equal(await firstStep, true, "the touch step starts the reader itself");
+  slow.stop();
+
+  // The Windows user name never leaves in the output, in any spelling.
+  const { withoutUserName } = require("./line-ocr-report.cjs");
+  const user = os.userInfo().username;
+  const scrubbed = withoutUserName(`File "C:\\Users\\${user}\\x.py"\nC:\\USERS\\ZHANGS~1\\AppData\\Local\\Temp\\_MEI\nD:/users/Someone/y\nname=${user.toUpperCase()}`);
+  assert.ok(!scrubbed.toLowerCase().includes(user.toLowerCase()), scrubbed);
+  assert.ok(!scrubbed.includes("ZHANGS~1") && !scrubbed.includes("Someone"), scrubbed);
+  assert.match(scrubbed, /C:\\Users\\<user>\\x\.py/u);
+
+  // The report: start-up output and what the reader's folder holds (model present and intact,
+  // onnxruntime and runtime DLLs), the system, never more than 8 KB of output.
+  const { buildLineOcrStartupReport, writeLineOcrStartupReport } = require("./line-ocr-report.cjs");
+  const appRoot = fs.mkdtempSync(path.join(os.tmpdir(), "line-ocr-report-"));
+  const internal = path.join(appRoot, "_internal");
+  fs.mkdirSync(path.join(internal, "models"), { recursive: true });
+  fs.mkdirSync(path.join(internal, "onnxruntime", "capi"), { recursive: true });
+  fs.writeFileSync(path.join(appRoot, "product-detail-server.exe"), "exe");
+  fs.writeFileSync(path.join(internal, "models", "m.onnx"), "model");
+  const sha = require("node:crypto").createHash("sha256").update("model").digest("hex");
+  fs.writeFileSync(path.join(internal, "line_ocr_model.json"), JSON.stringify({ name: "PP", file: "m.onnx", sha256: sha }));
+  fs.writeFileSync(path.join(internal, "onnxruntime", "capi", "onnxruntime.dll"), "dll");
+  fs.writeFileSync(path.join(internal, "vcruntime140.dll"), "dll");
+  fs.writeFileSync(path.join(internal, "python311.dll"), "dll");
+  const report = buildLineOcrStartupReport({ details: { kind: "exited_1" }, launch: { runtimePath: path.join(appRoot, "product-detail-server.exe") },
+    stderr: "x".repeat(9000) + "\nOSError: [WinError 126]", appVersion: "1.3.37" });
+  assert.equal(report.reason.kind, "exited_1");
+  assert.equal(report.output_tail.length, 8192);
+  assert.match(report.output_tail, /WinError 126/u);
+  assert.equal(report.files.model.sha256_matches, true);
+  assert.equal(report.files.runtime.present, true);
+  assert.deepEqual(report.files.onnxruntime, { dll: true, pybind: false, providers_shared: false });
+  assert.deepEqual(report.files.msvc, { "vcruntime140.dll": true, "vcruntime140_1.dll": false, "msvcp140.dll": false, "MSVCP140_1.dll": false });
+  assert.deepEqual(report.files.python_dlls, ["python311.dll"]);
+  fs.writeFileSync(path.join(internal, "models", "m.onnx"), "damaged");
+  assert.equal(buildLineOcrStartupReport({ launch: { runtimePath: path.join(appRoot, "product-detail-server.exe") } }).files.model.sha256_matches, false);
+  const written = writeLineOcrStartupReport(appRoot, report);
+  assert.equal(path.basename(path.dirname(written)), "failure-reports", "where the capsule collects it (flight-recorder.cjs collectReports)");
+
   // A component that has the runtime but not the model is named as such, nothing spawned.
   const before = spawned.length;
   const noModel = createLineOcrService({ resolveLaunch: () => ({ runtimePath: runtime, requiredFiles: [path.join(os.tmpdir(), "no-such-model.onnx")] }),
@@ -113,7 +196,7 @@ function fakeChild() {
   // The reasons survive the real diagnostics redaction (a key named "cause" was hashed).
   const { createDiagnosticLogger } = require("./diagnostics.cjs");
   const diag = createDiagnosticLogger({ rootDir: fs.mkdtempSync(path.join(os.tmpdir(), "line-ocr-diag-")) });
-  diag.event("active_touch", "line_ocr.unavailable", { kind: "exited_1", error_type: "ImportError", win_error: 1114, onnxruntime: true }, { level: "warn" });
+  diag.event("line_ocr", "line_ocr.unavailable", { kind: "exited_1", error_type: "ImportError", win_error: 1114, onnxruntime: true }, { level: "warn" });
   const logged = JSON.stringify(diag.readRecent(10));
   assert.match(logged, /"kind":"exited_1"/u);
   assert.match(logged, /"error_type":"ImportError"/u);
