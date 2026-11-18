@@ -115,6 +115,7 @@ const checks = [
   "src/main/development-sidecar-runtime.self_check.cjs",
   "src/main/product-detail-sidecar.self_check.cjs",
   "src/main/line-ocr-service.self_check.cjs",
+  "src/main/space-pause-hotkey.self_check.cjs",
   "src/main/product-detail-ipc.self_check.cjs",
   "src/main/product-detail-release-smoke.self_check.cjs",
   "src/main/product-detail-ai-settings.self_check.cjs",

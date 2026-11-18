@@ -1357,8 +1357,16 @@ async function checkFloatingProgress() {
     destroy() { this.destroyed = true; this.emit("closed"); }
   }
   const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-window-"));
+  // Double press of the space bar (space-pause-hotkey.cjs), driven by hand here.
+  const spaceKey = { starts: 0, stops: 0, listening: false, press: null };
+  const begunOperations = [];
   const control = registerWechatWorkflowIpc({
-    logger: { event: (...args) => diagnosticEvents.push(args) },
+    logger: { event: (...args) => diagnosticEvents.push(args), begin: (...args) => { begunOperations.push(args); return { end() {}, fail() {} }; } },
+    createSpacePauseHotkey: ({ onDoubleTap }) => {
+      spaceKey.press = onDoubleTap;
+      return { start() { if (!spaceKey.listening) { spaceKey.listening = true; spaceKey.starts += 1; } }, stop() { if (spaceKey.listening) { spaceKey.listening = false; spaceKey.stops += 1; } },
+        setSwallow(on) { spaceKey.swallow = on; }, ready: () => spaceKey.listening };
+    },
     rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
     autoSchedule: false, getAccount: () => "test-account", getMainWindow: () => mainWindow,
     executors: { interact: { prepareWorkflowTask: () => ({ payload: { maxPosts: 1 } }) } },
@@ -1404,7 +1412,27 @@ async function checkFloatingProgress() {
     control.controlSnapshot().phase);
   await invoke("show-main");
   assert.equal(windows[0].visible, true, "returning to the main page must retain progress while work is running");
+  // A running plan listens for the double space; it pauses exactly like the old "先暂停" link, tells
+  // the customer in 小玺's bubble, and the keyboard is let go once paused.
+  assert.equal(spaceKey.listening, true, "the hook runs while there is a run to pause");
+  assert.equal((await invoke("status")).state.spacePauseReady, true, "小玺 shows the space-bar hint only while the hook works");
+  assert.equal(spaceKey.swallow, Boolean(control.status().currentTaskId), "spaces typed in WeChat are only held back while a step runs");
+  spaceKey.press();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(control.status().enabled, false, "a double space pauses the run");
+  assert.equal(spaceKey.listening, false, "a paused run does not listen to the keyboard");
+  const spaceLines = windows[0].sent.filter(([channel]) => channel === "wechat-workflow:sprite-say").map(([, line]) => line.text);
+  assert.deepEqual(spaceLines.slice(-2), ["收到！做完这一步就停", "已经暂停啦"]);
+  assert.ok(diagnosticEvents.some((entry) => entry[1] === "space_pause.requested"));
+  assert.equal(begunOperations.filter(([, name]) => name === "pause").at(-1)[2].trigger_code, "space_bar", "a keyboard pause is told apart from a click in the logs");
+  assert.equal((await invoke("status")).state.spacePauseReady, false, "a paused run shows no space-bar hint");
+  spaceKey.press();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(windows[0].sent.filter(([channel]) => channel === "wechat-workflow:sprite-say").length, spaceLines.length, "a late press on a paused run does nothing");
+  await invoke("start", { clickToken: require("node:crypto").randomUUID() });
+  assert.equal(spaceKey.listening, true, "starting again listens again");
   await invoke("pause");
+  assert.equal(spaceKey.listening, false);
   await invoke("show-main");
   assert.equal(windows[0].visible, true, "小玺 stays on screen when nothing runs (user decision 2026-10-30)");
   const synced = await control.runContactSync(async () => {
@@ -1566,7 +1594,7 @@ async function checkFloatingProgress() {
   control.setExternalActivity("nurture", null);
   assert.equal(sprite.visible, true, "小玺 stays when nothing runs");
   control.say({ text: "视频做好啦～", sub: "去成片中心看看吧", mood: "done" });
-  assert.deepEqual(sprite.sent.find(([channel]) => channel === "wechat-workflow:sprite-say")[1], { text: "视频做好啦～", sub: "去成片中心看看吧", mood: "done" });
+  assert.deepEqual(sprite.sent.filter(([channel]) => channel === "wechat-workflow:sprite-say").at(-1)[1], { text: "视频做好啦～", sub: "去成片中心看看吧", mood: "done" });
   await control.dispose();
   assert.equal(screenEvents.size, 0, "screen listeners go away with the window");
   // The place is used again next time.
@@ -1788,7 +1816,7 @@ async function checkRetryAndContinueIpc() {
     assert.deepEqual(test.skippedCalls, ["both", "skip"], "a task eligible in both ways is requeued only once");
     assert.deepEqual(test.skippedSelections, [undefined, undefined], "retryAll lets the executor exclude unsafe skipped rows");
     const retryAllEvent = test.controlEvents.filter((entry) => entry.name === "task.retry_all_requested").at(-1);
-    assert.deepEqual(retryAllEvent.details, { task_count: 3, contact_count: 3, excluded_count: 0, and_start_requested: true });
+    assert.deepEqual(retryAllEvent.details, { task_count: 3, contact_count: 3, excluded_count: 0, failed_task_count: 0, and_start_requested: true });
     assert.equal(retryAllEvent.code, "retry_all_requested");
     assert.equal(result.state.enabled, true);
     assert.deepEqual(result.state.tasks.map((task) => task.status), ["pending", "pending", "pending", "needs_attention"]);
@@ -1807,7 +1835,9 @@ async function checkRetryAndContinueIpc() {
     assert.equal(result.ok, true);
     assert.equal(result.taskCount, 1);
     assert.equal(result.contactCount, 1);
-    assert.equal(result.excludedCount, 1, "one failed candidate does not stop the other items");
+    assert.equal(result.failedTaskCount, 1, "one failed candidate does not stop the other items");
+    // A task that could not be re-added is counted as a task, never as one excluded contact.
+    assert.equal(result.excludedCount, 0);
     assert.deepEqual(result.state.tasks.map((task) => task.status), ["pending", "completed", "needs_attention", "completed", "cancelled"]);
   } finally { await test.close(); }
 
