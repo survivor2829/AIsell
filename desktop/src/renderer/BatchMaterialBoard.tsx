@@ -1,18 +1,19 @@
 import { Check, Eye, Film, FolderPlus, Images, Plus, X } from "lucide-react";
 import { AssetThumb } from "./BatchAssets";
+import { FileDropZone } from "./FileDropZone";
 import type { Asset } from "./batch-studio-api";
 
-export function BatchMaterialBoard({ assets, selected, onChange, onImport, onBrowse, onPreview }: {
+export function BatchMaterialBoard({ assets, selected, onChange, onImport, onDropFiles, onBrowse, onPreview }: {
   assets: Asset[]; selected: string[]; onChange: (ids: string[]) => void;
-  onImport: (folder?: boolean) => void; onBrowse: () => void; onPreview: (asset: Asset) => void;
+  onImport: (folder?: boolean) => void; onDropFiles?: (files: File[]) => void; onBrowse: () => void; onPreview: (asset: Asset) => void;
 }) {
   const chosen = selected.map((id) => assets.find((asset) => asset.assetId === id)
     || { assetId: id, displayName: "素材暂不可用", mediaKind: "video" as const });
   const visible = chosen;
-  return <section className="batch-material-board" aria-label="选择创作素材">
+  return <FileDropZone disabled={!onDropFiles} onFiles={(files) => onDropFiles?.(files)}><section className="batch-material-board" aria-label="选择创作素材">
     <header><h2>用哪些素材？</h2><span>{selected.length ? `已选 ${selected.length} 个 · 卡片右上角可移除` : "点击图片勾选"}</span></header>
     {!visible.length ? <button type="button" className="batch-upload-empty" onClick={() => onImport()}>
-      <Images size={56} strokeWidth={1.25} aria-hidden="true" /><strong>添加视频或图片</strong><span>从电脑选择素材</span>
+      <Images size={56} strokeWidth={1.25} aria-hidden="true" /><strong>添加视频或图片</strong><span>点击选择，或直接把文件拖到这里</span>
     </button> : <div className="batch-visual-material-grid">
       {visible.map((asset) => {
         const checked = selected.includes(asset.assetId);
@@ -36,5 +37,5 @@ export function BatchMaterialBoard({ assets, selected, onChange, onImport, onBro
     <footer><button type="button" onClick={onBrowse}><Images size={15} />我的素材{assets.length > 0 ? ` · ${assets.length}` : ""}</button>
       <button type="button" onClick={() => onImport(true)}><FolderPlus size={15} />导入文件夹</button>
     </footer>
-  </section>;
+  </section></FileDropZone>;
 }

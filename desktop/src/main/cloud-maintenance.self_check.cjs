@@ -294,7 +294,7 @@ async function checkInstallFailures(rootDir, config, manifest, sign, bytes) {
       // (Permission errors keep their 位置 line for support; the disk-full message only names the drive.)
       if (["ENOSPC", "update_disk_space_insufficient"].includes(code)) assert.ok(!controller.status().error.includes(privatePath), `${code}: only the drive letter is shown`);
       assert.equal(events.length, beforeEvents + 1, "Install failures must produce one safe diagnostic");
-      assert.deepEqual(events.at(-1), ["maintenance", "update.failed", { stage: phase }, { level: "error", code, phase }]);
+      assert.deepEqual(events.at(-1), ["update", "update.failed", { stage: phase }, { level: "error", code, phase }]);
       if (phase === "helper" || phase === "prepare") assert.equal(launches, beforeLaunch, "Pre-launch failure must never launch a helper or installer");
       if (!["ENOSPC", "update_disk_space_insufficient"].includes(code)) assert.doesNotMatch(controller.status().error, /空间不足/, "Permission, busy, verification and handshake errors are not disk-full errors");
       fs.writeFileSync(installer, bytes);

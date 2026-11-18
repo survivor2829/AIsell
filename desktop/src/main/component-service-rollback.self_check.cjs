@@ -26,21 +26,41 @@ fs.writeFileSync(paths.selection, JSON.stringify({ active: newer, previous: olde
 const context = { paths, root: path.join(paths.generations, newer), installedRoot: installed };
 const decide = (code, prefix) => serviceRollbackDecision(code, prefix, context);
 
-assert.deepEqual(decide("PRODUCT_DETAIL_START_TIMEOUT", "resources/product-detail/"), { rollback: false, basis: "service_unchanged_by_update" },
-  "a timeout of a service this update did not change keeps the new version");
+// Only slow to start does not undo an update: a slow computer's first start after an update passed
+// 30 s and was rolled back, again and again (customer 8a275cd0, 2026-11-18).
+assert.deepEqual(decide("PRODUCT_DETAIL_START_TIMEOUT", "resources/product-detail/"), { rollback: false, basis: "service_slow_start" },
+  "an unchanged service that is slow never undoes the update, however often");
+for (let i = 0; i < 5; i += 1) assert.equal(decide("PRODUCT_DETAIL_START_TIMEOUT", "resources/product-detail/").rollback, false);
+assert.equal(serviceRollbackDecision("CONTENT_ENGINE_START_TIMEOUT", "resources/content-engine/", null).rollback, false,
+  "not even without version information");
+// A service the update changed that never starts (a real hang) is undone after three launches in a row;
+// a start that works in between resets the count, repeated reports in one launch count once, and the
+// count is spent on the rollback (review 2026-11-18).
+const { clearSlowStarts, resetSlowStartRun } = require("./component-paths.cjs");
+const launch = () => { resetSlowStartRun(); return decide("CONTENT_ENGINE_START_TIMEOUT", "resources/content-engine/"); };
+assert.deepEqual(launch(), { rollback: false, basis: "service_slow_start" });
+for (let i = 0; i < 4; i += 1) assert.equal(decide("CONTENT_ENGINE_START_TIMEOUT", "resources/content-engine/").rollback, false, "the same launch reporting again or retrying is not counted");
+assert.equal(launch().rollback, false);
+clearSlowStarts("resources/content-engine/", context);
+assert.equal(launch().rollback, false, "the count started again");
+assert.equal(launch().rollback, false);
+assert.deepEqual(launch(), { rollback: true, basis: "service_slow_start_repeated" },
+  "three slow launches in a row of a changed service restore the previous version");
+assert.equal(launch().rollback, false, "the same release applied again starts from zero");
+resetSlowStartRun();
 assert.deepEqual(decide("PRODUCT_DETAIL_EXITED", "resources/product-detail/"), { rollback: false, basis: "service_unchanged_by_update" });
-assert.deepEqual(decide("CONTENT_ENGINE_START_TIMEOUT", "resources/content-engine/"), { rollback: true, basis: "service_changed_by_update" },
-  "a service the update changed may be what broke: the previous version is restored");
+assert.deepEqual(decide("CONTENT_ENGINE_EXITED", "resources/content-engine/"), { rollback: true, basis: "service_changed_by_update" },
+  "a service the update changed that exits may be what broke: the previous version is restored");
 assert.deepEqual(decide("PRODUCT_DETAIL_SPAWN_FAILED", "resources/product-detail/"), { rollback: true, basis: "service_files_broken" },
   "files that cannot launch always restore the previous version");
 assert.deepEqual(decide("PRODUCT_DETAIL_RUNTIME_LINK_FAILED", "resources/product-detail/"), { rollback: true, basis: "service_files_broken" });
 assert.equal(decide("PRODUCT_DETAIL_READY_INVALID", "resources/product-detail/").rollback, false, "other failures never touched the version");
 fs.writeFileSync(paths.selection, JSON.stringify({ active: newer, previous: null }));
-assert.deepEqual(decide("PRODUCT_DETAIL_START_TIMEOUT", "resources/product-detail/"), { rollback: false, basis: "service_unchanged_by_update" },
+assert.deepEqual(decide("PRODUCT_DETAIL_EXITED", "resources/product-detail/"), { rollback: false, basis: "service_unchanged_by_update" },
   "the installed base counts as the previous version");
 fs.writeFileSync(paths.selection, JSON.stringify({ active: null, previous: null }));
-assert.equal(decide("PRODUCT_DETAIL_START_TIMEOUT", "resources/product-detail/").rollback, false, "nothing to undo on the installed version");
-assert.equal(serviceRollbackDecision("PRODUCT_DETAIL_START_TIMEOUT", "resources/product-detail/", null).rollback, true,
-  "without version information the old, cautious behaviour stays");
+assert.equal(decide("PRODUCT_DETAIL_EXITED", "resources/product-detail/").rollback, false, "nothing to undo on the installed version");
+assert.equal(serviceRollbackDecision("PRODUCT_DETAIL_EXITED", "resources/product-detail/", null).rollback, true,
+  "without version information the old, cautious behaviour stays for a service that exits");
 fs.rmSync(root, { recursive: true, force: true });
 console.log("component service rollback self-check passed: unchanged services keep the update, broken or changed ones restore the previous version");

@@ -25,6 +25,15 @@ MIN_PASSWORD, MAX_PASSWORD = 8, 64
 ADMIN_TICKET_SECONDS = 30 * 60
 DEVICE_TTL_SECONDS = 90 * 24 * 60 * 60
 FAILED_LOGIN_LIMIT, FAILED_LOGIN_WINDOW = 5, 15 * 60
+# 免费体验 (user decision 2026-11-18): one built-in account anyone can enter from the login page with
+# no password. It can look at every example but never spends 算力 (service.py refuses its paid work).
+DEMO_SUBJECT = "demo-experience"
+DEMO_LOGINS_PER_CLIENT = 30
+# The shared trial keeps at most this many computers so its device list cannot grow without bound.
+# Only computers idle for a day make room; when every place is in recent use a new trial waits,
+# so nobody can push people who are using the trial out by logging in many times (review 2026-11-18).
+DEMO_DEVICE_LIMIT = 2000
+DEMO_DEVICE_IDLE_SECONDS = 24 * 3600
 # One address can be a whole office behind one router, so it gets more room than one phone number.
 FAILED_LOGIN_CLIENT_LIMIT = 30
 
@@ -151,13 +160,56 @@ class AccountStore:
         self.db.execute("DELETE FROM account_devices WHERE account_id=?", (account_id,))
 
     @staticmethod
+    def is_demo_account(account: dict | None) -> bool:
+        return bool(account) and account.get("subject") == DEMO_SUBJECT
+
+    @staticmethod
     def public(account: dict) -> dict:
         # id is the identity the desktop keys local data on (a converted license keeps its license id).
+        demo = AccountStore.is_demo_account(account)
         return {"id": account["subject"], "phone": account["phone"] or "", "displayName": account["display_name"],
-                "mustChangePassword": bool(account["must_change_password"]),
-                "setupRequired": not account["phone"],
+                "mustChangePassword": bool(account["must_change_password"]) and not demo,
+                "setupRequired": not account["phone"] and not demo,
                 "expiresAt": account["expires_at"],
-                "isAdmin": bool(account["is_admin"])}
+                "isAdmin": bool(account["is_admin"]),
+                "demo": demo}
+
+    def is_demo(self, subject) -> bool:
+        return subject == DEMO_SUBJECT
+
+    def login_demo(self, install_id: str, client: str) -> tuple[dict, str]:
+        """免费体验: no password. Limited per client address so the endpoint cannot be hammered."""
+        with self.lock:
+            key = "demo:" + client
+            if self._throttled(key, DEMO_LOGINS_PER_CLIENT):
+                raise AccountError("login_throttled", 429)
+            self.failures.setdefault(key, []).append(time.time())
+            account = self._row("subject=?", (DEMO_SUBJECT,))
+            if account is None:
+                now = time.time()
+                self.db.execute("""INSERT INTO accounts (phone, password_hash, display_name, note, status, subject,
+                    must_change_password, limits_json, multi_device, created_at)
+                    VALUES (NULL, '', '体验账号', '登录页「免费体验」，只能看示例、不能用算力', 'active', ?, 0, '{"demo":true}', 1, ?)""",
+                    (DEMO_SUBJECT, now))
+                self.db.commit()
+                account = self._row("subject=?", (DEMO_SUBJECT,))
+            # An administrator can still switch the trial off by disabling this account.
+            account = self._usable(account)
+            now = time.time()
+            known = self.db.execute("SELECT 1 FROM account_devices WHERE account_id=? AND install_id=?",
+                                    (account["id"], install_id)).fetchone()
+            if not known:
+                self.db.execute("DELETE FROM account_devices WHERE account_id=? AND expires_at<=?", (account["id"], now))
+                count = self.db.execute("SELECT COUNT(*) FROM account_devices WHERE account_id=?", (account["id"],)).fetchone()[0]
+                if count >= DEMO_DEVICE_LIMIT:
+                    self.db.execute("""DELETE FROM account_devices WHERE id IN (SELECT id FROM account_devices
+                        WHERE account_id=? AND last_seen_at<? ORDER BY last_seen_at, id LIMIT ?)""",
+                        (account["id"], now - DEMO_DEVICE_IDLE_SECONDS, count - DEMO_DEVICE_LIMIT + 1))
+                    count = self.db.execute("SELECT COUNT(*) FROM account_devices WHERE account_id=?", (account["id"],)).fetchone()[0]
+                    if count >= DEMO_DEVICE_LIMIT:
+                        self.db.commit()
+                        raise AccountError("login_throttled", 429)
+            return account, self._bind_device(account, install_id)
 
     # ---- customer logins -------------------------------------------------------------
     def login_password(self, phone, password, install_id: str, client: str) -> tuple[dict, str]:
@@ -213,6 +265,8 @@ class AccountStore:
 
     def setup(self, subject: str, phone, password) -> dict:
         """A converted license chooses its phone and password once."""
+        if self.is_demo(subject):
+            raise AccountError("demo_account", 403)
         phone = str(phone or "").strip()
         if not PHONE.fullmatch(phone):
             raise AccountError("phone_invalid")
@@ -231,6 +285,8 @@ class AccountStore:
             return self._row("id=?", (account["id"],))
 
     def change_password(self, subject: str, current, new, keep_install: str = "") -> dict:
+        if self.is_demo(subject):
+            raise AccountError("demo_account", 403)
         problem = password_problem(new)
         if problem:
             raise AccountError(problem)

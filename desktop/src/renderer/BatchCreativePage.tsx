@@ -6,7 +6,8 @@ import "./BatchCreativePage.css";
 import { AdLawHint, BatchCreativeBrief, BatchTopicChoices, emptyCreativeBrief, expressionText } from "./BatchCreativeBrief";
 import { BatchSoundSettings } from "./BatchSoundSettings";
 import { VideoDownloadButton } from "./VideoPresentation";
-import { BatchMaterialBoard } from "./BatchMaterialBoard";
+import { BatchMaterialBoard } from "./BatchMaterialBoard";
+import { FileDropZone, hasDraggedFiles } from "./FileDropZone";
 import { CARRIED_ASSETS_WAIT, carriedAssetsAutosave, createDraftQueue, createPendingDraftSlot, discardPendingDraft, isDeterministicDraftError, restoreNotice, restorePendingDraft, retryHold, waitForDraftWrites } from "./batch-draft-queue";
 import { type RecoveryVoice, approvedVoiceIds as approvedIn } from "./batch-voice-recovery";
 import { LayoutTemplate, Clapperboard, ArrowLeft, ArrowRight, Plus } from "lucide-react";
@@ -422,6 +423,21 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
       changeGroups({ ...groups, [group]: [...new Set([...groups[group], ...ids])] }); await refreshAssets();
     });
   }
+  // Files or folders dragged in from another window (user request 2026-11-18).
+  async function importDropped(group: Group, files: File[]) {
+    if (locked || !files.length) return;
+    await run(async () => {
+      const library = window.xiaoxiContent?.library as { importDropped?: (files: File[]) => Promise<{ ok: boolean; error?: string; data?: { items: { assetId: string }[]; skippedCount?: number; unreadableFolders?: number } }> } | undefined;
+      const r = await library?.importDropped?.(files);
+      if (!r?.ok) throw new Error(r?.error || "拖进来的文件没能添加，请换用「添加文件」按钮。");
+      const ids = r.data?.items.map((a) => a.assetId) || [];
+      changeGroups({ ...groups, [group]: [...new Set([...groups[group], ...ids])] }); await refreshAssets();
+      const skipped = Number(r.data?.skippedCount || 0);
+      const folders = Number(r.data?.unreadableFolders || 0);
+      const parts = [skipped - folders > 0 ? `${skipped - folders} 个文件不是视频或图片` : "", folders ? `${folders} 个文件夹打不开` : ""].filter(Boolean);
+      if (parts.length) setNotice(`已添加 ${ids.length} 个素材；${parts.join("，")}，已跳过。`);
+    });
+  }
   const shownCandidates = [...(batch?.candidates || [])].sort((a, b) => (a.production_index || 0) - (b.production_index || 0)).slice(0, batch?.target_count || batch?.recommended_count || 3);
   const completed = shownCandidates.filter((c) => c.status === "completed").length;
   const pendingJobs = batch?.production_retry_available || (batch?.production_jobs ? batch.production_jobs.some((job) => ["queued", "processing"].includes(job.status)) : completed < (batch?.target_count || 1));
@@ -530,7 +546,7 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
       <div className="batch-start-layout">
         <div className={!total && assets.some(asset => !asset.archived && asset.availableLocationCount !== 0) ? 'batch-material-start has-library' : 'batch-material-start'}><details className="batch-collection-picker"><summary>使用素材集</summary><select aria-label="从素材集选材" value={collectionId} onChange={(event) => { const collection = collections.find((item) => item.collection_id === event.target.value); setCollectionId(event.target.value); if (collection) { changeGroups({ opening: [], middle: collection.asset_ids, ending: [] }); setBrief({ ...brief, expression: brief.expression || collection.description, script_source: brief.expression ? brief.script_source : collection.description?.trim() ? "ideas" : "provided" }); } }}><option value="">自由选材</option>{collections.map((item) => <option key={item.collection_id} value={item.collection_id}>{item.name}</option>)}</select></details>
         {!total && <div className="batch-library-preview" aria-label="从已有素材开始">{assets.filter(asset => !asset.archived && asset.availableLocationCount !== 0).slice(0, 4).map(asset => <button type="button" key={asset.assetId} onClick={() => changeGroups({ opening: [], middle: [asset.assetId], ending: [] })}><span className="batch-library-thumb"><AssetThumb asset={asset} /><span><Plus size={17} />选用</span></span><span title={asset.displayName}>{asset.displayName}</span></button>)}</div>}
-        <BatchMaterialBoard assets={assets} selected={materialIds} onChange={(ids) => changeGroups({ opening: [], middle: ids, ending: [] })} onImport={(folder) => void importTo("middle", folder)} onBrowse={() => setPicker("middle")} onPreview={setPreview} /></div>
+        <BatchMaterialBoard assets={assets} selected={materialIds} onChange={(ids) => changeGroups({ opening: [], middle: ids, ending: [] })} onImport={(folder) => void importTo("middle", folder)} onDropFiles={locked ? undefined : (files) => void importDropped("middle", files)} onBrowse={() => setPicker("middle")} onPreview={setPreview} /></div>
         <div className="batch-brief-rail"><BatchCreativeBrief value={brief} onChange={(value) => { setBrief(value); setDirty(true); }} cta={cta} onCtaChange={(value) => { setCta(value); setDirty(true); }} suggestions={batch?.brief_suggestions} />
           {suppliedScript ? <p className="batch-hint">视频时长按原文决定，不补写、不凑时长。</p> : <label className="batch-minimum-duration">最短时长（秒）<input aria-label="每条最短时长" type="number" min={30} step={1} value={settings.minimum_duration_seconds || 30} onChange={(e) => { setSettings({ ...settings, minimum_duration_seconds: Number(e.target.value) }); setDirty(true); }} /></label>}
           <p className="batch-hint" role="status">{saving ? "正在保存…" : dirty ? "修改待保存" : batch ? "草稿已保存" : "填写后自动保存"}</p>
@@ -543,7 +559,7 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
     <summary>素材与创作需求 · {total} 个素材{modern && Object.values(batch?.brief_suggestions || {}).some(Boolean) ? " · 有 AI 建议" : ""}</summary>
     <fieldset disabled={locked || (!modern && scriptFlow && !!batch?.script_confirmation)} className="batch-form">
       <div className="batch-brief"><label>素材集<select value={collectionId} onChange={(e) => { const c = collections.find((s) => s.collection_id === e.target.value); setCollectionId(e.target.value); if (c) { setTitle(c.name); setDescription(c.description); changeGroups({ opening: [], middle: c.asset_ids, ending: [] }); } setDirty(true); }}><option value="">自由选材</option>{collections.map((c) => <option value={c.collection_id} key={c.collection_id}>{c.name}</option>)}</select></label><label className="batch-title-input">创作主题<input value={title} maxLength={100} onChange={(e) => { setTitle(e.target.value); setDirty(true); }} placeholder="例如：展示产品的真实使用过程" /></label></div>
-      {scriptFlow ? <section className="batch-materials" aria-label="本批素材">
+      {scriptFlow ? <FileDropZone disabled={locked} onFiles={(files) => void importDropped("middle", files)}><section className="batch-materials" aria-label="本批素材">
         <div className="batch-toolbar"><button type="button" onClick={() => void importTo("middle")}>添加文件</button><button type="button" onClick={() => void importTo("middle", true)}>添加文件夹</button><button type="button" onClick={() => setPicker("middle")}>从我的素材选择</button><span className="batch-hint">不用区分开头、中间和结尾</span></div>
         <div className="batch-material-grid">{materialIds.map((id) => {
           const asset = assets.find((item) => item.assetId === id) || { assetId: id, displayName: "素材暂不可用", mediaKind: "video" as const };
@@ -555,7 +571,7 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
         })}</div>
         {!total && <p className="batch-empty-materials">添加产品、案例或现场画面，结合原声准备一份讲给客户听的文案。</p>}
         <label className="batch-material-context">这些素材拍的是什么？（选填）<input value={materialContext} maxLength={100} placeholder="例如：往期清洁机器人培训现场" onChange={(e) => { setMaterialContext(e.target.value); setDirty(true); }} /></label>
-      </section> : <div className="batch-groups">{(Object.keys(groupNames) as Group[]).map((group) => <section className="batch-group" key={group} onDragOver={(e) => { if (!locked) e.preventDefault(); }} onDrop={(e) => { e.preventDefault(); if (locked) return; const id = e.dataTransfer.getData("application/x-xiaoxi-asset"); if (!assets.some((a) => a.assetId === id)) return; changeGroups(Object.fromEntries((Object.keys(groupNames) as Group[]).map((g) => [g, g === group ? [...new Set([...groups[g], id])] : groups[g].filter((v) => v !== id)])) as Groups); }}>
+      </section></FileDropZone> : <div className="batch-groups">{(Object.keys(groupNames) as Group[]).map((group) => <section className="batch-group" key={group} onDragOver={(e) => { if (!locked) e.preventDefault(); }} onDrop={(e) => { e.preventDefault(); if (locked) return; if (hasDraggedFiles(e)) { void importDropped(group, Array.from(e.dataTransfer.files || [])); return; } const id = e.dataTransfer.getData("application/x-xiaoxi-asset"); if (!assets.some((a) => a.assetId === id)) return; changeGroups(Object.fromEntries((Object.keys(groupNames) as Group[]).map((g) => [g, g === group ? [...new Set([...groups[g], id])] : groups[g].filter((v) => v !== id)])) as Groups); }}>
         <header><h2>{groupNames[group]}</h2><span>{groups[group].length} 个素材</span></header>
         <p>{group === "opening" ? "先吸引注意" : group === "middle" ? "展示过程与依据" : "收束内容，引导下一步"}</p>
         <div className="batch-group-assets">{groups[group].map((id) => {

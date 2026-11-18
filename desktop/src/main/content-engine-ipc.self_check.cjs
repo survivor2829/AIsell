@@ -372,6 +372,8 @@ async function main() {
       },
       importFolder: async (folderPath, recursive) => {
         calls.push(["importFolder", folderPath, recursive]);
+        if (String(folderPath).includes("engine-gone-")) throw Object.assign(new Error("engine exited"), { code: "CONTENT_ENGINE_EXITED" });
+        if (String(folderPath).includes("unreadable-")) throw Object.assign(new Error("folder unreadable"), { code: "ASSET_SOURCE_NOT_FOUND" });
         return {
           items: [asset()],
           created_assets: 0,
@@ -873,6 +875,53 @@ async function main() {
       root,
       false
     ]);
+
+    // Dragged-in files and folders (2026-11-18): files go together, each folder recursively;
+    // anything that is not an absolute path of something that exists is refused or skipped.
+    const droppedFile = path.join(root, "dropped clip.mp4");
+    const droppedFolder = fs.mkdtempSync(path.join(root, "dropped-folder-"));
+    fs.writeFileSync(droppedFile, "video");
+    const callsBeforeDrop = calls.length;
+    const dropped = await handlers.get(CONTENT_ENGINE_CHANNELS.importPaths)(
+      {}, { paths: [droppedFile, droppedFolder, droppedFile, path.join(root, "gone.mp4")] }
+    );
+    assert.equal(dropped.ok, true);
+    assert.deepEqual(calls.slice(callsBeforeDrop).filter((call) => ["importFiles", "importFolder"].includes(call[0])), [
+      ["importFiles", [droppedFile]],
+      ["importFolder", droppedFolder, true]
+    ], "duplicates and vanished paths never reach the engine");
+    assert.ok(dropped.data.createdAssets >= 1, "the file and folder results are added up");
+    // One unreadable folder among the drop: what was imported stays imported and the folder is skipped.
+    const unreadable = fs.mkdtempSync(path.join(root, "unreadable-"));
+    const partial = await handlers.get(CONTENT_ENGINE_CHANNELS.importPaths)({}, { paths: [droppedFile, unreadable] });
+    assert.equal(partial.ok, true, "the clips already imported still reach the batch");
+    assert.equal(partial.data.items.length, 1);
+    assert.equal(partial.data.skippedCount, 1);
+    assert.equal(partial.data.unreadableFolders, 1);
+    assert.deepEqual(partial.data.skipped, [{ index: -1, reason: "folder_unreadable" }]);
+    const alone = await handlers.get(CONTENT_ENGINE_CHANNELS.importPaths)({}, { paths: [unreadable] });
+    assert.equal(alone.ok, false, "a folder dropped on its own that cannot be read says so");
+    const engineGone = fs.mkdtempSync(path.join(root, "engine-gone-"));
+    const notificationsBeforeCrash = notifications.length;
+    const crashed = await handlers.get(CONTENT_ENGINE_CHANNELS.importPaths)({}, { paths: [droppedFile, engineGone] });
+    assert.equal(crashed.ok, false, "the engine stopping is reported as that, not as an unreadable folder");
+    assert.equal(crashed.code, "CONTENT_ENGINE_EXITED");
+    notifications.splice(notificationsBeforeCrash); // the stopped-engine notice belongs to this case only
+    for (const [paths, code] of [
+      [[], "dropped_paths_empty"],
+      ["C:\\one", "dropped_paths_empty"],
+      [["relative\\clip.mp4"], "dropped_paths_invalid"],
+      [["\\\\?\\C:\\clip.mp4"], "dropped_paths_invalid"],
+      [["\\\\.\\PhysicalDrive0"], "dropped_paths_invalid"],
+      [[`${droppedFile}\u0007`], "dropped_paths_invalid"],
+      [Array.from({ length: 501 }, () => droppedFile), "dropped_paths_too_many"],
+      [[path.join(root, "nothing-here.mp4")], "dropped_paths_empty"]
+    ]) {
+      const refused = await handlers.get(CONTENT_ENGINE_CHANNELS.importPaths)({}, { paths });
+      assert.equal(refused.ok, false, JSON.stringify(paths).slice(0, 80));
+      assert.equal(refused.code, code);
+      assert.doesNotMatch(refused.error, /[A-Za-z]:\\|dropped_paths/u, "a plain message, no path or code");
+    }
 
     const archived = await handlers.get(CONTENT_ENGINE_CHANNELS.archiveAsset)(
       {},

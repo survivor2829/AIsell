@@ -78,6 +78,7 @@ export function LaunchUpdateGate({ children }: { children: ReactNode }) {
   const seconds = Math.max(0, Math.ceil((gate.retryAt - now) / 1000));
   const detail = gate.phase === "retrying"
     ? `${seconds} 秒后自动重试（第 ${gate.attempt} 次），已下载的部分会保留。`
+    : typeof (state as { detail?: unknown }).detail === "string" && (state as { detail: string }).detail ? (state as { detail: string }).detail
     : gate.phase === "installing" ? "安装完成后软件会自动重新打开，请不要关闭电脑。"
     : downloading ? downloadDetail(state.downloadedBytes || 0, state.totalBytes || 0, speed, state.downloadSlowReconnects || 0)
     : gate.phase === "checking" && !state.nextVersion ? "连不上更新服务器时会直接进入当前版本。" : "正在校验更新文件…";

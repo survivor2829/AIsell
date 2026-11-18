@@ -150,7 +150,8 @@ function createProductDetailSidecar(options = {}) {
   const getTrustedRuntimeEnvironment = typeof options.getTrustedRuntimeEnvironment === "function"
     ? options.getTrustedRuntimeEnvironment
     : () => ({});
-  const startupTimeoutMs = Math.max(1, Number(options.startupTimeoutMs) || 30_000);
+  // 90 s for the same reason as the content engine (content-engine-sidecar.cjs startupTimeoutMs).
+  const startupTimeoutMs = Math.max(1, Number(options.startupTimeoutMs) || 90_000);
   // The first Chromium launch on a slow computer, or while antivirus scans
   // it, can take well over 30 seconds (field case 2026-11-06 timed out at
   // browser_check). That stage gets its own budget; later stages start a

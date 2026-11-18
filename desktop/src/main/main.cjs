@@ -1,4 +1,9 @@
 const { app, BrowserWindow, dialog, ipcMain, nativeImage, net, Notification, powerMonitor, protocol, safeStorage, screen, session, shell, clipboard } = require("electron");
+// 免费体验 (2026-11-18): installed before any feature registers its requests. The trial flag is
+// cached and refreshed whenever the account changes (account-store onChange below).
+let trialAccountSignedIn = false;
+let notifyTrialBlocked = () => {};
+require("./demo-mode-guard.cjs").installDemoModeGuard(ipcMain, { isDemo: () => trialAccountSignedIn, onBlocked: (channel) => notifyTrialBlocked(channel) });
 if (!app.isPackaged) require("./development-dependencies.cjs").configureDevelopmentDependencies();
 const fs = require("node:fs");
 const startupTiming = global.__xiaoxiStartupTiming ||= require('./startup-timing.cjs').createStartupTiming();
@@ -537,7 +542,18 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     const licenseStore = createLicenseStore({ rootDir: runtime.rootDir, safeStorage });
     // Phone + password accounts (device token on this computer); the license stays for the transition.
     const accountStore = createAccountStore({ rootDir: runtime.rootDir, safeStorage,
-      onChange: () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("account:changed"); } });
+      onChange: (current) => {
+        trialAccountSignedIn = current?.authorized === true && current?.demo === true;
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("account:changed");
+      } });
+    try { const current = accountStore.status(); trialAccountSignedIn = current.authorized === true && current.demo === true; } catch { trialAccountSignedIn = false; }
+    // A refused action in the trial: the page shows the advisor's contact once in a while, not per click.
+    let trialPromptAt = 0;
+    notifyTrialBlocked = () => {
+      if (Date.now() - trialPromptAt < 4000 || !mainWindow || mainWindow.isDestroyed()) return;
+      trialPromptAt = Date.now();
+      mainWindow.webContents.send("account:trial-blocked");
+    };
     providerGatewayClient = createProviderGatewayClient({
       config: {
         blockPaidCalls: developmentEdition && process.env.XIAOXI_DISABLE_PAID_CALLS === '1',
@@ -783,11 +799,16 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     for (const [controller, prefix] of [[productDetailController, "resources/product-detail/"], [contentEngineController, "resources/content-engine/"]]) {
       controller.onUpdate(state => {
+        // A start that works ends a run of slow starts (three in a row undo the update).
+        if (state.state === "ready") { try { components.clearSlowStarts?.(prefix); } catch {} return; }
         if (!["failed", "unavailable"].includes(state.state)) return;
         const decision = components.serviceRollbackDecision(state.code, prefix);
         if (decision.basis === "not_a_start_failure") return;
-        logger.event("app", "service_failure_version_decision", { service_kind: prefix.split("/")[1], rollback_code: decision.basis, rollback: decision.rollback },
-          { level: "warn", code: decision.rollback ? "version_rollback_requested" : "version_kept" });
+        // The failure that decided it travels with the event; a rollback is an error, so it reaches the
+        // field reports with its cause (8a275cd0's rollbacks were only warnings without the code).
+        logger.event("app", "service_failure_version_decision", { service_kind: prefix.split("/")[1], rollback_code: decision.basis, rollback: decision.rollback,
+          failure_code: String(state.code || "").toLowerCase().slice(0, 64) },
+          { level: decision.rollback ? "error" : "warn", code: decision.rollback ? "version_rollback_requested" : "version_kept" });
         if (decision.rollback) components.invalidateVerification();
       });
     }

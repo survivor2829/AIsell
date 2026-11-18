@@ -117,6 +117,71 @@ class BillingTest(unittest.TestCase):
         self.call(PREFIX + "/billing/settle", {"jobId": "ce:video-1", "outcome": "succeeded"}, self.token)
         self.assertEqual(20_000_000 - 208_000, self.balance())
 
+    def demo_session(self, install="33333333-3333-3333-3333-333333333333"):
+        return self.call(PREFIX + "/session", {"appId": "com.aihuoke.desktop.test", "channel": "test",
+                                               "version": "1.3.40", "installId": install, "demo": True})
+
+    def test_the_trial_account_enters_without_a_password_and_never_spends(self):
+        status, session = self.demo_session()
+        self.assertEqual(200, status, session)
+        self.assertTrue(session["account"]["demo"])
+        self.assertFalse(session["account"]["setupRequired"], "the trial is never asked to choose a phone")
+        token = session["token"]
+        sent_before = len(self.sent)
+        status, refused = self.call(PREFIX + "/deepseek/chat/completions", {"model": "deepseek-v4-flash", "messages": []}, token)
+        self.assertEqual(402, status)
+        self.assertEqual("demo_account", refused["error"])
+        self.assertIn("体验账号", refused["message"])
+        self.assertEqual(sent_before, len(self.sent), "nothing reaches the paid supplier")
+        status, balance = self.call(PREFIX + "/billing/balance", token=token)
+        self.assertEqual((200, 0, True), (status, balance["balance"], balance["demo"]))
+        self.assertEqual(403, self.call(PREFIX + "/account/setup", {"phone": "13800000009", "password": "abc12345"}, token)[0])
+        self.assertEqual(403, self.call(PREFIX + "/account/password", {"currentPassword": "", "newPassword": "abc12345"}, token)[0])
+        # Many computers at once; a second computer does not sign the first out.
+        other = self.demo_session("44444444-4444-4444-4444-444444444444")[1]["token"]
+        self.assertEqual(200, self.call(PREFIX + "/capabilities", token=token)[0])
+        self.assertEqual(200, self.call(PREFIX + "/capabilities", token=other)[0])
+        # A real account is unaffected.
+        self.assertEqual(200, self.chat()[0])
+
+    def test_the_trial_keeps_a_bounded_list_of_computers_without_pushing_anyone_out(self):
+        import accounts
+        previous, accounts.DEMO_DEVICE_LIMIT = accounts.DEMO_DEVICE_LIMIT, 3
+        try:
+            store = self.server.accounts
+            tokens = []
+            for index in range(3):
+                store.failures.clear()
+                status, session = self.demo_session(f"5555555{index}-5555-5555-5555-555555555555")
+                self.assertEqual(200, status)
+                tokens.append(session["token"])
+            store.failures.clear()
+            self.assertEqual(429, self.demo_session("55555559-5555-5555-5555-555555555555")[0],
+                             "a full list of computers in use is never emptied by new logins")
+            demo = store._row("subject=?", (accounts.DEMO_SUBJECT,))
+            for token in tokens:
+                self.assertEqual(200, self.call(PREFIX + "/billing/balance", token=token)[0], "people using the trial stay signed in")
+            store.db.execute("UPDATE account_devices SET last_seen_at=last_seen_at-200000 WHERE account_id=? AND install_id=?",
+                             (demo["id"], "55555550-5555-5555-5555-555555555555"))
+            store.db.commit()
+            store.failures.clear()
+            self.assertEqual(200, self.demo_session("55555559-5555-5555-5555-555555555555")[0], "a computer idle for a day makes room")
+            count = store.db.execute("SELECT COUNT(*) FROM account_devices WHERE account_id=?", (demo["id"],)).fetchone()[0]
+            self.assertEqual(3, count)
+            store.failures.clear()
+            self.assertEqual(200, self.demo_session("55555551-5555-5555-5555-555555555555")[0], "a known computer signs in again")
+        finally:
+            accounts.DEMO_DEVICE_LIMIT = previous
+
+    def test_the_trial_is_limited_per_address_and_can_be_switched_off(self):
+        for _ in range(30):
+            self.assertEqual(200, self.demo_session()[0])
+        self.assertEqual(429, self.demo_session()[0], "the no-password door cannot be hammered")
+        self.server.accounts.failures.clear()
+        demo = next(item for item in self.call("/v1/accounts-admin/accounts", admin=ADMIN)[1]["accounts"] if item["displayName"] == "体验账号")
+        self.assertEqual(200, self.call(f"/v1/accounts-admin/accounts/{demo['id']}/status", {"status": "disabled"}, admin=ADMIN)[0])
+        self.assertEqual(403, self.demo_session()[0], "an administrator can switch the trial off")
+
     def test_a_failed_video_is_free_and_late_calls_for_it_stay_free(self):
         self.chat(job="ce:video-2")
         self.call(PREFIX + "/billing/settle", {"jobId": "ce:video-2", "outcome": "failed"}, self.token)

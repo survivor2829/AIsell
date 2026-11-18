@@ -197,3 +197,9 @@ html[data-beat="1"] .signin-line i { opacity: 0; }
 .signin-stage.is-rotating .signin-crew-timer::after { animation-play-state: running; }
 @keyframes signin-rotate { to { transform: scaleX(1); } }
 @media (prefers-reduced-motion: reduce) { .signin-crew-timer::after { animation: none; transform: scaleX(1); } }
+
+/* 免费体验: a second, lighter way in under the login button. */
+.signin-trial { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 14px; color: #6b7280; font-size: 14px; }
+.signin-trial-button { padding: 8px 14px; border: 1.5px solid var(--brand-red); border-radius: 999px; background: #fff; color: var(--brand-red); font: inherit; font-weight: 800; cursor: pointer; }
+.signin-trial-button:hover:not(:disabled) { background: #fff0f2; }
+.signin-trial-button:disabled { opacity: .6; cursor: default; }

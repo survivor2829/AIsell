@@ -549,7 +549,7 @@ test("a base file removed or altered in the installed program is reported by nam
   assert.match(controller.status().error, /信任区.*https:\/\/www\.xilianhui\.cn\/huoke\/.*覆盖安装/u);
   assert.doesNotMatch(controller.status().error, /一键修复工具/);
   assert.match(controller.status().error, /component_base_file_missing/, "the launch gate recognises this code and stops retrying");
-  const failed = logger.readRecent(50).find(entry => entry.module === "maintenance" && entry.event === "update.failed");
+  const failed = logger.readRecent(50).find(entry => entry.module === "update" && entry.event === "update.failed");
   assert.equal(failed?.code, "component_base_file_missing");
   // Only the file name passes the diagnostics allowlist (key suffix + safe identifier), never a directory.
   assert.equal(failed?.details?.base_entry_kind, "electron.exe");

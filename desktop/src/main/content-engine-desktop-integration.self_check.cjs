@@ -59,6 +59,7 @@ async function assertPreloadContract() {
     "archive",
     "chooseFiles",
     "chooseFolder",
+    "importDropped",
     "list",
     "probe",
     "probePending",

@@ -77,6 +77,13 @@ function registerAccountAuthIpc({ ipcMain, accountStore, licenseStore, gatewayCl
     await changed("logged_in");
     return status();
   });
+  ipcMain.handle("account:demo-login", async () => {
+    if (!accountMode() || typeof gatewayClient?.loginDemo !== "function") return { ...status(), authorized: false, error: "当前版本暂不支持免费体验。" };
+    const session = await gatewayClient.loginDemo();
+    if (!session.ready) return { ...status(), authorized: false, error: MESSAGES[session.code] || "暂时进不了体验，请检查网络后再试。" };
+    await changed("logged_in");
+    return status();
+  });
   ipcMain.handle("account:update", async (_event, payload) => {
     const action = payload?.action === "setup" ? "setup" : "password";
     const body = action === "setup"

@@ -212,6 +212,16 @@ function createContentEngineApi(ipcRenderer) {
       chooseFolder: (payload) => ipcRenderer.invoke("content-engine:choose-folder", {
         recursive: payload?.recursive !== false
       }),
+      // Dragged-in files and folders (user request 2026-11-18). Electron 32 no longer puts a path
+      // on File, so the preload asks webUtils for it. The page hands over the dropped File objects
+      // themselves, never path strings, so it cannot import a file the user did not drop.
+      importDropped: (files) => {
+        const { webUtils } = require("electron");
+        const paths = Array.from(files || []).slice(0, 501).map((file) => {
+          try { return webUtils.getPathForFile(file) || ""; } catch { return ""; }
+        }).filter(Boolean);
+        return ipcRenderer.invoke("content-engine:import-paths", { paths });
+      },
       probe: (payload) => ipcRenderer.invoke("content-engine:probe-asset", {
         assetId: String(payload?.assetId || "")
       }),
@@ -711,6 +721,7 @@ function createPreloadApis(ipcRenderer) {
       status: () => ipcRenderer.invoke("account:status"),
       billing: () => ipcRenderer.invoke("account:billing"),
       login: (payload) => ipcRenderer.invoke("account:login", { phone: String(payload?.phone || ""), password: String(payload?.password || "") }),
+      loginDemo: () => ipcRenderer.invoke("account:demo-login"),
       update: (payload) => ipcRenderer.invoke("account:update", {
         action: payload?.action === "setup" ? "setup" : "password",
         phone: String(payload?.phone || ""), password: String(payload?.password || ""),
@@ -732,6 +743,12 @@ function createPreloadApis(ipcRenderer) {
         const handler = () => callback();
         ipcRenderer.on("account:changed", handler);
         return () => ipcRenderer.removeListener("account:changed", handler);
+      },
+      // 免费体验: a feature was asked for in the trial; the page shows how to get a real account.
+      onTrialBlocked: (callback) => {
+        const handler = () => callback();
+        ipcRenderer.on("account:trial-blocked", handler);
+        return () => ipcRenderer.removeListener("account:trial-blocked", handler);
       }
     },
     content: createContentEngineApi(ipcRenderer),

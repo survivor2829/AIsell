@@ -18,6 +18,7 @@ const CONTENT_ENGINE_CHANNELS = Object.freeze({
   listAssets: "content-engine:list-assets",
   chooseFiles: "content-engine:choose-files",
   chooseFolder: "content-engine:choose-folder",
+  importPaths: "content-engine:import-paths",
   probeAsset: "content-engine:probe-asset",
   probePending: "content-engine:probe-pending",
   updateAssetRights: "content-engine:update-asset-rights",
@@ -250,6 +251,9 @@ const MUSIC_IMPORT_FIELDS = new Set([
 
 const PUBLIC_ERRORS = Object.freeze({
   paid_calls_disabled: "当前为禁止付费调用的验收模式，请使用已有结果查看、播放或导出。",
+  dropped_paths_empty: "拖进来的内容里没有可以添加的视频或图片。",
+  dropped_paths_too_many: "一次最多拖入 500 个文件或文件夹，请分几次拖。",
+  dropped_paths_invalid: "这个位置的文件拖不进来，请换用「添加文件」按钮。",
   ...BATCH_ERRORS,
   CONTENT_ENGINE_RUNTIME_UNAVAILABLE: "未找到可用的内容引擎，请重启应用；若仍无法使用，请通过吐槽中心反馈。",
   CONTENT_ENGINE_DATA_DIR_INVALID: "内容引擎数据目录配置无效。",
@@ -2214,6 +2218,20 @@ function registerContentEngineIpc(options = {}) {
     });
   }
 
+  function droppedPaths(value) {
+    const refuse = (code) => { throw Object.assign(new Error(code), { code }); };
+    if (!Array.isArray(value) || value.length < 1) refuse("dropped_paths_empty");
+    if (value.length > 500) refuse("dropped_paths_too_many");
+    return [...new Set(value.map((item) => {
+      const text = typeof item === "string" ? item : "";
+      // Absolute local or network paths only; never device namespaces or control characters.
+      if (!text || text.length > 32000 || /[\u0000-\u001f]/u.test(text) || !path.isAbsolute(text) || /^[\\/]{2}[?.][\\/]/u.test(text)) {
+        refuse("dropped_paths_invalid");
+      }
+      return path.normalize(text);
+    }))];
+  }
+
   function openDialog(properties, filters, title) {
     const window = getMainWindow();
     const dialogOptions = { title, properties, filters };
@@ -2298,6 +2316,48 @@ function registerContentEngineIpc(options = {}) {
       status: TASK_STATES.has(result?.status) ? result.status : null,
       hasMore: result?.has_more === true,
       processedEntries: Number(result?.processed_entries || 0)
+    };
+  });
+  // Files and folders dragged into the window (user request 2026-11-18). The renderer gets the
+  // paths from the preload (webUtils.getPathForFile, Electron 32 has no File.path); the engine
+  // still checks every file itself (absolute, a regular file, no links, a supported format).
+  handle(CONTENT_ENGINE_CHANNELS.importPaths, async (payload) => {
+    const paths = droppedPaths(payload.paths);
+    // Checked off the main thread's blocking calls: a dropped file on an offline network drive must
+    // not freeze every window while Windows waits for it.
+    const stats = await Promise.all(paths.map((value) => fs.promises.stat(value).catch(() => null)));
+    const files = [], folders = [];
+    stats.forEach((stat, index) => {
+      if (stat?.isDirectory()) folders.push(paths[index]);
+      else if (stat?.isFile()) files.push(paths[index]);
+    });
+    if (!files.length && !folders.length) throw Object.assign(new Error("dropped_paths_empty"), { code: "dropped_paths_empty" });
+    // What was imported stays imported: a folder that cannot be read is reported as skipped and the
+    // rest of the drop still reaches the batch. Skipped entries carry no index (they come from
+    // separate imports and could not point back to one dropped item).
+    const results = [], failedFolders = [];
+    if (files.length) results.push(await controller.importFiles(files));
+    for (const folder of folders) {
+      try { results.push(await controller.importFolder(folder, true)); } catch (error) {
+        // The engine itself stopping is not an unreadable folder: say what really happened.
+        if (!files.length && folders.length === 1 || /^CONTENT_ENGINE_/u.test(String(error?.code || ""))) throw error;
+        failedFolders.push(folder);
+      }
+    }
+    const skipped = [...results.flatMap((result) => Array.isArray(result?.skipped) ? result.skipped : []),
+      ...failedFolders.map(() => ({ reason: "folder_unreadable" }))];
+    return {
+      cancelled: false,
+      items: results.flatMap((result) => result?.items || []).map(publicAsset),
+      createdAssets: results.reduce((sum, result) => sum + Number(result?.created_assets || 0), 0),
+      createdLocations: results.reduce((sum, result) => sum + Number(result?.created_locations || 0), 0),
+      skippedCount: results.reduce((sum, result) => sum + Number(result?.skipped_count || 0), 0) + failedFolders.length,
+      unreadableFolders: failedFolders.length,
+      skipped: skipped.slice(0, 500).map((item) => ({
+        index: -1,
+        reason: safeText(item?.reason, 64)
+      })),
+      hasMore: results.some((result) => result?.has_more === true)
     };
   });
   handle(CONTENT_ENGINE_CHANNELS.probeAsset, async (payload) => publicAsset(
