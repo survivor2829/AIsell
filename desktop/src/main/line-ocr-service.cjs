@@ -38,6 +38,9 @@ function createLineOcrService({ resolveLaunch, spawnProcess = spawn, now = () =>
   let starting = null;
   let failedAt = 0;
   let stopping = false;
+  // probe(): a reader started only to check it works is stopped again unless a touch step asked
+  // for it meanwhile.
+  let claimed = false;
 
   function clear() {
     delete env[ENV_URL];
@@ -64,13 +67,13 @@ function createLineOcrService({ resolveLaunch, spawnProcess = spawn, now = () =>
     }
     if (!launch?.runtimePath || !fs.existsSync(launch.runtimePath)) {
       failedAt = now();
-      onEvent("unavailable", { kind: "runtime_missing" });
+      onEvent("unavailable", { kind: "runtime_missing" }, { launch, stderr: "" });
       return Promise.resolve(false);
     }
     // An older or partly updated product-detail component has the runtime but not the model.
     if ((launch.requiredFiles || []).some((file) => !fs.existsSync(file))) {
       failedAt = now();
-      onEvent("unavailable", { kind: "model_missing" });
+      onEvent("unavailable", { kind: "model_missing" }, { launch, stderr: "" });
       return Promise.resolve(false);
     }
     const token = crypto.randomBytes(24).toString("hex");
@@ -89,7 +92,9 @@ function createLineOcrService({ resolveLaunch, spawnProcess = spawn, now = () =>
           stop();
           // "kind" and "error_type" are plain codes the diagnostics log keeps readable (not WeChat
           // failure reasons: the run never depends on this reader).
-          onEvent("unavailable", { kind: reason, ...exitEvidence(stderr) });
+          // The third argument is never logged: the app keeps it for its one startup report (at
+          // that point the reader has read nothing, so its output holds no screen text).
+          onEvent("unavailable", { kind: reason, ...exitEvidence(stderr) }, { launch, stderr });
         }
         resolve(ok);
       };
@@ -155,6 +160,10 @@ function createLineOcrService({ resolveLaunch, spawnProcess = spawn, now = () =>
 
   // Resolves true when the reader is up; false (never throws) when it cannot be used now.
   function ensure() {
+    claimed = true;
+    return acquire();
+  }
+  function acquire() {
     if (child && child.exitCode === null && env[ENV_URL]) return Promise.resolve(true);
     if (starting) return starting;
     if (failedAt && now() - failedAt < RETRY_AFTER_FAILURE_MS) return Promise.resolve(false);
@@ -162,7 +171,18 @@ function createLineOcrService({ resolveLaunch, spawnProcess = spawn, now = () =>
     return starting;
   }
 
-  return { ensure, stop, running: () => Boolean(child && child.exitCode === null && env[ENV_URL]) };
+  // Checked once after launch, before anyone touches a customer: a reader that cannot start is
+  // reported at once instead of only when a touch run needs it (2026-11-18: the reason never
+  // reached the field reports because it happened outside the minute of history a capsule keeps).
+  async function probe() {
+    if (child || starting) return ensure();
+    claimed = false;
+    const ok = await acquire();
+    if (ok && !claimed) stop();
+    return ok;
+  }
+
+  return { ensure, probe, stop, running: () => Boolean(child && child.exitCode === null && env[ENV_URL]) };
 }
 
 let shared = null;

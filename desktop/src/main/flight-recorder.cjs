@@ -43,6 +43,22 @@ function collectFlight(rootDir, { at = Date.now(), windowMs = 10 * 60_000, maxSt
   return { steps: steps.reverse(), files };
 }
 
+// Reports the app writes for a failure that has no WeChat worker behind it (line-ocr-report.cjs),
+// under <root>/failure-reports: the ones written shortly before the failure go with its capsule.
+const REPORT_NAME = /^[a-z0-9][a-z0-9_.-]{0,100}.json$/;
+function collectReports(rootDir, { at = Date.now(), windowMs = 10 * 60_000, maxReports = 3, maxBytes = 256 * 1024 } = {}) {
+  const directory = path.join(rootDir, "failure-reports");
+  let names;
+  try { names = fs.readdirSync(directory); } catch { return []; }
+  return names.filter((name) => REPORT_NAME.test(name)).map((name) => {
+    try {
+      const stat = fs.statSync(path.join(directory, name));
+      return stat.isFile() && stat.size <= maxBytes && stat.mtimeMs <= at + 60_000 && at - stat.mtimeMs <= windowMs
+        ? { name: `report-${name}`, file: path.join(directory, name), at: stat.mtimeMs } : null;
+    } catch { return null; }
+  }).filter(Boolean).sort((a, b) => b.at - a.at).slice(0, maxReports).map(({ name, file }) => ({ name, file }));
+}
+
 // The passport written for the same task failure: real screen, raw reading, expectation.
 function collectPassports(rootDir, { at = Date.now(), windowMs = 10 * 60_000, maxSets = 2 } = {}) {
   const root = path.join(rootDir, "task-passports");
@@ -95,4 +111,4 @@ function captureFailureScreen(reason, { spawnProcess = require("node:child_proce
   });
 }
 
-module.exports = { collectFlight, collectPassports, flightDirectory, stampTime, hasRecentFailureScreen, captureFailureScreen };
+module.exports = { collectFlight, collectPassports, collectReports, flightDirectory, stampTime, hasRecentFailureScreen, captureFailureScreen };

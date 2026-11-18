@@ -227,6 +227,26 @@ function flightStep(root, ms, seq, step, { image, note = {}, lossless = false } 
   fs.writeFileSync(path.join(dir, `${name}.json`), JSON.stringify(meta));
 }
 
+// A report the app writes for a failure with no WeChat worker behind it (the chat-title reader that
+// cannot start, line-ocr-report.cjs) goes with that capsule, without the profile path; an old one does not.
+async function appReportTravelsWithItsFailure() {
+  const t = fixture("report");
+  const reports = path.join(t.root, "failure-reports");
+  fs.mkdirSync(reports, { recursive: true });
+  fs.writeFileSync(path.join(reports, "line-ocr-startup.json"), JSON.stringify({ output_tail: `ImportError at ${path.join(t.root, "x.pyd")}` }));
+  const stale = path.join(reports, "older.json");
+  fs.writeFileSync(stale, "{}");
+  const old = new Date(Date.now() - 60 * 60_000);
+  fs.utimesSync(stale, old, old);
+  const id = t.capsules.record({ source: "log", module: "line_ocr", code: "line_ocr_exited_1", at: Date.now() });
+  const [capsule] = t.files();
+  assert.deepEqual(capsule.attachments, ["report-line-ocr-startup.json"]);
+  const copied = fs.readFileSync(path.join(t.capsules.directory, id, "report-line-ocr-startup.json"), "utf8");
+  assert.match(copied, /ImportError/u);
+  assert.ok(!copied.includes(JSON.stringify(t.root).slice(1, -1)), "the report carries no profile path");
+  t.capsules.stop();
+}
+
 async function flightRecordAndPassportTravelWithTheFailure() {
   const t = fixture("flight");
   t.setEnabled(false);
@@ -453,6 +473,7 @@ async function earlyTouchPauseFilesItsOwnCapsule() {
   await dailyLimitStopsAFailureLoop();
   await serviceOutputTravelsWithItsFailure();
   await flightRecordAndPassportTravelWithTheFailure();
+  await appReportTravelsWithItsFailure();
   await passportWrittenAfterTheFailureStillTravels();
   await aDayCapsuleWithoutEvidenceTakesALaterOccurrence();
   await aNewVersionTakesItsOwnEvidence();

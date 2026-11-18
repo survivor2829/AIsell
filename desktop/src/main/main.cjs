@@ -112,6 +112,7 @@ const {
 let mainWindow = null;
 let disarmRealSend = null;
 let touchTaskController = null;
+let lineOcrStartupReported = false;
 let autoReplyController = null;
 let workflowController = null;
 // 小玺's feeds from the features that do not report to it themselves.
@@ -1005,10 +1006,25 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       resolveLaunch: () => app.isPackaged
         ? { runtimePath: productDetailRuntimePath(), runtimeArgs: [], requiredFiles: lineOcrModelFiles(productDetailRuntimePath()) }
         : { runtimePath: productDetailRuntimePath(), runtimeArgs: developmentProductDetailLaunch?.runtimeArgs || [] },
-      onEvent: (event, details) => {
-        try { diagnostics().event("active_touch", `line_ocr.${event}`, details, { level: event === "unavailable" ? "warn" : "info", ...(details?.kind ? { code: `line_ocr_${details.kind}` } : {}) }); } catch { /* never blocks */ }
+      onEvent: (event, details, local) => {
+        // The first failure of a run is an error with a full report attached to its capsule (the
+        // reader's own start-up output and what its folder holds); repeats only count as warnings.
+        const firstFailure = event === "unavailable" && !lineOcrStartupReported;
+        if (firstFailure) {
+          lineOcrStartupReported = true;
+          try {
+            const report = require("./line-ocr-report.cjs");
+            report.writeLineOcrStartupReport(runtime.rootDir, report.buildLineOcrStartupReport({
+              details, launch: local?.launch, stderr: local?.stderr, appVersion: components.businessVersion(app) }));
+          } catch { /* the event below still goes out */ }
+        }
+        // Its own module: not a WeChat failure, so no desktop screenshot is taken for it.
+        try { diagnostics().event("line_ocr", `line_ocr.${event}`, details, { level: firstFailure ? "error" : event === "unavailable" ? "warn" : "info", ...(details?.kind ? { code: `line_ocr_${details.kind}` } : {}) }); } catch { /* never blocks */ }
       }
     });
+    // Checked once soon after launch, so a reader that cannot start is reported even before any
+    // touch run (and the customer never has to do anything for it).
+    if (app.isPackaged) setTimeout(() => { require("./line-ocr-service.cjs").lineOcrService()?.probe().catch(() => {}); }, 45_000).unref?.();
     touchTaskController = registerTouchTaskIpc({
       getMainWindow: () => mainWindow,
       dataDir: runtime.activeTouchDir,
