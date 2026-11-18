@@ -1200,7 +1200,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
             // A download that kept failing is a real reason a computer cannot update: report it with the cause.
             if (reason === "download_failing") {
               const now = cloudMaintenance.status();
-              logger.event("update", "update.download_retry_limit", { stage: String(now.stage || ""), next_version: String(now.nextVersion || "").slice(0, 20),
+              logger.event("update", "update.download_retry_limit", { next_version: String(now.nextVersion || "").slice(0, 20),
                 failure_code: String(now.errorCode || "").slice(0, 64), downloaded_bytes: Number(now.downloadedBytes) || 0, total_bytes: Number(now.totalBytes) || 0,
                 slow_reconnects: Number(now.downloadSlowReconnects) || 0, elapsed_ms: gate?.elapsedMs, total: gate?.attempts },
                 { level: "error", code: "update_download_retry_limit" });

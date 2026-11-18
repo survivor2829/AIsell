@@ -97,6 +97,26 @@ function harness(controller, { request } = {}) {
     assert.deepEqual(run.sleeps, [2000, 4000, 120000, 240000, 480000], "background retries start at 2 minutes and double");
     assert.equal(controller.status().stage, "ready");
   }
+  // 3c. 签名不对这类重试修不好的失败：不当成「网络不稳」提前放行（review 2026-11-18）
+  {
+    const bad = Array.from({ length: 4 }, () => ({ stage: "error", nextVersion: "1.2.14", error: "更新签名校验失败", errorCode: "cloud_signature_invalid" }));
+    const controller = fakeController([...bad, { stage: "current" }]);
+    const run = harness(controller);
+    await run.gate.start();
+    assert.deepEqual(run.opened, ["current"], "a bad package is never reported as a slow download");
+  }
+  // 3d. 下载卡住不动（连接开着但没有数据）：每次算一次失败，三次后放行；中间下好过一次就重新计数
+  {
+    const controller = fakeController([{ hang: true }, { hang: true }, { hang: true }, { stage: "ready", nextVersion: "1.2.14" }]);
+    const opened = [];
+    let clock = 0;
+    const gate = createLaunchGate({ controller, request: async () => controller.status(), setHold() {}, onOpen: reason => opened.push(reason),
+      checkTimeoutMs: 0, stallMs: 50, stallPollMs: 5, now: () => (clock += 20), sleep: async () => {} });
+    controller.notify({ nextVersion: "1.2.14" });
+    const keepAlive = setInterval(() => {}, 1000); // the stall watch is unref’d, as in the app
+    try { await gate.start(); } finally { clearInterval(keepAlive); }
+    assert.deepEqual(opened, ["download_failing"], "a download that never moves lets the customer in");
+  }
   // 4. 安装助手没能启动：回到重试，不放行
   {
     const controller = fakeController([{ stage: "ready", nextVersion: "1.2.14" }, { stage: "ready", nextVersion: "1.2.14" }]);

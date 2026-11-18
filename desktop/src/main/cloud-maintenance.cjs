@@ -124,7 +124,9 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
   // A detail line belongs to the stage that set it: a new stage clears it unless it brings its own.
   function notify(patch = {}) {
     const stageChanged = patch.stage && patch.stage !== view.stage && !Object.hasOwn(patch, "detail");
-    view = { ...view, ...(stageChanged ? { detail: "", ...(Object.hasOwn(patch, "errorCode") ? {} : { errorCode: "" }) } : {}), ...patch };
+    // The failure code belongs to the error stage only.
+    const codeStale = patch.stage && patch.stage !== "error" && !Object.hasOwn(patch, "errorCode");
+    view = { ...view, ...(stageChanged ? { detail: "" } : {}), ...(codeStale ? { errorCode: "" } : {}), ...patch };
     for (const listener of listeners) { try { listener(status()); } catch {} }
   }
   function fullDownloadPaths(manifest) {
@@ -483,7 +485,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
         level: "error", code: failure.code, phase: failure.phase
       }); } catch {}
       // A full disk at install time (backup space, ENOSPC) gets the same message, so the launch gate lets the customer in.
-      notify({ stage: "error", error: DISK_FULL_CODES.includes(failure.code) ? diskFullMessage(error) : formatUpdateFailure(failure) });
+      notify({ stage: "error", error: DISK_FULL_CODES.includes(failure.code) ? diskFullMessage(error) : formatUpdateFailure(failure), errorCode: failure.code });
       return false;
     }
     finally { updateLaunching = false; }

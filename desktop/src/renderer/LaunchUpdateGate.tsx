@@ -60,13 +60,16 @@ export function LaunchUpdateGate({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!notice && gate?.phase === "open" && (gate.reason === "base_damaged" || gate.reason === "disk_full") && state?.error) setNotice({ text: state.error, closed: false });
     // 2026-11-18: the download kept breaking; the customer works on the current version meanwhile.
-    if (!notice && gate?.phase === "open" && gate.reason === "download_failing") setNotice({ title: "新版还在后台下载", text: `网络不太稳，新版${state?.nextVersion ? ` ${state.nextVersion} ` : ""}还没下完。先用当前版本，更新会在后台继续下载，已下好的部分不会丢，下完后会在你不用电脑时自动装好。`, closed: false });
+    if (!notice && gate?.phase === "open" && gate.reason === "download_failing") setNotice({ text: "", closed: false });
   }, [notice, gate?.phase, gate?.reason, state?.error]);
   if (open && notice && !notice.closed) return <>
     {children}
     <aside className="launch-update-notice" role="alert">
-      <strong>{notice.title || "暂时无法自动更新"}</strong>
-      <p>{notice.text}</p>
+      {gate?.reason === "download_failing"
+        // Follows the background download: the version once known, and 「已下好」 when it is ready.
+        ? state?.stage === "ready" ? <><strong>新版已经下好</strong><p>新版{state.nextVersion ? ` ${state.nextVersion} ` : ""}会在你不用电脑时自动装好。</p></>
+          : <><strong>新版还在后台下载</strong><p>网络不太稳，新版{state?.nextVersion ? ` ${state.nextVersion} ` : ""}还没下完。先用当前版本，更新会在后台继续下载，已下好的部分不会丢，下完后会在你不用电脑时自动装好。</p></>
+        : <><strong>{notice.title || "暂时无法自动更新"}</strong><p>{notice.text}</p></>}
       <button type="button" onClick={() => setNotice({ ...notice, closed: true })}>知道了</button>
     </aside>
   </>;
