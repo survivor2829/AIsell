@@ -34,14 +34,15 @@ assert.equal(detect("d x"), false);
 // The hook ignores injected keys (the automation's own), only reads the space bar and swallows it
 // only while WeChat is in front.
 assert.match(HOOK_CSHARP, /\(flags & 0x10u\) == 0/u);
-assert.match(HOOK_CSHARP, /if \(WechatInFront\(\)\) return new IntPtr\(1\);/u);
+assert.match(HOOK_CSHARP, /if \(swallow && WechatInFront\(\)\) return new IntPtr\(1\);/u);
 assert.doesNotMatch(HOOK_CSHARP, /Post\([^)]*vk/u, "no key code ever leaves the hook");
 
 function fakeChild() {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
   child.exitCode = null;
-  child.stdin = { end() { child.exitCode = 0; child.emit("exit", 0); } };
+  child.written = [];
+  child.stdin = { write(text) { child.written.push(text); }, end() { child.exitCode = 0; child.emit("exit", 0); } };
   child.kill = () => { child.exitCode = 1; child.emit("exit", 1); };
   return child;
 }
@@ -65,6 +66,14 @@ assert.equal(spawned[0].options.windowsHide, true);
 spawned[0].child.stdout.emit("data", "ready\r\nd 10");
 spawned[0].child.stdout.emit("data", "00\r\nd 1200\r\n");
 assert.equal(taps, 1, "lines split across chunks still count");
+// Spaces in WeChat are held back only while a step runs; the setting reaches the hook once it is up
+// and on every change.
+assert.deepEqual(spawned[0].child.written, ["s0\n"]);
+assert.equal(hotkey.ready(), true);
+hotkey.setSwallow(true);
+hotkey.setSwallow(true);
+hotkey.setSwallow(false);
+assert.deepEqual(spawned[0].child.written, ["s0\n", "s1\n", "s0\n"]);
 assert.deepEqual(events[0], { event: "ready" });
 
 // Stopped with the run: the pipe closes, nothing reported as a failure, it can start again at once.

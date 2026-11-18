@@ -7,8 +7,9 @@
 //   ignored, and messages are pasted, never typed, so a run cannot pause itself.
 // - Any other key, or Ctrl/Alt/Shift/Win held, cancels the count: two spaces typed in a sentence or the
 //   Ctrl+Space / Shift+Space input-method switches never pause.
-// - While WeChat is in front the space is swallowed, so it can never land in a draft being sent;
-//   every other program keeps its space bar.
+// - While a WeChat step is being carried out and WeChat is in front, the space is swallowed so it can
+//   never land in a draft being sent. Between steps (auto-reply listening, waiting for the next task)
+//   the customer may chat by hand, so nothing is swallowed then; every other program always keeps it.
 // The hook only exists while a run can be paused and records no key other than the space bar.
 const { spawn } = require("node:child_process");
 
@@ -44,6 +45,7 @@ public static class XiaoxiSpacePause {
   private static readonly HashSet<string> wechatNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Weixin", "WeChat", "WeChatAppEx" };
   private static IntPtr hook = IntPtr.Zero, lastWindow = IntPtr.Zero;
   private static bool lastWechat, spaceDown;
+  private static volatile bool swallow;
   private static uint hookThread;
   private static int hookError;
 
@@ -73,7 +75,7 @@ public static class XiaoxiSpacePause {
             bool modified = Held(0x11) || Held(0x12) || Held(0x10) || Held(0x5B) || Held(0x5C);
             Post((modified ? "o " : "d ") + time);
           } else if (up) spaceDown = false;
-          if (WechatInFront()) return new IntPtr(1);
+          if (swallow && WechatInFront()) return new IntPtr(1);
         } else if (down) {
           Post("o " + time);
         }
@@ -100,8 +102,12 @@ public static class XiaoxiSpacePause {
     var output = Console.Out;
     if (hook == IntPtr.Zero) { output.WriteLine("failed " + hookError); output.Flush(); return; }
     output.WriteLine("ready"); output.Flush();
-    // Ends with the desktop app: it closes this pipe when the run stops or the app exits.
-    var parent = new Thread(delegate () { try { Console.In.ReadToEnd(); } catch { } events.CompleteAdding(); });
+    // "s1"/"s0" from the desktop app turn swallowing on and off; it closes this pipe when the run stops
+    // or the app exits, and the hook ends with it.
+    var parent = new Thread(delegate () {
+      try { string command; while ((command = Console.In.ReadLine()) != null) { if (command == "s1") swallow = true; else if (command == "s0") swallow = false; } } catch { }
+      events.CompleteAdding();
+    });
     parent.IsBackground = true;
     parent.Start();
     foreach (string line in events.GetConsumingEnumerable()) { output.WriteLine(line); output.Flush(); }
@@ -137,9 +143,12 @@ function createDoubleTapDetector({ windowMs = DOUBLE_TAP_MS } = {}) {
 function createSpacePauseHotkey({ onDoubleTap = () => {}, onEvent = () => {}, spawnProcess = spawn, platform = process.platform, now = () => Date.now() } = {}) {
   let child = null;
   let failedAt = 0;
+  let ready = false;
+  let swallowing = false;
+  const send = () => { try { child?.stdin.write(swallowing ? "s1\n" : "s0\n"); } catch { /* closing */ } };
 
   function failed(process_, kind, details = {}) {
-    if (child === process_) child = null;
+    if (child === process_) { child = null; ready = false; }
     failedAt = now();
     onEvent("unavailable", { kind, ...details });
   }
@@ -165,7 +174,7 @@ function createSpacePauseHotkey({ onDoubleTap = () => {}, onEvent = () => {}, sp
       while ((end = buffered.indexOf("\n")) >= 0) {
         const line = buffered.slice(0, end).trim();
         buffered = buffered.slice(end + 1);
-        if (line === "ready") onEvent("ready", {});
+        if (line === "ready") { if (child === process_) { ready = true; send(); } onEvent("ready", {}); }
         else if (line.startsWith("failed")) failed(process_, "hook_failed", { win_error: Number(line.split(" ")[1]) || 0 });
         else if (child === process_ && detect(line)) onDoubleTap();
       }
@@ -181,13 +190,21 @@ function createSpacePauseHotkey({ onDoubleTap = () => {}, onEvent = () => {}, sp
   function stop() {
     const running = child;
     child = null;
+    ready = false;
     if (!running) return;
     try { running.stdin.end(); } catch { /* already closed */ }
     const timer = setTimeout(() => { if (running.exitCode === null) { try { running.kill(); } catch { /* gone */ } } }, 2000);
     timer.unref?.();
   }
 
-  return { start, stop, running: () => Boolean(child) };
+  // Swallow spaces in WeChat only while a step is being carried out (see the top of this file).
+  function setSwallow(on) {
+    if (swallowing === Boolean(on)) return;
+    swallowing = Boolean(on);
+    if (ready) send();
+  }
+
+  return { start, stop, setSwallow, running: () => Boolean(child), ready: () => Boolean(child) && ready };
 }
 
 module.exports = { createSpacePauseHotkey, createDoubleTapDetector, DOUBLE_TAP_MS, HOOK_CSHARP };

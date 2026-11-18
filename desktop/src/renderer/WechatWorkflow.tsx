@@ -90,6 +90,8 @@ export type WorkflowState = {
   replyEnrollAmbiguousCount?: number;
   classificationQuality?: { buildVersion: string; buildId: string; buildCommit: string; threshold: number; unknownPauseCount: number; unknownReasonCodes: string[]; affectedTaskCount: number; status: "ok" | "needs_review" };
   contactSync?: { running: boolean; stage: string; contactCount: number; error: string } | null;
+  /** The double-space hook is up (space-pause-hotkey.cjs); without it 小玺 shows the 先暂停 link. */
+  spacePauseReady?: boolean;
   momentsProgress?: { stage: string; scanned: number; scrolled: number; liked: number; commented: number; skipped?: number; alreadyLiked?: number; skipReason?: string } | null;
   // Automation running outside the app in Chrome (养号, 一键分发), shown by 小玺 as well.
   external?: Array<{ kind: string; title: string; detail?: string; done?: number; total?: number; attention?: boolean }>;
@@ -488,13 +490,18 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
 
   // Contacts skipped as not found / not recognised under unchanged logic would fail the same way.
   const unchangedNote = (count: number) => count > 0 ? `，${count} 位上次搜不到或认不准、判断方式没变，重试结果也一样，没有重复加入` : "";
+  // Contacts left out for safety (not the unchanged-logic ones, said apart) and whole tasks that could not be re-added.
+  const leftOutNote = (excludedCount: unknown, unchanged: number, failedTasks: unknown = 0) => {
+    const excluded = Math.max(0, Number(excludedCount || 0) - unchanged);
+    const failed = Number(failedTasks || 0);
+    return `${excluded > 0 ? `，另有 ${excluded} 位因安全原因未加入` : ""}${failed > 0 ? `，${failed} 项任务这次没能重新加入` : ""}`;
+  };
   const retrySkipped = async (task: WorkflowTask, contactIds?: string[], andStart = false) => {
     if (!api) return;
     const result = await run(() => api.retrySkipped(task.id, contactIds, andStart));
     if (result?.ok) {
       const unchanged = Number(result.excludedReasons?.retry_skipped_identity_unchanged || 0);
-      const excluded = Number(result.excludedCount || 0) - unchanged;
-      setNotice(`已重新加入 ${Number(result.retriedCount || 0)} 位联系人${unchangedNote(unchanged)}${excluded > 0 ? `，另有 ${excluded} 位因安全原因未加入` : ""}${andStart ? "并继续。" : "；点击启动程序后一次补跑。"}`);
+      setNotice(`已重新加入 ${Number(result.retriedCount || 0)} 位联系人${unchangedNote(unchanged)}${leftOutNote(result.excludedCount, unchanged)}${andStart ? "并继续。" : "；点击启动程序后一次补跑。"}`);
     }
   };
 
@@ -503,8 +510,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
     const result = await run(() => api.retryAllAndStart());
     if (!result?.ok) return;
     const unchanged = Number(result.unchangedCount || 0);
-    const excluded = Math.max(0, Number(result.excludedCount || 0) - unchanged);
-    setNotice(`已重新加入 ${Number(result.contactCount || 0)} 位联系人、${Number(result.taskCount || 0)} 项任务并继续${unchangedNote(unchanged)}${excluded > 0 ? `，另有 ${excluded} 位因安全原因未加入` : ""}。`);
+    setNotice(`已重新加入 ${Number(result.contactCount || 0)} 位联系人、${Number(result.taskCount || 0)} 项任务并继续${unchangedNote(unchanged)}${leftOutNote(result.excludedCount, unchanged, result.failedTaskCount)}。`);
   };
   // What "全部重试" really re-adds (the main process applies the same test, wechat-workflow.cjs
   // retryAllEligible): a contact not recognised under the identity logic still in use would fail
@@ -864,7 +870,8 @@ export function FloatingWorkflowWindow() {
     detail: moments && current ? `已赞 ${moments.liked} · 已评 ${moments.commented}`
       : executionDetail || (state.waitingTaskId ? waitingDetail : "") || (current && current.title !== TASK_LABELS[current.type] ? current.title : ""),
     ...(!sync && state.phase !== "replying" && displayed && displayed.progress?.total > 0 ? { done: displayed.progress.done, total: displayed.progress.total } : {}),
-    pausable: state.enabled && state.phase !== "pausing"
+    pausable: state.enabled && state.phase !== "pausing",
+    spacePause: state.spacePauseReady === true
   } : outside ? { ...outside } : null;
   const alert = error || state.error || sync?.error || state.replyError || (!wechatActive && outside?.attention ? outside.detail || "" : "");
   return <XiaoxiSprite workflow={workflow} activity={activity} alert={alert} />;
