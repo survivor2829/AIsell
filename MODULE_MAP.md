@@ -50,7 +50,7 @@
 | `desktop/src/main/sprite-activity.cjs`、`sprite-feeds.cjs` | 各功能进度翻译成桌宠的话；`SPRITE_FEATURES` 是功能登记表，新增长耗时功能必须在此登记，`sprite-activity.self_check.cjs` 会扫描主进程消息防漏接 |
 | `desktop/src/main/space-pause-hotkey.cjs` | 微信拓客运行中「双击空格暂停」：只在可暂停时开一个低级键盘钩子进程，只认真人按的空格（忽略程序模拟按键、组合键、夹着别的键），微信在前台时吞掉空格防止写进草稿；触发后走与原暂停相同的 `pause()` | 记录按键内容；在没有任务运行时监听键盘；绕过「做完当前一步再停」直接杀发送进程 |
 | `server/provider-gateway/accounts.py`、`renderer/AccountManagementPage.tsx`、`main/account-auth-ipc.cjs` | 账号的通用/一台电脑、按电脑记录登录和软件内账号管理；管理票据只在主进程，服务器每次校验管理员 | 在软件内授予管理员或修改其他管理员；在软件内充值；把手机号写入源码或日志 |
-| `desktop/src/main/demo-mode-guard.cjs`、`renderer/TrialBanner.tsx`、`LoginScreen.tsx`（免费体验） | 共享体验账号（网关 `accounts.py` 的 `demo-experience`，付费请求一律 402）：主进程包住 `ipcMain.handle/on`，功能区只放行读取类请求、含动作词的拦下并只在真正使用功能时弹顾问卡；每页顶部体验提示条 | 在渲染层判断能不能用；让体验账号设密码或花算力；把打开平台浏览器/发消息/操作手机当成读取 |
+| `desktop/src/main/demo-mode-guard.cjs`、`demo-mode-channels.cjs`、`scripts/trial-channel-scan.cjs`、`renderer/TrialBanner.tsx`、`LoginScreen.tsx`（免费体验） | 共享体验账号（网关 `accounts.py` 的 `demo-experience`，付费请求一律 402）：主进程包住 `ipcMain.handle/on`，每个请求名在 `demo-mode-channels.cjs` 登记为放行 / 安静拒绝 / 拒绝并弹顾问卡，扫描器找出全部请求名、自检要求都已登记；每页顶部体验提示条 | 按请求名里的词猜能不能用；新增请求不登记；让体验账号设密码或花算力；把打开平台浏览器/发消息/操作手机当成读取 |
 | `server/wx-share-signer/` | 官网微信分享卡片 JS-SDK 签名：只签 `www.xilianhui.cn/huoke` 地址，缓存 access_token/jsapi_ticket；部署在官网服务器容器 `aihuoke-wx-signer` | 把 AppSecret 写进代码、页面或日志；为别的网站签名 |
 | `desktop/src/main/bootstrap.cjs`、`src/shared/launcher-contract.cjs` | 固定启动器信任核：选择、签名与JSON清单核验、单实例、启动尝试及干净进程回退 | 下载、备份和业务功能进入固定核；启动时全树读取文件内容 |
 | `desktop/src/main/updater-bootstrap.cjs`、`component-*`、`update-*`、`download-verification.cjs` | 可增量更新器：准备回执、一次下载摘要、结构检查、助手、备份与已有保留器；assets保留静态媒体原路径 | 将prepared当作健康ACK；按版本较新清除未知备份；把媒体混入界面包 |
