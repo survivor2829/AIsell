@@ -13,9 +13,10 @@ const patterns = [
 ];
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 // These literals are not WeChat failure policies: lifecycle states, a successful
-// scheduler event, the fail-closed sentinel, and update-maintenance states.
+// scheduler event, the fail-closed sentinel, update-maintenance states, and a dropped folder the
+// content library could not read (content-engine-ipc.cjs, not WeChat).
 const nonFailureReasonLiterals = new Set(["failed", "finite_tasks_drained", "idle", "invalid_unclassified_reason",
-  "startup_or_data_confirmation_missing", "parent_still_running", "retention_result_missing"]);
+  "startup_or_data_confirmation_missing", "parent_still_running", "retention_result_missing", "folder_unreadable"]);
 
 function literalsOn(lines) {
   const found = new Set();
