@@ -21,36 +21,43 @@ function workbenchAction(args) {
   return typeof first === "string" ? first : first && typeof first === "object" ? String(first.action || "") : "";
 }
 
-// "pass" | "quiet" (refused without the advisor's card) | "action" (refused with it).
-function trialDecision(channel, ...args) {
+// Where a request name stands: "open" (never limited), "workbench", "read", "quiet", "action", or
+// "unclassified" (a feature request nobody classified). The self-check uses this same function.
+function classify(channel) {
   const text = String(channel || "");
   const colon = text.indexOf(":");
-  if (colon < 0 || OPEN_AREAS.has(text.slice(0, colon))) return "pass";
-  if (text.endsWith(":invoke")) return WORKBENCH_READS.has(workbenchAction(args)) ? "pass" : "action";
-  if (READS.has(text)) return "pass";
+  if (colon < 0 || OPEN_AREAS.has(text.slice(0, colon))) return "open";
+  if (text.endsWith(":invoke")) return "workbench";
+  if (READS.has(text)) return "read";
+  if (QUIET.has(text)) return "quiet";
   if (ACTIONS.has(text)) return "action";
-  return "quiet";
+  return "unclassified";
+}
+
+// Turning phone polling or a screen off is stopping, and stopping is never refused.
+const STOPS_WITH_ON_FALSE = new Set(["phone-matrix:checkPhones", "phone-matrix:watch"]);
+
+// "pass" | "quiet" (refused without the advisor's card) | "action" (refused with it).
+function trialDecision(channel, ...args) {
+  const kind = classify(channel);
+  if (kind === "open" || kind === "read") return "pass";
+  if (kind === "workbench") return WORKBENCH_READS.has(workbenchAction(args)) ? "pass" : "action";
+  if (STOPS_WITH_ON_FALSE.has(String(channel)) && args[0] && typeof args[0] === "object" && args[0].on === false) return "pass";
+  return kind === "action" ? "action" : "quiet";
 }
 
 function blocksInTrial(channel, ...args) { return trialDecision(channel, ...args) !== "pass"; }
 function promptsAdvisor(channel, ...args) { return trialDecision(channel, ...args) === "action"; }
 
 // Wraps ipcMain once, before any feature registers. isDemo is read on every call, so signing in or
-// out of the trial takes effect at once.
-// A feature request nobody classified (the source scan missed it): reported once, refused quietly.
-function unclassified(channel) {
-  const text = String(channel || "");
-  const colon = text.indexOf(":");
-  return colon > 0 && !OPEN_AREAS.has(text.slice(0, colon)) && !text.endsWith(":invoke")
-    && !READS.has(text) && !QUIET.has(text) && !ACTIONS.has(text);
-}
-
+// out of the trial takes effect at once. A feature request nobody classified (the source scan
+// missed it) is reported once when it registers and refused quietly.
 function installDemoModeGuard(ipcMain, { isDemo = () => false, onBlocked = () => {}, onUnclassified = () => {} } = {}) {
   if (ipcMain.__xiaoxiDemoGuard) return;
   ipcMain.__xiaoxiDemoGuard = true;
   const reported = new Set();
   const registering = (channel) => {
-    if (!unclassified(channel) || reported.has(channel)) return;
+    if (classify(channel) !== "unclassified" || reported.has(channel)) return;
     reported.add(channel);
     try { onUnclassified(String(channel)); } catch { /* reporting never stops a feature from registering */ }
   };
@@ -94,4 +101,4 @@ function installDemoModeGuard(ipcMain, { isDemo = () => false, onBlocked = () =>
   }
 }
 
-module.exports = { installDemoModeGuard, blocksInTrial, promptsAdvisor, trialDecision, OPEN_AREAS, DEMO_TEXT };
+module.exports = { installDemoModeGuard, blocksInTrial, promptsAdvisor, trialDecision, classify, OPEN_AREAS, DEMO_TEXT };

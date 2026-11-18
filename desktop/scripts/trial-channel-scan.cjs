@@ -10,6 +10,8 @@ const MAIN = path.join(__dirname, "..", "src", "main");
 const CHANNEL = /["'`]([a-z][a-z0-9-]*):([a-zA-Z][a-zA-Z0-9-]*)["'`]/g;
 // Strings shaped like "a:b" that are not requests (module specifiers, page addresses).
 const NOT_REQUESTS = /^(node|about):/;
+// The first argument of a registration: ipcMain.handle/on/once or a local handle/register helper.
+const REGISTERED = /\b(?:ipcMain\??\.(?:handle|handleOnce|on|once|addListener)|handle|register|handler)(?:\?\.)?\(\s*(["'`][a-z][a-z0-9-]*:[a-zA-Z][a-zA-Z0-9-]*["'`])/g;
 
 // Keys at the top level of the object literal that starts at `open` (the "{").
 function objectKeys(source, open) {
@@ -36,9 +38,17 @@ function objectKeys(source, open) {
 }
 
 function scanSource(source, found) {
-  for (const match of source.matchAll(CHANNEL)) {
-    const name = `${match[1]}:${match[2]}`;
+  // Only names that are registered, and the values of *CHANNELS maps. Events sent to pages, CSS
+  // selectors and labels shaped like "a:b" are not requests.
+  for (const match of source.matchAll(REGISTERED)) {
+    const name = match[1].slice(1, -1);
     if (!NOT_REQUESTS.test(name)) found.add(name);
+  }
+  for (const map of source.matchAll(/CHANNELS\s*=\s*(?:Object\.freeze\()?\{/g)) {
+    const open = source.indexOf("{", map.index);
+    let depth = 0, end = open;
+    for (; end < source.length; end += 1) { if (source[end] === "{") depth += 1; else if (source[end] === "}" && --depth === 0) break; }
+    for (const match of source.slice(open, end).matchAll(CHANNEL)) found.add(`${match[1]}:${match[2]}`);
   }
   // ipcMain.handle(`area:${name}`) over the nearest `const methods = { … }` before it, or a name list.
   for (const match of source.matchAll(/ipcMain\.handle\(`([a-z][a-z0-9-]*):\$\{name\}`/g)) {
@@ -61,7 +71,8 @@ function scanSource(source, found) {
 function scanTrialChannels() {
   const found = new Set();
   for (const name of fs.readdirSync(MAIN)) {
-    if (!name.endsWith(".cjs") || name.includes("self_check")) continue;
+    // Preload files call requests; they do not answer them.
+    if (!name.endsWith(".cjs") || name.includes("self_check") || name.includes("preload")) continue;
     scanSource(fs.readFileSync(path.join(MAIN, name), "utf8"), found);
   }
   return [...found].sort();

@@ -551,12 +551,13 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("account:changed");
       } });
     try { const current = accountStore.status(); trialAccountSignedIn = current.authorized === true && current.demo === true; } catch { trialAccountSignedIn = false; }
-    // A refused action in the trial: the page shows the advisor's contact once in a while, not per click.
+    // Requests nobody classified for the trial, registered before the logger existed or after.
     reportUnclassifiedTrialChannel = (channel) => {
       try { logger.event("app", "trial_channel_unclassified", { request_kind: String(channel).replace(/[^a-zA-Z0-9_-]/gu, "_").slice(0, 80) },
         { level: "error", code: "trial_channel_unclassified" }); } catch {}
     };
     for (const channel of unclassifiedTrialChannels.splice(0)) reportUnclassifiedTrialChannel(channel);
+    // A refused action in the trial: the page shows the advisor's contact once in a while, not per click.
     let trialPromptAt = 0;
     notifyTrialBlocked = () => {
       if (Date.now() - trialPromptAt < 4000 || !mainWindow || mainWindow.isDestroyed()) return;
