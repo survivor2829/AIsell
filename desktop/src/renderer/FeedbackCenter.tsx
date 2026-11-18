@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useId, useRef, useState } from "react";
 import { ChevronDown, ImageIcon, MessageCircle, RefreshCw, Send, X } from "lucide-react";
 import { FeedbackImages, useFeedbackImages } from "./FeedbackImages";
+import { CartoonAvatar } from "./CartoonAvatar";
 import "./feedback-center.css";
 
 const Diagnostics = lazy(() => import("./Diagnostics").then((module) => ({ default: module.Diagnostics })));
@@ -12,7 +13,7 @@ type FeedbackItem = {
   status: "pending" | "in_progress" | "resolved" | null; receivedAt: number | null; updatedAt: number | null;
   error: string; retryable: boolean; visibility: "public" | "private"; hidden: boolean; officialReply: string;
 };
-type PublicItem = Pick<FeedbackItem, "id" | "text" | "category" | "createdAt" | "receivedAt" | "updatedAt" | "status" | "officialReply">;
+type PublicItem = Pick<FeedbackItem, "id" | "text" | "category" | "createdAt" | "receivedAt" | "updatedAt" | "status" | "officialReply"> & { avatarSeed?: string; nickname?: string };
 type Community = { items: PublicItem[]; total: number; offset: number; lastRefresh: string; error: string };
 type AdminItem = PublicItem & { visibility: string; hidden: boolean; diagnostics: unknown[]; diagnosticsExpired: boolean };
 type AdminPage = { items: AdminItem[]; total: number; offset: number };
@@ -232,7 +233,7 @@ export function FeedbackCenter({ appVersion, edition, buildId, context }: {
         : <ol className="feedback-list">{state.items.map((item) => <li key={item.id}>
           <div className="feedback-item-head"><strong>{categoryLabels[item.category] || "用户反馈"}</strong><span className={`feedback-status is-${item.delivery === "sent" ? item.status : "queued"}`} role="status">{itemStatus(item)}</span></div>
           <p className="feedback-item-text">{item.text}</p>
-          {item.officialReply && <div className="feedback-reply"><strong>官方回复</strong><p>{item.officialReply}</p></div>}
+          {item.officialReply && <XiaoxiReply text={item.officialReply} />}
           <div className="feedback-item-meta"><span>{item.visibility === "private" ? "仅开发者可见" : item.hidden ? "已由开发者隐藏公开展示" : "公开到大家的声音"}</span>{item.delivery === "sent" && item.visibility === "public" && <button className="secondary-button" disabled={busy} onClick={() => void withdraw(item.id)}>撤回公开</button>}</div>
           <div className="feedback-item-meta"><span>提交时间：{date(item.createdAt)}</span>{item.updatedAt && <span>状态更新：{date(item.updatedAt)}</span>}</div>
           <div className="feedback-item-meta"><span className="feedback-number">{item.delivery === "sent" ? "反馈编号" : "本机记录编号"}：{item.id}</span>{Boolean(item.imageCount) && <span><ImageIcon size={14} /> 附带 {item.imageCount} 张截图</span>}</div>
@@ -242,7 +243,7 @@ export function FeedbackCenter({ appVersion, edition, buildId, context }: {
       <div className="feedback-list-toolbar"><p>按最新提交排列 · 共 {state?.community?.total || 0} 条{state?.community?.lastRefresh && " · 最近同步：" + date(state.community.lastRefresh)}</p><button className="secondary-button" disabled={listBusy} onClick={() => void loadPublic(state?.community?.offset || 0)}><RefreshCw size={16} />{listBusy ? "正在刷新…" : "刷新反馈"}</button></div>
       {state?.community?.error && <p className="feedback-note" role="status">{state.community.error}</p>}
       {!state?.community?.items.length ? <div className="feedback-empty"><MessageCircle size={32} /><h2>{listBusy ? "正在读取公开反馈…" : "还没有公开反馈"}</h2><p>公开分享你的想法，让大家一起看到进展。</p></div> :
-        <ol className="feedback-list">{state.community.items.map((item) => <li key={item.id}><FeedbackRecord item={item} /></li>)}</ol>}
+        <ol className="feedback-list is-feed">{state.community.items.map((item) => <li key={item.id} className="feedback-post"><FeedbackRecord item={item} /></li>)}</ol>}
       <div className="feedback-pagination"><button className="secondary-button" disabled={listBusy || !state?.community?.offset} onClick={() => void loadPublic(Math.max(0, (state?.community?.offset || 0) - 30))}>上一页</button><span>第 {Math.floor((state?.community?.offset || 0) / 30) + 1} 页</span><button className="secondary-button" disabled={listBusy || (state?.community?.offset || 0) + 30 >= (state?.community?.total || 0)} onClick={() => void loadPublic((state?.community?.offset || 0) + 30)}>下一页</button></div>
     </div> : <div id={id + "-admin"} role="tabpanel" aria-labelledby={id + "-admin-tab"}>
       <div className="feedback-list-toolbar"><label>处理状态 <select disabled={listBusy} value={adminStatus} onChange={(event) => { setAdminPage(undefined); setAdminStatus(event.target.value); }}><option value="">全部</option><option value="pending">待处理</option><option value="in_progress">处理中</option><option value="resolved">已解决</option></select></label><button className="secondary-button" disabled={listBusy} onClick={() => void loadAdmin(adminPage?.offset || 0)}><RefreshCw size={16} />{listBusy ? "正在读取…" : "刷新管理列表"}</button></div>
@@ -256,10 +257,20 @@ export function FeedbackCenter({ appVersion, edition, buildId, context }: {
   </section>;
 }
 
+// 小玺 answers every reply in person (design A, 2026-11-18).
+const XIAOXI_FACE = new URL("./agent-characters/xiaoxi-idle.png", document.baseURI).toString();
+export function XiaoxiReply({ text }: { text: string }) {
+  return <div className="feedback-reply is-xiaoxi"><img src={XIAOXI_FACE} alt="" /><div><strong>小玺 · 官方回复</strong><p>{text}</p></div></div>;
+}
+// One public post as a card (design A, 2026-11-18, after the user's mini program 信息广场): an anonymous
+// cartoon face and nickname, the kind and the progress as coloured labels, the words large.
 function FeedbackRecord({ item }: { item: PublicItem }) {
-  return <><div className="feedback-item-head"><strong>{categoryLabels[item.category] || "用户反馈"}</strong><span className={"feedback-status is-" + item.status}>{({ pending: "待处理", in_progress: "处理中", resolved: "已解决" })[item.status || "pending"]}</span></div>
-    <p className="feedback-item-text">{item.text}</p><div className="feedback-item-meta"><span>提交时间：{date(item.createdAt)}</span>{item.updatedAt && <span>更新：{date(item.updatedAt)}</span>}</div>
-    {item.officialReply && <div className="feedback-reply"><strong>官方回复</strong><p>{item.officialReply}</p></div>}</>;
+  const name = item.nickname || "热心的用户";
+  return <><div className="feedback-post-head"><CartoonAvatar seed={item.avatarSeed || item.id} size={52} /><div className="feedback-post-who"><strong>{name}</strong><span>{date(item.createdAt)}</span></div>
+      <span className={"feedback-status is-" + item.status}>{({ pending: "待处理", in_progress: "处理中", resolved: "已解决" })[item.status || "pending"]}</span></div>
+    <span className={"feedback-kind is-" + item.category}>{categoryLabels[item.category] || "用户反馈"}</span>
+    <p className="feedback-item-text">{item.text}</p>
+    {item.officialReply && <XiaoxiReply text={item.officialReply} />}</>;
 }
 function AdminRecord({ item, onSaved }: { item: AdminItem; onSaved(): void }) {
   const [status, setStatus] = useState(item.status || "pending");

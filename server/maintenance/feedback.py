@@ -8,6 +8,19 @@ import time
 
 UUID = re.compile(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\Z")
 SECRET = re.compile(r"[a-f0-9]{64}\Z")
+# 吐槽中心 (2026-11-18): each public post shows a cartoon face and an anonymous nickname, the same for
+# every post from one computer. Both come from a one-way hash of the install id; the id itself, the
+# account, phone or name never leave the server.
+PERSONA_ADJECTIVES = ("勤快的", "爱琢磨的", "早起的", "认真的", "热心的", "靠谱的", "爽快的", "细心的", "能干的", "乐呵的", "实在的", "敢想的")
+PERSONA_NOUNS = ("小老板", "店长", "采购员", "销售", "老师傅", "厂长", "经理", "运营", "设计师", "合伙人", "代理商", "工程师")
+
+
+def feedback_persona(source):
+    """A stable anonymous face seed and nickname for one computer; not reversible to the install id."""
+    digest = hashlib.sha256(("feedback-persona:" + str(source)).encode("utf-8")).hexdigest()
+    number = int(digest[:8], 16)
+    return {"avatarSeed": digest[:12],
+            "nickname": PERSONA_ADJECTIVES[number % len(PERSONA_ADJECTIVES)] + PERSONA_NOUNS[(number // 97) % len(PERSONA_NOUNS)]}
 TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\Z")
 STATES = ("pending", "in_progress", "resolved")
 # Screenshots pasted into 吐槽 (user 2026-11-09): sent one by one after the text, as JPEG.
@@ -178,7 +191,8 @@ class FeedbackStoreMixin:
         for row in rows:
             body = json.loads(row["body"])
             items.append({"id": row["id"], "text": body["text"], "category": body["category"], "createdAt": body["createdAt"],
-                          "receivedAt": row["received"], "updatedAt": row["updated"], "status": row["status"], "officialReply": row["official_reply"]})
+                          "receivedAt": row["received"], "updatedAt": row["updated"], "status": row["status"], "officialReply": row["official_reply"],
+                          **feedback_persona((body.get("client") or {}).get("installId") or row["id"])})
         return {"items": items, "total": total}
 
     def feedback_statuses(self, body):

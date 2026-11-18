@@ -56,3 +56,8 @@
 .geo-warn ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .geo-warn li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 @media (max-width: 760px) { .geo-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* 2026-11-18: larger notes and labels (customers over 30). */
+.geo-muted { font-size: 15px; }
+.geo-list small, .geo-articles small, .geo-results small, .geo-trial { font-size: 14px; }
+.geo-mini, .geo-account, .geo-link, .geo-card blockquote { font-size: 15px; }

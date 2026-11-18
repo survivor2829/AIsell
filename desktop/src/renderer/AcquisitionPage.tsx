@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, Download, ExternalLink, Heart, Pencil, Play, Plus, Square, Trash2, UserPlus } from "lucide-react";
+import { Check, CircleHelp, Download, ExternalLink, Heart, Pencil, Play, Plus, Square, Trash2, UserPlus } from "lucide-react";
 import type { AcquireAction, AcquireActionKind, AcquireCaps, AcquireLead, AcquireResult, AcquireRun, AcquireState, AcquireTask, AcquireTaskInput } from "./social-acquisition-types";
 import type { SocialAccountsState } from "./social-accounts-types";
 import { PlatformIcon } from "./PlatformIcon";
+import { CartoonAvatar } from "./CartoonAvatar";
 import "./SocialAccountsPanel.css";
 import "./AcquisitionPage.css";
 
@@ -67,7 +68,15 @@ export function AcquisitionPage() {
     for (const action of actions) if (action.leadId && action.status !== "cancelled") { const entry = map.get(action.leadId) || {}; if (!entry[action.kind]) entry[action.kind] = action; map.set(action.leadId, entry); }
     return map;
   }, [actions]);
-  const leads = useMemo(() => (state?.leads || []).filter((lead) => (filter === "all" || lead.status === filter) && (!taskFilter || lead.taskId === taskFilter)), [state, filter, taskFilter]);
+  // Intent filter (design C, 2026-11-18): one tap shows only the people who asked a price, want to buy…
+  const [signalFilter, setSignalFilter] = useState("");
+  const baseLeads = useMemo(() => (state?.leads || []).filter((lead) => (filter === "all" || lead.status === filter) && (!taskFilter || lead.taskId === taskFilter)), [state, filter, taskFilter]);
+  const signalCounts = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const lead of baseLeads) for (const signal of lead.signals) map.set(signal, (map.get(signal) || 0) + 1);
+    return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
+  }, [baseLeads]);
+  const leads = useMemo(() => signalFilter ? baseLeads.filter((lead) => lead.signals.includes(signalFilter)) : baseLeads, [baseLeads, signalFilter]);
   const counts = useMemo(() => ({ all: state?.leads.length || 0, new: state?.leads.filter((lead) => lead.status === "new").length || 0 }), [state]);
   const [moreOpen, setMoreOpen] = useState(false);
   const queued = actions.filter((action) => action.status === "queued").length;
@@ -158,7 +167,7 @@ export function AcquisitionPage() {
           {(editing || Boolean(state?.running)) && <button type="button" className="secondary-button" disabled={Boolean(pending) || !api || !form.accountId} onClick={() => void saveAndStart(false)}>只保存</button>}
           <button type="button" className="ns-go acq-go" disabled={Boolean(pending) || !api || Boolean(state?.running) || !form.accountId} onClick={() => void saveAndStart(true)}><Play size={18} />开始找客户</button>
         </div>
-        <p className="acq-hint">软件只看视频和评论，不会替你发任何内容。如果平台要你验证，Chrome 窗口会跳到前面，你点完后会自动继续。</p>
+        <p className="acq-hint is-help" title="软件只看视频和评论，不会替你发任何内容。如果平台要你验证，Chrome 窗口会跳到前面，你点完后会自动继续。"><CircleHelp size={17} />只看不发，放心用</p>
       </section>
 
       <section className="acq-card" aria-labelledby="acq-tasks">
@@ -219,19 +228,22 @@ export function AcquisitionPage() {
           <button type="button" className="secondary-button" disabled={!counts.all || Boolean(pending)} onClick={() => api && void run("export", async () => { const result = await api.exportCsv(taskFilter); if (result.ok && result.state?.exported) setNotice("线索已导出成表格。"); return result; })}><Download size={15} />导出表格</button>
         </div>
       </div>
+      {signalCounts.length > 0 && <div className="acq-intents" role="radiogroup" aria-label="按意向看">
+        <button type="button" role="radio" aria-checked={!signalFilter} className={!signalFilter ? "is-on" : ""} onClick={() => setSignalFilter("")}>全部 {baseLeads.length}</button>
+        {signalCounts.map(([signal, count], index) => <button type="button" role="radio" key={signal} aria-checked={signalFilter === signal} className={`is-tone-${index % 4}${signalFilter === signal ? " is-on" : ""}`} onClick={() => setSignalFilter(signalFilter === signal ? "" : signal)}>{signal} {count}</button>)}
+      </div>}
       {visibleLeads.length > 0 && anyActionPlatform && <div className="acq-bulk">
         <label className="acq-check"><input type="checkbox" checked={allPicked} onChange={() => setPicked(allPicked ? new Set() : new Set(visibleLeads.map((lead) => lead.id)))} />全选</label>
         <span>已选 {pickedLeads.length} 人</span>
         <button type="button" className="acq-mini" disabled={!pickedCan("like").length || Boolean(pending)} onClick={() => queue(pickedCan("like"), ["like"])}><Heart size={14} />点赞评论</button>
         <button type="button" className="acq-mini" disabled={!pickedCan("follow").length || Boolean(pending)} onClick={() => queue(pickedCan("follow"), ["follow"])}><UserPlus size={14} />关注</button>
         <button type="button" className="acq-mini is-go" disabled={!pickedCan("like").length || Boolean(pending)} onClick={() => queue(pickedCan("like"), ["like", "follow"])}>点赞 + 关注</button>
-        <small>软件不会替你回复评论或发私信。</small>
       </div>}
       {visibleLeads.length === 0 ? <p className="social-empty">{counts.all ? "这个筛选下没有线索。" : "还没有。开始找客户后，问价、想买的人会出现在这里。"}</p> : <ul className="acq-leads">
         {visibleLeads.map((lead) => { const acts = leadActs.get(lead.id) || {};
           return <li key={lead.id} className={`is-${lead.status}`}>
             {anyActionPlatform && <input type="checkbox" className="acq-pick" aria-label={`选择 ${lead.userName}`} disabled={!canDo(lead.platform, "like") && !canDo(lead.platform, "follow")} checked={picked.has(lead.id)} onChange={() => togglePick(lead.id)} />}
-            <PlatformIcon platform={lead.platform === "douyin" ? "douyin" : "kuaishou"} size={28} />
+            <span className="acq-face"><CartoonAvatar seed={lead.userName || lead.id} size={52} /><span className="acq-face-badge"><PlatformIcon platform={lead.platform === "douyin" ? "douyin" : "kuaishou"} size={20} /></span></span>
             <div className="acq-lead-main">
               <div className="acq-lead-head"><b>{lead.userName || "未知昵称"}</b>{lead.signals.map((signal) => <span key={signal} className="acq-chip">{signal}</span>)}{actChip(acts.like)}{actChip(acts.follow)}<small>{when(lead.commentAt)}{lead.region ? ` · ${lead.region}` : ""}</small></div>
               <p>「{lead.comment}」</p>
