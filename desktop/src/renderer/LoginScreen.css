@@ -110,7 +110,7 @@ html[data-beat="1"] .signin-line i { opacity: 0; }
    Nothing on this page loops forever (pulses breathe three times, the numbers beat once, the caret
    blinks four times): any endless animation kept the whole page redrawing at the display rate. */
 .signin-side { display: flex; align-items: stretch; justify-content: center; padding: 40px 48px 40px 8px; }
-.signin-panel { position: relative; width: 100%; max-width: 540px; display: flex; flex-direction: column; justify-content: safe center; overflow-y: auto; scrollbar-width: thin; gap: 28px; padding: 56px 44px 44px; border-radius: 28px;
+.signin-panel { position: relative; width: 100%; max-width: 540px; display: flex; flex-direction: column; justify-content: safe center; overflow-y: auto; scrollbar-width: thin; gap: 24px; padding: 48px 44px 40px; border-radius: 28px;
   background: #fffffff2;
   box-shadow: 0 30px 80px -20px #2a0a1233, 0 2px 6px #0000000d; }
 .signin-panel::before { content: ""; position: absolute; inset: 0; padding: 1px; border-radius: inherit; pointer-events: none;
