@@ -66,7 +66,7 @@ function world(behaviour = {}) {
   const runDay = async (nurture) => { for (let i = 0; i < 20; i++) { nurture.tick(); await sleep(5); while (nurture.isBusy()) await sleep(5); } };
   // The next calendar day at the same local time: adding 24 hours stays on the same date in the
   // night after a daylight-saving change.
-  return { root, b, log, make, runDay, nextDay: () => { const next = new Date(now()); next.setDate(next.getDate() + 1); offsetMs = next.getTime() - Date.now(); } };
+  return { root, b, log, make, runDay, now, nextDay: () => { const next = new Date(now()); next.setDate(next.getDate() + 1); offsetMs = next.getTime() - Date.now(); } };
 }
 const plan = { accountId: "a1", keywords: "洗地机", comments: "讲得很清楚\n这台效率不错" };
 
@@ -130,7 +130,7 @@ const plan = { accountId: "a1", keywords: "洗地机", comments: "讲得很清�
     const w = world({ blockedAt: [3] }), n = w.make();
     n.savePlan(plan); await w.runDay(n);
     let state = n.snapshot().plans[0];
-    assert.equal(state.today.anomalies, 2, "两段各遇到一次"); assert.ok(state.today.restUntil > Date.now(), "停到明天");
+    assert.equal(state.today.anomalies, 2, "两段各遇到一次"); assert.ok(state.today.restUntil > w.now(), "停到明天");
     assert.equal(state.today.segmentsDone, 0, "被打断的段不算完成"); assert.equal(w.log.fronts, 2);
     assert.equal(w.log.reports.filter((report) => report.code === "NURTURE_VERIFICATION").length, 2);
     // 第二天重新做第 1 天，不跳天。
@@ -180,7 +180,7 @@ const plan = { accountId: "a1", keywords: "洗地机", comments: "讲得很清�
     await sleep(10); while (n.isBusy()) await sleep(5);
     let state = n.snapshot().plans[0];
     assert.equal(state.today.segmentsDone, 1, "保存后立刻跑了第一段");
-    assert.equal(state.phase, "resting"); assert.ok(state.today.nextAt > Date.now() + 25 * 60_000, "下一段约半小时后");
+    assert.equal(state.phase, "resting"); assert.ok(state.today.nextAt > w.now() + 25 * 60_000, "下一段约半小时后"); // the test clock, not the wall clock
     assert.equal(state.lastSegment.outcome, "completed"); assert.match(state.lastSegment.text, /这一段完成/);
     assert.ok(w.log.prompts >= 1, "打开页面后先关掉抖音自己的弹窗");
     n.runNow(state.id);
