@@ -113,6 +113,9 @@ function createLineOcrService({ resolveLaunch, spawnProcess = spawn, now = () =>
       child = process_;
       timer = setTimeout(() => finish(false, "start_timeout"), START_TIMEOUT_MS);
       let buffered = "";
+      // Decode as UTF-8 on the stream so a split character never turns into garbage (2026-11-19).
+      process_.stdout.setEncoding?.("utf8");
+      process_.stderr.setEncoding?.("utf8");
       process_.stdout.on("data", (chunk) => {
         // Only the first line of the current reader counts: nothing after start, nothing from a
         // reader already being stopped.

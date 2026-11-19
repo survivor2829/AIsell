@@ -36,8 +36,10 @@ function launchBrowser({ executable, profileDir, url = "about:blank", headless =
     waiting.clear(); resolve();
   }));
   child.once("error", () => { exited = true; for (const reject of waiting.values()) reject(fail("SOCIAL_BROWSER_MISSING", "浏览器无法启动，请确认 Chrome 已正确安装。")); waiting.clear(); });
+  // Decode as UTF-8 on the stream: a Chinese character split between two chunks must not turn into garbage (2026-11-19).
+  reader.setEncoding?.("utf8");
   reader.on("data", (chunk) => {
-    buffer += chunk.toString("utf8");
+    buffer += chunk;
     let end;
     while ((end = buffer.indexOf("\0")) >= 0) {
       let message; try { message = JSON.parse(buffer.slice(0, end)); } catch { message = null; }

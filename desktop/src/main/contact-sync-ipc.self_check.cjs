@@ -1,5 +1,8 @@
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
+const { PassThrough } = require("node:stream");
+// One byte per write: every multi-byte character arrives split, as it can from a real process.
+const writeSplit = (stream, bytes) => { for (const byte of bytes) stream.write(Buffer.from([byte])); };
 const fs = require("node:fs");
 const Module = require("node:module");
 const os = require("node:os");
@@ -28,19 +31,19 @@ fs.writeFileSync(path.join(activeTouchDir, "contacts.json"), JSON.stringify([{ i
 
 function fakeSpawn(_command, args) {
   const child = new EventEmitter();
-  child.stdout = new EventEmitter();
-  child.stderr = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
   spawnCalls += 1;
   setImmediate(() => {
     if (executorFailure) {
-      child.stdout.emit("data", Buffer.from(JSON.stringify({ ok: false, action: "status", error: "executor failed", contacts: [] })));
-      child.emit("close", 1);
+      writeSplit(child.stdout, Buffer.from(JSON.stringify({ ok: false, action: "status", error: "executor failed", contacts: [] })));
+      setImmediate(() => child.emit("close", 1));
       return;
     }
     const rootIndex = args.indexOf("--wechat-root");
     const selectedRoot = rootIndex >= 0 ? args[rootIndex + 1] : autoDetectionEmpty ? "" : autoRoot;
     const acceptedRoot = selectedRoot === invalidRoot ? "" : selectedRoot === parentRoot ? validRoot : selectedRoot;
-    child.stdout.emit("data", Buffer.from(JSON.stringify({
+    writeSplit(child.stdout, Buffer.from(JSON.stringify({
       ok: true,
       action: "status",
       state: {
@@ -49,7 +52,7 @@ function fakeSpawn(_command, args) {
       },
       contacts: []
     })));
-    child.emit("close", 0);
+    setImmediate(() => child.emit("close", 0));
   });
   return child;
 }

@@ -148,13 +148,16 @@ function executeContactSync(args) {
     let stderr = "";
     let progressBuffer = "";
 
+    // Decode as UTF-8 on the stream: a Chinese character split between two chunks must not turn into garbage (2026-11-19).
+    child.stdout.setEncoding?.("utf8");
+    child.stderr.setEncoding?.("utf8");
     child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
+      stdout += chunk;
     });
 
     child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-      progressBuffer += chunk.toString();
+      stderr += chunk;
+      progressBuffer += chunk;
       const lines = progressBuffer.split(/\r?\n/);
       progressBuffer = lines.pop().slice(-8192);
       for (const line of lines) {

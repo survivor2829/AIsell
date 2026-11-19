@@ -50,6 +50,7 @@ const checks = [
   "src/main/product-video.self_check.cjs",
   "src/main/story-video.self_check.cjs",
   "src/main/real-shoot.self_check.cjs",
+  "src/main/utf8-streams.self_check.cjs",
   "src/main/bailian-video-provider.self_check.cjs",
   "src/main/product-video-media.self_check.cjs",  "src/main/reference-human.self_check.cjs", "src/main/narration-plan.self_check.cjs",
   "src/main/viral-ranking.self_check.cjs",
