@@ -124,12 +124,15 @@ function executeActiveTouch(args, options = {}) {
       settle(parseExecutorOutput({ action: args[0] ?? "status", status, stdout, stderr }));
     };
 
+    // Decode as UTF-8 on the stream: a Chinese character split between two chunks must not turn into garbage (2026-11-19).
+    child.stdout.setEncoding?.("utf8");
+    child.stderr.setEncoding?.("utf8");
     child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
+      stdout += chunk;
     });
 
     child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
+      stderr += chunk;
     });
 
     child.on("error", (error) => {

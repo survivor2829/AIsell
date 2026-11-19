@@ -416,9 +416,11 @@ function createProductDetailSidecar(options = {}) {
         settleStart(result);
       }
 
+      // Decode as UTF-8 on the stream: a Chinese character split between two chunks must not turn into garbage (2026-11-19).
+      child.stdout?.setEncoding?.("utf8");
       child.stdout?.on("data", (chunk) => {
         if (run.ready || run.closed) return;
-        run.stdoutBuffer += chunk.toString("utf8");
+        run.stdoutBuffer += chunk;
         if (Buffer.byteLength(run.stdoutBuffer, "utf8") > MAX_READY_LINE_BYTES) {
           failStart("PRODUCT_DETAIL_READY_INVALID");
           return;
@@ -452,11 +454,12 @@ function createProductDetailSidecar(options = {}) {
         record("ready", run);
       });
 
+      child.stderr?.setEncoding?.("utf8");
       child.stderr?.on("data", (chunk) => {
         if (run.closed || currentRun !== run) return;
         run.stderrBytes += Buffer.byteLength(chunk);
-        run.stderrTail = (run.stderrTail + chunk.toString("utf8")).slice(-16_384);
-        run.stderrLine = (run.stderrLine + chunk.toString("utf8")).slice(-8192);
+        run.stderrTail = (run.stderrTail + chunk).slice(-16_384);
+        run.stderrLine = (run.stderrLine + chunk).slice(-8192);
         Object.assign(startupDiagnostics, summarizeStderr(run.stderrTail));
         const lines = run.stderrLine.split("\n");
         run.stderrLine = lines.pop();
@@ -624,7 +627,7 @@ function createProductDetailSidecar(options = {}) {
         const body = JSON.stringify({ hold: hold === true });
         const target = new URL("/internal/update-state", snapshot.origin);
         const req = http.request(target, { method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body), "x-xiaoxi-control-token": currentRun.controlToken } }, res => {
-          let text = ""; res.on("data", chunk => { text += chunk; if (text.length > 16384) req.destroy(Error("update_state_invalid")); });
+          let text = ""; res.setEncoding?.("utf8"); res.on("data", chunk => { text += chunk; if (text.length > 16384) req.destroy(Error("update_state_invalid")); });
           res.on("end", () => { try { if (res.statusCode !== 200) throw Error("update_state_unavailable"); resolve(JSON.parse(text)); } catch (error) { reject(error); } });
         });
         req.setTimeout(5000, () => req.destroy(Error("update_state_timeout"))); req.on("error", reject); req.end(body);
@@ -636,6 +639,7 @@ function createProductDetailSidecar(options = {}) {
       return new Promise((resolve) => {
         const req = http.request(new URL("/internal/refine-activity", snapshot.origin), { method: "GET", headers: { "x-xiaoxi-control-token": currentRun.controlToken } }, (res) => {
           let text = "";
+          res.setEncoding?.("utf8");
           res.on("data", (chunk) => { text += chunk; if (text.length > 16384) req.destroy(); });
           res.on("end", () => { try { resolve(res.statusCode === 200 ? JSON.parse(text) : null); } catch { resolve(null); } });
           res.on("close", () => resolve(null)); // A connection cut mid-reply never reaches "end".

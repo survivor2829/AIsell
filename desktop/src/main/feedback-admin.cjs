@@ -30,7 +30,7 @@ function createFeedbackAdmin({ config, spawnProcess = spawn }) {
       child.stdin.on("error", () => {});
       child.stderr.resume();
       child.stdout.setEncoding("utf8");
-      child.stdout.on("data", (chunk) => { size += Buffer.byteLength(chunk, "utf8"); if (size > 2 * 1024 * 1024) return failure(); output += chunk.toString("utf8"); });
+      child.stdout.on("data", (chunk) => { size += Buffer.byteLength(chunk, "utf8"); if (size > 2 * 1024 * 1024) return failure(); output += chunk; });
       child.on("close", (code) => { if (code !== 0) return failure(); try { finish(null, JSON.parse(output)); } catch { failure(); } });
       child.stdin.end(body ? JSON.stringify(body) : undefined);
     });

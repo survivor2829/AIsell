@@ -79,6 +79,7 @@ function runAdb(adbPath, args, timeout = 15000, as = "text") {
     let err = "";
     const timer = setTimeout(() => { child.kill(); reject(Object.assign(new Error("adb timed out"), { code: "ADB_TIMEOUT" })); }, timeout);
     child.stdout.on("data", (d) => { chunks.push(d); });
+    child.stderr.setEncoding?.("utf8");
     child.stderr.on("data", (d) => { err += d; });
     child.on("error", (error) => { clearTimeout(timer); reject(error); });
     child.on("close", (code) => {
@@ -102,6 +103,7 @@ function createPhoneStream({ serial, adbPath, serverPath, port, quality = "tile"
       `video_bit_rate=${settings.bitRate}`, "stay_awake=true", "clipboard_autosync=false", "power_off_on_close=false", "cleanup=true"], { windowsHide: true });
     // The server's own words say why a stream ends (encoder busy, phone locked…); kept for the close reason.
     const keep = (chunk) => { output = (output + chunk).slice(-1500); };
+    server.stdout.setEncoding?.("utf8"); server.stderr.setEncoding?.("utf8");
     server.stdout.on("data", keep); server.stderr.on("data", keep);
     server.on("close", () => stop("server_exited"));
     server.on("error", () => stop("server_failed"));

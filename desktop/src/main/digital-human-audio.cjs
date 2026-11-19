@@ -15,6 +15,7 @@ async function run(binary, args, { binaryOutput = false, cwd, maxOutputBytes = 8
     const child = spawn(binary, args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], timeout: 20 * 60_000 });
     const buffers = []; let bytes = 0, error = '';
     child.stdout.on('data', (chunk) => { bytes += chunk.length; if (bytes > maxOutputBytes) child.kill(); else buffers.push(chunk); });
+    child.stderr.setEncoding?.('utf8');
     child.stderr.on('data', (chunk) => { error = (error + chunk).slice(-3000); });
     child.once('error', error => { require('./component-paths.cjs').runtimeLaunchFailed(binary, error); reject(error); });
     child.once('close', (code) => code === 0 ? resolve(binaryOutput ? Buffer.concat(buffers) : Buffer.concat(buffers).toString('utf8'))

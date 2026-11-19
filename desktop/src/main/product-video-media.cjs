@@ -8,6 +8,8 @@ async function run(binary, args, cwd) {
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], timeout: 20 * 60_000 });
     let stdout = '', stderr = '';
+    // Decode as UTF-8 on the stream: probe output holds file paths, which may be Chinese (2026-11-19).
+    child.stdout.setEncoding?.('utf8'); child.stderr.setEncoding?.('utf8');
     child.stdout.on('data', (chunk) => { stdout = (stdout + chunk).slice(-2_000_000); });
     child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-3000); });
     child.on('error', error => { require('./component-paths.cjs').runtimeLaunchFailed(binary, error); reject(error); });

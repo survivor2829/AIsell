@@ -13,7 +13,8 @@ async function upscaleTo1080Size({ source, destination, ffmpegPath = 'ffmpeg' })
       '-c:a', 'copy', '-movflags', '+faststart', destination
     ], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'], timeout: 20 * 60_000 });
     let detail = '';
-    child.stderr.on('data', (chunk) => { detail = (detail + chunk.toString()).slice(-1000); });
+    child.stderr.setEncoding?.('utf8');
+    child.stderr.on('data', (chunk) => { detail = (detail + chunk).slice(-1000); });
     child.on('error', reject);
     // Keep the kill signal so a timeout is not retried with another encoder.
     child.on('close', (code, signal) => code === 0 ? resolve() : reject(Object.assign(new Error(detail || `FFmpeg ${code ?? signal}`), { signal })));
