@@ -1617,5 +1617,21 @@ async function checkMultipartReuse() {
   assert.equal(pausedGate.counts.image, 0, "a pause inside the reuse gate must not send the image");
 }
 
-module.exports = { checkTouchMessageSequence, checkMultipartReuse };
-if (require.main === module) checkTouchMessageSequence().then(() => process.stdout.write("Touch sequence checks passed: order, restart, partial failure, pause, unknown outcome and image receipts.\n")).catch(error => { console.error(error); process.exitCode = 1; });
+// Field 2026-11-18/19: a task edited after contacts were skipped turned every one of them into
+// "result unknown" without a search. Nothing of the old content went out, so the new one replaces it;
+// a contact who already got part of the old content still stops.
+async function checkEditedTaskSequence() {
+  const { executeMessageSequence, messageParts } = require("./touch-message-sequence.cjs");
+  const parts = messageParts("新文案", ["img2"]);
+  const sent = [];
+  const skipped = { message_parts: messageParts("旧文案", ["img1"]).map((part) => ({ kind: part.kind, signature: "old", status: "pending" })) };
+  const ok = await executeMessageSequence({ row: skipped, parts, persist() {}, isEnabled: () => true,
+    execute: async (part, index, mark) => { sent.push(part.kind); mark("prepared"); return { ok: true, state: { real_send_status: "sent_verified" } }; } });
+  assert.equal(ok.ok, true); assert.deepEqual(sent, ["text", "image"]);
+  const partly = { message_parts: [{ kind: "text", signature: "old", status: "sent_verified" }, { kind: "image", signature: "old2", status: "pending" }] };
+  const stopped = await executeMessageSequence({ row: partly, parts, persist() {}, isEnabled: () => true, execute: async () => { throw new Error("must not send"); } });
+  assert.equal(stopped.blocked_reason, "touch_sequence_changed");
+}
+
+module.exports = { checkTouchMessageSequence, checkMultipartReuse, checkEditedTaskSequence };
+if (require.main === module) checkTouchMessageSequence().then(checkEditedTaskSequence).then(() => process.stdout.write("Touch sequence checks passed: order, restart, partial failure, pause, unknown outcome and image receipts.\n")).catch(error => { console.error(error); process.exitCode = 1; });

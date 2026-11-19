@@ -240,4 +240,14 @@ function titleNearNamesEnvironment(names) {
   return Array.isArray(names) ? JSON.stringify(names.map(String).slice(0, 200)) : "";
 }
 
-module.exports = { WECHAT_HEADER_TITLE_POWERSHELL, foldTitle, titleNearNames, titleNearNamesEnvironment };
+// UIA elements in the chat header band that are window controls, not a chat title: buttons, menu
+// items and the like, or the few labels WeChat gives its own window and toolbar. Field 2026-11-19
+// (one PC at 225%): "微信" and "更多" sat in the band and blocked the OCR title read.
+const WECHAT_TITLE_CHROME_POWERSHELL = String.raw`
+function Test-WechatTitleChrome([string]$name, [string]$controlType) {
+  if ($controlType -match '\.(Button|MenuItem|MenuBar|Menu|TitleBar|ToolBar|SplitButton|Hyperlink|Image|TabItem|Tab|CheckBox|ScrollBar|Thumb)$') { return $true }
+  return @("微信", "WeChat", "Weixin", "更多", "置顶", "取消置顶", "最小化", "最大化", "还原", "关闭", "聊天信息", "视频聊天", "语音聊天") -contains $name.Trim()
+}
+`;
+
+module.exports = { WECHAT_HEADER_TITLE_POWERSHELL, WECHAT_TITLE_CHROME_POWERSHELL, foldTitle, titleNearNames, titleNearNamesEnvironment };

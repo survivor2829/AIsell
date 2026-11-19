@@ -379,8 +379,8 @@ if (process.platform === "win32") {
   assert.equal(ocrReplay(true, true, '$null', { uiaTitles: 1 }).calls, 0,
     'a UIA title that is not the customer (even by punctuation) is a different chat, never re-read by OCR');
   assert.deepEqual(ocrReplay(true, true, '$null', { strict: true }).cut, [false], 'a near-ID open accepts no cut title');
-  const replay = `$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8\n$expected='甲，乙'; $windowRect=@{Left=0;Top=0}; `
-    + `$script:items=@([pscustomobject]@{Current=@{Name='甲, 乙';BoundingRectangle=@{Left=300;Top=50}}}); `
+  const replay = `$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8\n$expected='甲，乙'; $windowRect=@{Left=0;Top=0}; $titleDpi=96; `
+    + `$script:items=@([pscustomobject]@{Current=@{Name='甲, 乙';BoundingRectangle=@{Left=300;Top=50};ControlType=@{ProgrammaticName='ControlType.Text'}}}); `
     + `$all=[pscustomobject]@{Count=1}; $all | Add-Member ScriptMethod Item {param($i) return $script:items[$i]}\n`
     + titleLoop + '\n@{found=$found; titles=@($titleSummaries.ToArray())} | ConvertTo-Json -Compress -Depth 6';
   const titleReplay = spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(replay,'utf16le').toString('base64')],
@@ -786,3 +786,24 @@ checkWrongConversationTitleGate().then(async () => {
 process.on("beforeExit", () => {
   if (process.exitCode !== 1) assert.equal(observationFinished, true, "search observation chain must finish before process exit");
 });
+// Field 2026-11-19 (one PC at 225%, 1.3.35–1.3.45): window buttons in the header band ("微信", "更多")
+// counted as a different chat title, so the OCR title read never ran and every chat opened by name
+// was skipped as not opened. Buttons and window labels are chrome; a contact name never is.
+{
+  const { WECHAT_TITLE_CHROME_POWERSHELL } = require("./wechat_header_title.cjs");
+  const script = WECHAT_TITLE_CHROME_POWERSHELL + `
+@(
+  (Test-WechatTitleChrome '微信' 'ControlType.Text'),
+  (Test-WechatTitleChrome '更多' 'ControlType.Text'),
+  (Test-WechatTitleChrome '张三' 'ControlType.Button'),
+  (Test-WechatTitleChrome '浙江久诚复合新材王利T5' 'ControlType.Text'),
+  (Test-WechatTitleChrome '垃圾袋厂家唐' 'ControlType.Document')
+) | ConvertTo-Json -Compress`;
+  const { spawnSync } = require("node:child_process");
+  const run = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true, timeout: 15000 });
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout.trim().replace(/^﻿/u, "")), [true, true, true, false, false]);
+  const driver = require("node:fs").readFileSync(require.resolve("./wechat_window_driver.cjs"), "utf8");
+  assert.match(driver, /\$rect\.Top -ge \(\$windowRect\.Top \+ 30 \* \$titleDpi \/ 96\.0\)/u, "the header band scales with DPI");
+  console.log("header chrome is not a chat title: window buttons ignored, DPI-scaled band");
+}

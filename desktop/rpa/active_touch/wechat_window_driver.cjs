@@ -2,7 +2,7 @@ const { WECHAT_SCREEN_PIXELS_POWERSHELL } = require("./wechat_screen_pixels.cjs"
 const { WECHAT_CLIPBOARD_POWERSHELL } = require("./wechat_clipboard.cjs");
 const { FAILURE_EVIDENCE_SCRIPT, evidenceEnvironment } = require("./failure-evidence.cjs");
 const { WECHAT_RENDER_SURFACE_POWERSHELL } = require("./wechat_render_surface.cjs");
-const { WECHAT_HEADER_TITLE_POWERSHELL, titleNearNamesEnvironment } = require("./wechat_header_title.cjs");
+const { WECHAT_HEADER_TITLE_POWERSHELL, WECHAT_TITLE_CHROME_POWERSHELL, titleNearNamesEnvironment } = require("./wechat_header_title.cjs");
 const { spawn, spawnSync } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -2922,14 +2922,20 @@ function Get-TitleComparisonSummary([string]$value, [string]$wanted) {
   $wantedFolded = [regex]::Replace($wanted.Normalize([Text.NormalizationForm]::FormKC), '[\\p{P}\\s]', '')
   return @{ length=$value.Length; sha256_16=$hash; exact=($value -ceq $wanted); punctuation_whitespace_width_only=($value -cne $wanted -and $folded -ceq $wantedFolded) }
 }
+${WECHAT_TITLE_CHROME_POWERSHELL}
 $titleSummaries = [Collections.Generic.List[object]]::new()
 for ($i = 0; $i -lt $all.Count; $i++) {
   $item = $all.Item($i)
   $name = $item.Current.Name
   if ([string]::IsNullOrWhiteSpace($name)) { continue }
   $rect = $item.Current.BoundingRectangle
-  $inRightHeader = $rect.Left -ge ($windowRect.Left + 260) -and $rect.Top -ge ($windowRect.Top + 30) -and $rect.Top -le ($windowRect.Top + 120)
-  if ($inRightHeader -and $titleSummaries.Count -lt 10) { $titleSummaries.Add((Get-TitleComparisonSummary $name $expected)) }
+  # The band is in screen pixels, so it scales with the window's DPI.
+  $inRightHeader = $rect.Left -ge ($windowRect.Left + 260 * $titleDpi / 96.0) -and $rect.Top -ge ($windowRect.Top + 30 * $titleDpi / 96.0) -and $rect.Top -le ($windowRect.Top + 120 * $titleDpi / 96.0)
+  # Window buttons ("微信", "更多", pin, minimise…) are not a chat title: at 225% the unscaled band
+  # caught them, and since a UIA title that differs means "another chat", the OCR title read never
+  # ran and every chat opened by name was skipped as not opened (one PC, 1.3.35–1.3.45, 2026-11-19).
+  $isChrome = Test-WechatTitleChrome $name $item.Current.ControlType.ProgrammaticName
+  if ($inRightHeader -and -not $isChrome -and $titleSummaries.Count -lt 10) { $titleSummaries.Add((Get-TitleComparisonSummary $name $expected)) }
   if ($inRightHeader -and @("已停用的微信用户", "已停用微信用户", "该微信用户已停用") -contains $name.Trim()) {
     $unavailable = $name.Trim()
     break

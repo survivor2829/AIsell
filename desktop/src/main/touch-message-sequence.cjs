@@ -52,7 +52,14 @@ async function executeMessageSequence({ row, parts, execute, persist, isEnabled,
     row.message_parts = parts.map((part, index) => ({ kind: part.kind, signature: signatures[index], status: "pending" }));
     persist();
   }
-  if (row.message_parts.length !== parts.length || row.message_parts.some((part, index) => part.signature !== signatures[index])) {
+  const changed = row.message_parts.length !== parts.length || row.message_parts.some((part, index) => part.signature !== signatures[index]);
+  // The task was edited after this contact was skipped: nothing of the old content went out, so
+  // the new content simply replaces it. Before, every such contact became "result unknown" in
+  // seconds without a search, and the task showed as finished (field 2026-11-18/19, 116 contacts).
+  if (changed && row.message_parts.every((part) => ["pending", "not_attempted"].includes(part.status))) {
+    row.message_parts = parts.map((part, index) => ({ kind: part.kind, signature: signatures[index], status: "pending" }));
+    persist();
+  } else if (changed) {
     return { ok: false, send_attempted: null, blocked_reason: "touch_sequence_changed", error: "触达内容与已开始的记录不一致，已停止发送。" };
   }
   for (let index = 0; index < parts.length; index += 1) {
