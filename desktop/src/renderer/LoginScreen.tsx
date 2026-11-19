@@ -181,7 +181,9 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
   // own, and a resting pointer often sits over the big figure, so pausing for either stopped the rotation
   // for good (2026-10-30).
   const [hovering, setHovering] = useState(false);
-  const rotating = !hovering;
+  // 省电: the six presenters take turns only while the window is in use.
+  const windowActive = useWindowActive();
+  const rotating = !hovering && windowActive;
   const [still] = useState(prefersStill);
   const [clipFailed, setClipFailed] = useState(false);
   const [clipEnded, setClipEnded] = useState(false);

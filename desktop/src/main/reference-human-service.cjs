@@ -707,8 +707,32 @@ function createReferenceHumanService(options = {}) {
   }
   // Runs from a timer: whatever fails here (a folder locked by antivirus, a record of an unknown shape)
   // waits for the next tick and never escapes as an uncaught exception that ends the app.
+  // 省电 (2026-11-19): this scan ran every 5 seconds and read and parsed every task ever made (about 4% of a
+  // core on the development machine, more with a long history). A task file whose size and time have not
+  // changed is not read again; only the few fields this scan needs are kept.
+  const scanCache = new Map();
+  function pendingCandidates() {
+    const directory = file('tasks');
+    if (!fs.existsSync(directory)) return [];
+    const seen = new Set(), due = [];
+    for (const name of fs.readdirSync(directory)) {
+      const id = name.replace(/.json$/u, '');
+      if (!name.endsWith('.json') || !TASK_ID.test(id)) continue;
+      seen.add(id);
+      let stat; try { stat = fs.statSync(file(`tasks/${name}`)); } catch { continue; }
+      let entry = scanCache.get(id);
+      if (!entry || entry.mtimeMs !== stat.mtimeMs || entry.size !== stat.size) {
+        let task; try { task = read(id); } catch { continue; }
+        entry = { mtimeMs: stat.mtimeMs, size: stat.size, due: RUNNING.has(task.status) || task.status === 'completed' && ['planned', 'submitted'].includes(task.autoCoverState) };
+        scanCache.set(id, entry);
+      }
+      if (entry.due) due.push({ id });
+    }
+    for (const id of scanCache.keys()) if (!seen.has(id)) scanCache.delete(id);
+    return due;
+  }
   function pending() {
-    try { if (!closed && !held && !global.__xiaoxiUpdateHold) for (const task of records('tasks')) if (RUNNING.has(task.status) || task.status === 'completed' && ['planned', 'submitted'].includes(task.autoCoverState)) void schedule(task.id); }
+    try { if (!closed && !held && !global.__xiaoxiUpdateHold) for (const task of pendingCandidates()) void schedule(task.id); }
     catch (error) { try { diagnostics().event('digital_human', 'resume_scan_failed', { error_code: String(error?.code || error?.name || 'unknown') }, { level: 'warn', code: 'reference_resume_scan_failed' }); } catch { /* Reporting never ends the timer. */ } }
   }
   const timer = setInterval(pending, 5000); timer.unref?.();
