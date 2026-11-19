@@ -23,10 +23,12 @@ const sampleStory = (segments = 1) => ({
 
 // The plan: 15 to 60 seconds, one 15-second segment each, images counted ahead.
 {
-  const plan = story.planStoryVideo({ durationSeconds: 45, sceneIds: ['hospital'], productName: 'CC1 Pro' });
+  const plan = story.planStoryVideo({ mode: 'product', durationSeconds: 45, sceneIds: ['hospital'], productName: 'CC1 Pro' });
   assert.equal(plan.pipelineVersion, 5); assert.equal(plan.segments, 3); assert.equal(plan.imageCount, 1 + 4 + 18);
   assert.equal(plan.scene, '医院'); assert.deepEqual(plan.shots.map((shot) => shot.seconds), [15, 15, 15]);
-  assert.throws(() => story.planStoryVideo({ durationSeconds: 20 }), (e) => e.code === 'product_video_invalid_option');
+  assert.throws(() => story.planStoryVideo({ mode: 'product', durationSeconds: 20 }), (e) => e.code === 'product_video_invalid_option');
+  assert.throws(() => story.planStoryVideo({ mode: 'product', durationSeconds: 15, sceneIds: ['moon'] }), /有效场景/u);
+  assert.throws(() => story.planStoryVideo({ mode: 'product', durationSeconds: 15, facts: '资'.repeat(12001) }), /最多/u);
 }
 // A story is checked before anything is paid for.
 {
@@ -64,12 +66,21 @@ const storyPrices = () => ({ ...video, storyPipeline: true, resolution: '480p', 
   ...imagePrice, fxCnyPerUsd: 8, storyReserveCny: 0.5, asrReserveCny: 1, checkedAt: new Date().toISOString() });
 assert.equal(validPrices(storyPrices()), true);
 {
-  const plan = story.planStoryVideo({ durationSeconds: 30, productName: 'x' });
+  const plan = story.planStoryVideo({ mode: 'product', durationSeconds: 30, productName: 'x' });
   const quote = quotePlan(plan, storyPrices(), 0);
-  // 30 s × 0.3 + 17 images (1 + 4 + 2 × 6) × 0.16 + 0.5 + 1, plus one picture and one segment kept for a redo.
-  assert.equal(quote.maximumCny, 17.88);
+  // 30 s × 0.3 + 17 images (1 + 4 + 2 × 6) × 0.16 + 0.5 + 1, plus both 定妆照 redos and one segment kept for a redo.
+  assert.equal(quote.maximumCny, 18.04);
 }
 
+{
+  const handlers = {}, sender = {};
+  const { registerProductVideoIpc } = require('./product-video-ipc.cjs');
+  registerProductVideoIpc({ ipcMain: { handle: (name, fn) => { handlers[name] = fn; }, removeHandler() {} }, getMainWindow: () => ({ webContents: sender }),
+    service: { imageMedia: async (id, key) => ({ key }), close() {} } });
+  const id = 'pv_' + '0'.repeat(8) + '-0000-0000-0000-' + '0'.repeat(12);
+  handlers['product-video:image-media']({ sender }, { id, key: 'grid_0' }).then((result) => assert.deepEqual(result, { ok: true, data: { key: 'grid_0' } }));
+  handlers['product-video:image-media']({ sender }, { id, key: '../x' }).then((result) => assert.equal(result.ok, false));
+}
 async function run() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoxi-story-video-'));
   const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
@@ -79,7 +90,8 @@ async function run() {
   const provider = {
     imageUploadBody: (file) => ({ body: Buffer.from(path.basename(file)), headers: {} }), nodeOf: (p) => p?.output || p, taskIdOf,
     resultUrl: (p, kind) => `https://fixture.example/${p.task_id}.${kind === 'images' ? 'png' : 'mp4'}`,
-    download: async (url, dest) => fs.writeFileSync(dest, url.endsWith('.png') ? png : clip),
+    // Every picture has its own bytes, so a redone 定妆照 is a different file.
+    download: async (url, dest) => fs.writeFileSync(dest, url.endsWith('.png') ? Buffer.concat([png, Buffer.from(url)]) : clip),
     request: async (route, request = {}) => {
       if (request.method === 'POST') {
         posts.push({ route, body: request.body });
@@ -99,7 +111,7 @@ async function run() {
     gatewayClient: { isEnabled: () => true, initialize: async () => ({ ready: true, capabilities: { apimart: true, bailian: true, bailian_video: true, volcengine_asr: true } }) },
     writeStory: async ({ system, user }) => { assert.match(system, /只输出 JSON/u); assert.match(user, /CC1 Pro/u); return { content: storyReply }; },
     mediaTools: {
-      referenceJpeg: async ({ destination }) => fs.writeFileSync(destination, 'jpg'),
+      referenceJpeg: async ({ source, destination }) => fs.writeFileSync(destination, fs.readFileSync(source)),
       composeStoryboard: async ({ frames, destination }) => { assert.equal(frames.length, 6); fs.writeFileSync(destination, 'board'); },
       normalizeAndAssemble: async ({ shots, destination }) => { assert.deepEqual(shots.map((shot) => shot.seconds), [15, 15]); fs.writeFileSync(destination, clip); },
       extractAudio: async ({ destination }) => fs.writeFileSync(destination, 'wav'),
@@ -122,9 +134,11 @@ async function run() {
     assert.deepEqual(Object.keys(task.imagesReady), ['sheet']);
     assert.equal(posts.filter((p) => p.route.includes('/images/generations')).length, 1);
     assert.deepEqual(posts.find((p) => p.route.includes('/images/generations')).body.image_urls, ['https://fixture.example/product.png']);
-    assert.match((await service.imageMedia(draft.id, 'sheet')).dataUrl, /^data:image\/jpeg;base64,/u);
+    const firstSheet = (await service.imageMedia(draft.id, 'sheet')).dataUrl;
+    assert.match(firstSheet, /^data:image\/jpeg;base64,/u);
     // 「不像，重出一张」 twice at most.
     await service.redoSheet(draft.id); task = await until(draft.id, (t) => t.status === 'awaiting_sheet');
+    assert.notEqual((await service.imageMedia(draft.id, 'sheet')).dataUrl, firstSheet, 'a redone 定妆照 is shown, not the old copy');
     await service.redoSheet(draft.id); task = await until(draft.id, (t) => t.status === 'awaiting_sheet');
     await assert.rejects(service.redoSheet(draft.id), (e) => e.code === 'product_video_sheet_retry_limit');
     assert.equal(task.sheetRedos, 2);

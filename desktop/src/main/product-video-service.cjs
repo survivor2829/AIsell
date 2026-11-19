@@ -379,7 +379,8 @@ function createProductVideoService(options = {}) {
     const image = (task.images[key] ||= {});
     if (!image.taskId) {
       const spec = storyImageSpec(task, key);
-      const urls = spec.refs.map((ref) => ref === 'product' ? task.imageUrl : task.images[ref]?.url);
+      const urls = [];
+      for (const ref of spec.refs) urls.push(await storyReferenceUrl(task, ref));
       if (urls.some((url) => !url)) throw fail('product_video_reference_missing', '参考图还没准备好，未提交出图。');
       const response = await operation(task, `img_${key}`, '/apimart/images/generations', { model: story.IMAGE_MODEL, prompt: spec.prompt, n: 1, size: spec.size, resolution: '1K',
         ...(urls.length ? { image_urls: urls } : {}) }, round(task.prices.imageUsd * task.prices.fxCnyPerUsd));
@@ -397,12 +398,30 @@ function createProductVideoService(options = {}) {
     fs.renameSync(contained(root, temporary), contained(root, relative));
     Object.assign(image, { file: relative, url, sha256: digest(bytes) }); save(task); return true;
   }
+  // A small JPEG of a picture, named after its content: a redone picture never reuses the old copy,
+  // and the page and the background job share one conversion.
+  const jpegJobs = new Map();
+  async function storyJpeg(task, key) {
+    const image = task.images?.[key];
+    if (!image?.file) throw fail('product_video_reference_missing', '参考图还没准备好。');
+    const relative = `${task.id}/ref-${key}-${String(image.sha256 || 'x').slice(0, 16)}.jpg`, full = contained(root, relative);
+    if (fs.existsSync(full)) return full;
+    if (!jpegJobs.has(full)) jpegJobs.set(full, Promise.resolve(media.referenceJpeg({ source: contained(root, image.file), destination: full, ffmpegPath })).finally(() => jpegJobs.delete(full)));
+    await jpegJobs.get(full); return full;
+  }
   async function storyReference(task, key) {
+    return `data:image/jpeg;base64,${fs.readFileSync(await storyJpeg(task, key)).toString('base64')}`;
+  }
+  // References for later pictures are uploaded from the local file once (free), not taken from result links that may expire.
+  async function storyReferenceUrl(task, key) {
+    if (key === 'product') return task.imageUrl;
     const image = task.images[key];
-    if (!image?.file) throw fail('product_video_reference_missing', '参考图还没准备好，未提交视频。');
-    const relative = `${task.id}/ref-${key}.jpg`;
-    if (!fs.existsSync(contained(root, relative))) await (media.referenceJpeg)({ source: contained(root, image.file), destination: contained(root, relative), ffmpegPath });
-    return `data:image/jpeg;base64,${fs.readFileSync(contained(root, relative)).toString('base64')}`;
+    if (!image?.file) throw fail('product_video_reference_missing', '参考图还没准备好，未提交出图。');
+    if (image.refUrl && image.refSha256 === image.sha256) return image.refUrl;
+    const request = provider.imageUploadBody(await storyJpeg(task, key));
+    const name = `upload_ref_${key}_${String(image.sha256 || '').slice(0, 8)}`;
+    const payload = await operation(task, name, '/apimart/uploads/images', request.body, 0, request.headers);
+    image.refUrl = remoteUrl(provider.nodeOf(payload).url || payload.url); image.refSha256 = image.sha256; save(task); return image.refUrl;
   }
   async function advanceStory(task) {
     ensureRunning();
@@ -463,7 +482,9 @@ function createProductVideoService(options = {}) {
       const result = response.result || response.data?.result || response.data || response;
       // A story without recognisable speech still gets its picture; it is only left without subtitles.
       task.preparedUtterances = Array.isArray(result.utterances) ? result.utterances : [];
-      task.captions = task.preparedUtterances.length ? media.buildCaptions({ utterances: task.preparedUtterances, timeUnit: 'ms', durationSeconds: task.durationSeconds }) : null;
+      // Subtitles that cannot be laid out (people talking over each other) are left out, not retried: the video still finishes.
+      try { task.captions = task.preparedUtterances.length ? media.buildCaptions({ utterances: task.preparedUtterances, timeUnit: 'ms', durationSeconds: task.durationSeconds }) : null; }
+      catch { task.captions = null; task.captionNote = '对话有重叠，这条没有加字幕。'; }
       task.status = 'packaging'; save(task);
     }
     if (task.status === 'packaging') {
@@ -717,6 +738,7 @@ function createProductVideoService(options = {}) {
       const task = read(id);
       if (task.plan.pipelineVersion !== 5 || task.status !== 'awaiting_sheet') throw fail('product_video_sheet_unavailable', '现在没有待确认的定妆照。');
       if ((task.sheetRedos || 0) >= 2) throw fail('product_video_sheet_retry_limit', '定妆照已经重出过两次，请换一张更清楚的产品图再新建。');
+      hold();
       if (task.operations.img_sheet) { (task.archivedOperations ||= []).push(task.operations.img_sheet); delete task.operations.img_sheet; }
       delete task.images.sheet; task.sheetRedos = (task.sheetRedos || 0) + 1;
       await verifyQuote(task); hold();
@@ -727,9 +749,7 @@ function createProductVideoService(options = {}) {
   async function storyImageMedia(id, key) {
     const task = read(id);
     if (!/^(?:sheet|scene|floor|person_[ab]|grid_\d{1,2})$/u.test(String(key || '')) || !task.images?.[key]?.file) throw fail('product_video_not_ready', '这张图还没准备好。');
-    const relative = `${task.id}/ref-${key}.jpg`;
-    if (!fs.existsSync(contained(root, relative))) await media.referenceJpeg({ source: contained(root, task.images[key].file), destination: contained(root, relative), ffmpegPath });
-    return { dataUrl: `data:image/jpeg;base64,${(await fsp.readFile(contained(root, relative))).toString('base64')}` };
+    return { dataUrl: `data:image/jpeg;base64,${(await fsp.readFile(await storyJpeg(task, key))).toString('base64')}` };
   }
   function preview(id) {
     const task = read(id);

@@ -110,6 +110,17 @@ function parseDirectPrices(videoDocument, ttsDocument, now = Date.now()) {
     ttsModel: TTS_MODEL, ttsCnyPer10kChars, checkedAt, ttsCheckedAt: checkedAt,
     source: [DIRECT_PRICE_SOURCE, TTS_PRICE_SOURCE], priceEvidenceHash: createHash('sha256').update(videoDocument).update(ttsDocument).digest('hex') };
 }
+// Wan3 rates alone: the 剧情版 uses the model's own sound and no separate voice.
+function parseDirectVideoPrices(videoDocument, now = Date.now()) {
+  const rows = beijingPriceRows(videoDocument, DIRECT_MODEL), rates = {};
+  for (const resolution of ['480p', '720p', '1080p']) {
+    const value = Number(rows.find(cells => cells[0] === `视频生成（${resolution.toUpperCase()}）` && cells[2] === '每秒')?.[1]);
+    if (!(value > 0) || !Number.isFinite(value)) throw fail('product_video_price_unavailable', 'Wan3对应清晰度的北京区域报价无法核实，未提交付费请求。');
+    rates[resolution] = { silent: value, audio: value };
+  }
+  return { ready: true, provider: 'bailian', model: DIRECT_MODEL, region: 'cn-beijing', rates, checkedAt: new Date(now).toISOString(),
+    priceEvidenceHash: createHash('sha256').update(videoDocument).digest('hex') };
+}
 function recentPrices(prices, now) {
   return Number.isFinite(Date.parse(prices?.checkedAt)) && now - Date.parse(prices.checkedAt) >= 0 && now - Date.parse(prices.checkedAt) < MAX_AGE;
 }
@@ -201,8 +212,8 @@ function createPriceReader({ fetchJson, fetchText, fetch: fetchImpl, gatewayClie
     const key = story ? 'story' : direct ? DIRECT_MODEL : official ? MODEL : 'legacy';
     if (validPrices(cache.get(key))) return cache.get(key);
     if (!pending.has(key)) pending.set(key, (story
-      ? Promise.all([text(DIRECT_PRICE_SOURCE), text(TTS_PRICE_SOURCE), readImagePrice(STORY_IMAGE_MODEL)]).then(([videoDocument, ttsDocument, image]) => {
-        const video = parseDirectPrices(videoDocument, ttsDocument);
+      ? Promise.all([text(DIRECT_PRICE_SOURCE), readImagePrice(STORY_IMAGE_MODEL)]).then(([videoDocument, image]) => {
+        const video = parseDirectVideoPrices(videoDocument);
         return { ...video, storyPipeline: true, resolution: '480p', audio: true, videoCnyPerSecond: video.rates['480p'].audio,
           imageModel: STORY_IMAGE_MODEL, ...storyImagePrice(image), fxCnyPerUsd: 8, fxNote: '图片美元价按预算汇率折算，非人民币账单',
           storyReserveCny: 0.5, asrReserveCny: 1, asrCnyPerMinute: ASR_REFERENCE.cnyPerHour / 60, asrReference: ASR_REFERENCE,
@@ -238,8 +249,8 @@ function quotePlan(plan, prices, budgetCny) {
     if (!validStoryPrices(prices)) return { ready: false, budgetCny, estimatedCny: null, reservedCny: 0, actualCny: 0, pendingCny: 0, message: '报价暂不可用，方案已保留。' };
     const seconds = plan.shots.reduce((sum, s) => sum + s.seconds, 0), videoCny = round(seconds * prices.videoCnyPerSecond);
     const imageReserveCny = plan.imageCount * round(prices.imageUsd * prices.fxCnyPerUsd), imageEstimateCny = plan.imageCount * prices.estimatedImageUsd * prices.fxCnyPerUsd;
-    // One redo of the 定妆照 and one redo of a segment are kept in the allowance.
-    const retryReserveCny = round(round(prices.imageUsd * prices.fxCnyPerUsd) + Math.max(0, ...plan.shots.map((shot) => shot.seconds)) * prices.videoCnyPerSecond);
+    // Both redos of the 定妆照 the page offers, and one redo of a segment, are kept in the allowance.
+    const retryReserveCny = round(2 * round(prices.imageUsd * prices.fxCnyPerUsd) + Math.max(0, ...plan.shots.map((shot) => shot.seconds)) * prices.videoCnyPerSecond);
     const otherCny = prices.storyReserveCny + prices.asrReserveCny;
     return { ready: true, estimatedCny: round(videoCny + imageEstimateCny + otherCny), maximumCny: round(videoCny + imageReserveCny + otherCny + retryReserveCny), retryReserveCny,
       reservedCny: 0, actualCny: 0, pendingCny: 0, budgetCny, videoCny, videoModel: prices.model, videoResolution: prices.resolution, videoAudio: true,
@@ -306,4 +317,4 @@ function createCoverPriceReader({ fetchJson, fetch: fetchImpl, gatewayClient } =
     return pending;
   };
 }
-module.exports = { STORY_IMAGE_MODEL, storyImagePrice, validStoryPrices, createCoverPriceReader, parseCoverPrice, createPriceReader, parsePrices, validPrices, quotePlan, round, createBailianPriceReader, parseBailianPrices, parseDirectPrices, validBailianPrices, createReferencePriceReader };
+module.exports = { parseDirectVideoPrices, STORY_IMAGE_MODEL, storyImagePrice, validStoryPrices, createCoverPriceReader, parseCoverPrice, createPriceReader, parsePrices, validPrices, quotePlan, round, createBailianPriceReader, parseBailianPrices, parseDirectPrices, validBailianPrices, createReferencePriceReader };

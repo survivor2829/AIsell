@@ -38,7 +38,7 @@ function registerProductVideoIpc(options = {}) {
     "confirm-sheet": (payload) => service.confirmSheet(idOf(payload)),
     "redo-sheet": (payload) => service.redoSheet(idOf(payload)),
     "image-media": (payload) => {
-      if (!/^(?:sheet|scene|floor|person_[ab]|grid_d{1,2})$/u.test(String(payload.key || ""))) throw fail("product_video_invalid_input", "请刷新页面后重试。");
+      if (!/^(?:sheet|scene|floor|person_[ab]|grid_\d{1,2})$/u.test(String(payload.key || ""))) throw fail("product_video_invalid_input", "请刷新页面后重试。");
       return service.imageMedia(idOf(payload), payload.key);
     },
     "shot-media": (payload) => {
