@@ -271,7 +271,18 @@ class ServiceTest(unittest.TestCase):
                 post(origin, "/v1/feedback", private)
                 visible = get(origin, "/v1/feedback/public?offset=0&limit=99")
                 self.assertEqual(visible["total"], 1)
-                self.assertEqual(set(visible["items"][0]), {"id", "text", "category", "createdAt", "receivedAt", "updatedAt", "status", "officialReply"})
+                self.assertEqual(set(visible["items"][0]), {"id", "text", "category", "createdAt", "receivedAt", "updatedAt", "status", "officialReply",
+                                                            "avatarSeed", "nickname"})
+                # 2026-11-18: an anonymous face and nickname, stable per computer, never the install id itself.
+                persona = visible["items"][0]
+                self.assertRegex(persona["avatarSeed"], r"^[a-f0-9]{12}$")
+                self.assertRegex(persona["nickname"], r"^[一-鿿]{4,8}·\d{1,2}$")
+                self.assertNotIn(community["client"]["installId"], json.dumps(visible))
+                from feedback import feedback_persona
+                self.assertNotEqual(feedback_persona(community["client"]["installId"], b"x" * 32)["avatarSeed"], persona["avatarSeed"],
+                                    "without the server key the persona cannot be recomputed from an install id")
+                again = get(origin, "/v1/feedback/public?offset=0&limit=99")["items"][0]
+                self.assertEqual((again["avatarSeed"], again["nickname"]), (persona["avatarSeed"], persona["nickname"]), "stable per computer")
                 initial_time = visible["items"][0]["updatedAt"]
                 post(admin_origin, "/api/feedback/status", {"id": community["id"], "status": "in_progress", "officialReply": "已复现，下一版修复", "hidden": False}, True)
                 visible = get(origin, "/v1/feedback/public")["items"][0]

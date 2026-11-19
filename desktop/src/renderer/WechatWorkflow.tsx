@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, CalendarClock, Check, ChevronRight, Clock3, ImagePlus, ListTodo, Pause, Pencil, Play, Plus, Repeat2, Send, ThumbsUp, Trash2, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Ban, Bot, CalendarClock, Check, CheckCircle2, ChevronRight, CircleHelp, Clock3, ImagePlus, List, ListTodo, Pause, Pencil, Play, Plus, Repeat2, Send, SkipForward, ThumbsUp, Trash2, Unlink, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { momentsProgressLabel } from "./MomentsCampaignPanel";
 import { XiaoxiSprite, type SpriteActivity } from "./XiaoxiSprite";
@@ -419,13 +419,23 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   const [notice, setNotice] = useState("");
   const [savedTask, setSavedTask] = useState<WorkflowTask | null>(null);
   const [deletion, setDeletion] = useState<{ ids: string[]; bulk: boolean } | null>(null);
+  // Which touch task has its 「看跳过了谁」 list open.
+  const [openSkipList, setOpenSkipList] = useState("");
   const editorAnchor = useRef<HTMLDivElement>(null);
   const { state, loading, busy, error, run } = workflow;
   const api = window.xiaoxiWorkflow;
   const availableTypes: WorkflowTaskType[] = mode === "touch" ? ["touch"] : mode === "moments" ? ["publish", "interact"] : ["touch", "publish", "interact"];
   const tasks = state.tasks.filter((task) => availableTypes.includes(task.type));
   const activeTasks = tasks.filter((task) => !["completed", "cancelled", "needs_attention"].includes(task.status));
-  const history = tasks.filter((task) => ["completed", "cancelled", "needs_attention"].includes(task.status)).reverse();
+  // 2026-11-18: work that waits for the customer is shown first, never folded away in the history —
+  // a stopped task, or a finished touch whose skipped people can still be retried (it holds reply).
+  // A stopped task the customer can do something about (retry it, or check an unknown send); one that
+  // was only skipped stays in the history.
+  const waitsForYou = (task: WorkflowTask) => (task.status === "needs_attention" && (task.canRetry || Boolean(task.unknownResolution))) || (task.type === "touch" && task.status === "completed"
+    && Boolean(task.skipsHoldReply) && !task.skippedSettledAt && !task.accountMismatch
+    && Boolean(task.skipped_records?.some((record) => (record.bulk_retryable ?? record.retryable) === true)));
+  const needsYou = tasks.filter(waitsForYou).reverse();
+  const history = tasks.filter((task) => ["completed", "cancelled", "needs_attention"].includes(task.status) && !waitsForYou(task)).reverse();
   const unsuccessful = tasks.filter((task) => ["needs_attention", "cancelled", "missed"].includes(task.status));
   const current = state.tasks.find((task) => task.id === (state.currentTaskId || state.waitingTaskId));
   const next = state.tasks.find((task) => task.id === state.nextTaskId);
@@ -546,6 +556,58 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   const bulkRetryContacts = bulkRetryTasks.reduce((count, task) => count + (task.skipped_records?.filter(bulkRetryable).length
     || (task.canRetry && task.type === "touch" ? Math.max(0, task.progress.total - task.progress.done) : 0)), 0);
 
+  // 精准触达 task summary, design A chosen 2026-11-18: customers over 30 read big numbers and colours,
+  // not lines of 12px text. The details stay one click away in 「看跳过了谁」.
+  const touchSummary = (task: WorkflowTask, retryableSkipped: TouchSkipRecord[], retryLocked: boolean, canRetryWhileListening: boolean) => {
+    const total = Math.max(0, Number(task.progress?.total) || 0);
+    const done = Math.min(total, Math.max(0, Number(task.progress?.done) || 0));
+    // Four numbers that add up to the total (review 2026-11-18): blocked/deleted people are counted once,
+    // in their own tile; people whose text arrived but a later part did not count as sent.
+    const records = task.skipped_records || [];
+    const unreachableNow = records.filter((record) => record.status === "recipient_unreachable_skipped").length;
+    const partial = records.filter((record) => record.status === "partial_sent_skipped").length;
+    const skipped = Math.max(0, records.length - unreachableNow - partial);
+    // Only people this task met: those excluded from the start (found earlier) are not in the total.
+    const unreachable = unreachableNow;
+    const blockedNow = records.filter((record) => record.unreachable_kind === "blocked").length;
+    const sent = Math.min(done, Math.max(0, done - records.length + partial));
+    const updateWaitingCount = records.filter(waitsForUpdate).length;
+    const earlierUnreachable = (task.unreachable_summary?.blocked_count || 0) + (task.unreachable_summary?.deleted_count || 0) > unreachableNow;
+    const waiting = Math.max(0, total - done);
+    const percent = total ? Math.round((sent / total) * 100) : 0;
+    const radius = 62, circle = 2 * Math.PI * radius;
+    const breakdown = task.skipped_breakdown;
+    const reasons: [typeof CircleHelp, string, number, string][] = [
+      [CircleHelp, "重名认不准", breakdown?.identity || 0, "is-orange"],
+      [Unlink, "发送前失败", breakdown?.pre_send || 0, "is-red"],
+      [AlertTriangle, "结果不明", breakdown?.outcome_unknown || 0, "is-purple"],
+      [Bot, "AI 没写出来", breakdown?.ai_failed || 0, "is-blue"]
+    ];
+    const canSettle = retryableSkipped.length > 0 && task.status === "completed" && task.skipsHoldReply && !task.skippedSettledAt && !task.accountMismatch;
+    if (!total) return earlierUnreachable ? <div className="touch-sum-actions"><button type="button" className="touch-sum-button" aria-expanded={openSkipList === task.id} onClick={() => setOpenSkipList(openSkipList === task.id ? "" : task.id)}><List />{openSkipList === task.id ? "收起名单" : "看拉黑和删除的人"}</button></div> : null;
+    return <div className="touch-sum">
+      <div className="touch-sum-ring" role="img" aria-label={`已发 ${sent} / ${total} 人`}>
+        <svg viewBox="0 0 150 150"><circle cx="75" cy="75" r={radius} className="touch-sum-track" />{percent > 0 && <circle cx="75" cy="75" r={radius} className="touch-sum-done" strokeDasharray={`${(circle * percent) / 100} ${circle}`} transform="rotate(-90 75 75)" />}</svg>
+        <div><b>{percent}%</b><span>已发 {sent} 人</span><span>共 {total} 人</span></div>
+      </div>
+      <div className="touch-sum-main">
+        <div className="touch-sum-tiles">
+          <div className="touch-sum-tile is-green"><i><CheckCircle2 /></i><b>{sent}</b><span>已发送</span></div>
+          <div className="touch-sum-tile is-orange"><i><SkipForward /></i><b>{skipped}</b><span>本次跳过</span></div>
+          <div className="touch-sum-tile is-gray" title="消息被拒收算被拉黑，需要朋友验证算被删除；这些人以后的触达会自动跳过。"><i><Ban /></i><b>{unreachable}</b><span>拉黑 {blockedNow} · 删除 {unreachableNow - blockedNow}</span></div>
+          <div className="touch-sum-tile is-blue"><i><Clock3 /></i><b>{waiting}</b><span>还没轮到</span></div>
+        </div>
+        {skipped > 0 && <div className="touch-sum-reasons">{reasons.filter(([, , count]) => count > 0).map(([Icon, label, count, tone]) => <span key={label} className={`touch-sum-chip ${tone}`}><Icon />{label}<b>{count}</b></span>)}</div>}
+        {(retryableSkipped.length > 0 || records.length > 0 || earlierUnreachable) && <div className="touch-sum-actions">
+          {retryableSkipped.length > 0 && <button type="button" className="touch-sum-button is-primary" data-xiaoxi-workflow-start disabled={busy || retryLocked} onClick={() => void retrySkipped(task, undefined, true)}><Repeat2 />{canRetryWhileListening ? `暂停自动回复，全部重试 ${retryableSkipped.length} 人` : `全部重试 ${retryableSkipped.length} 人`}</button>}
+          {canSettle && <button type="button" className="touch-sum-button is-soft" data-xiaoxi-workflow-start disabled={busy || retryLocked} onClick={() => void settleSkipped(task)}>这些人不再重试，开始自动回复</button>}
+          {(records.length > 0 || earlierUnreachable) && <button type="button" className="touch-sum-button" aria-expanded={openSkipList === task.id} onClick={() => setOpenSkipList(openSkipList === task.id ? "" : task.id)}><List />{openSkipList === task.id ? "收起名单" : "看跳过了谁"}</button>}
+        </div>}
+        {updateWaitingCount > 0 && <p className="touch-sum-hint">另有 {updateWaitingCount} 位要等软件更新认人方法后才能重试，更新后会自动加回来。</p>}
+      </div>
+    </div>;
+  };
+
   const taskRow = (task: WorkflowTask) => {
     const Icon = TASK_ICONS[task.type];
     const isWaiting = task.id === state.waitingTaskId;
@@ -564,28 +626,21 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
       <div className="workflow-task-copy">
         <div className="workflow-task-title"><strong>{task.title || TASK_LABELS[task.type]}</strong><span className={`workflow-task-status is-${isWaiting ? "waiting" : task.status}`}>{isWaiting ? task.waitingReason === "touch_safety_interval" ? "安全间隔" : "等待恢复" : TASK_STATUS[task.status]}</span></div>
         <div className="workflow-task-meta"><span><Clock3 size={13} />{formatTaskTime(task)}</span>{task.progress?.total > 0 && <span>{task.progress.done}/{task.progress.total} {task.type === "touch" ? "人" : "条"}</span>}{task.repeat === "daily" && task.lastCompletedDate && <span>最近完成：{task.lastCompletedDate}</span>}</div>
-        {task.type === "touch" && <p className="workflow-small-note">文案模式：{task.aiPolish === undefined ? "历史任务，请编辑确认" : task.aiPolish ? "AI 润色" : "原文发送"}</p>}
+        {task.type === "touch" && <p className="touch-sum-mode">{task.aiPolish === undefined ? "文案方式：请编辑确认" : task.aiPolish ? "AI 润色后发送" : "原文发送"}</p>}
         {isWaiting && <p className="workflow-small-note">{task.waitingReason !== "touch_safety_interval" && `${recoveryWaitText(task)}。`}{waitingDetail}</p>}
         {task.id === state.currentExecution?.taskId && <p className="workflow-small-note">{executionDetail}</p>}
         {task.type === "interact" && task.progress.liked !== undefined && <p className="workflow-small-note">累计点赞 {task.progress.liked} · 评论 {task.progress.commented || 0} · 跳过评论 {task.progress.skipped || 0}</p>}
         {task.error && <p className="workflow-task-error">{taskErrorText(task.error, task.reasonCode, task.reasonClassification)}</p>}
         {task.status === "needs_attention" && <p className="workflow-small-note">{task.canRetry ? task.type === "touch" ? "可从未发送的内容继续，已发出的文字和图片不会重发。" : "尚未执行互动，可重新加入并继续。" : "本次已跳过，不会重复发送。"}</p>}
-        {task.type === "touch" && Boolean(task.skipped_records?.length) && <section className="workflow-touch-skipped" aria-label={`本次跳过 ${task.skipped_records!.length} 位`}>
-          <div className="workflow-touch-skipped-head"><strong>本次跳过 {task.skipped_records!.length} 位</strong>
-            {retryableSkipped.length > 0 && <button type="button" className="text-button" data-xiaoxi-workflow-start disabled={busy || retryLocked} onClick={() => void retrySkipped(task, undefined, true)}>{canRetryWhileListening ? `暂停自动回复，全部重试并继续（${retryableSkipped.length} 人）` : `全部重试并继续（${retryableSkipped.length} 人）`}</button>}
-            {retryableSkipped.length > 0 && task.status === "completed" && task.skipsHoldReply && !task.skippedSettledAt && !task.accountMismatch && <button type="button" className="text-button" data-xiaoxi-workflow-start disabled={busy || retryLocked} onClick={() => void settleSkipped(task)}>这些人不再重试，开始自动回复</button>}
-          </div>
-          <p className="workflow-small-note">身份不唯一 {task.skipped_breakdown?.identity || 0} · AI 失败 {task.skipped_breakdown?.ai_failed || 0} · 发送前失败 {task.skipped_breakdown?.pre_send || 0} · 结果未知 {task.skipped_breakdown?.outcome_unknown || 0}{Boolean(task.skipped_breakdown?.partial_sent) && ` · 部分已发送 ${task.skipped_breakdown!.partial_sent}`}{Boolean(task.skipped_breakdown?.unreachable) && ` · 对方已不是好友 ${task.skipped_breakdown!.unreachable}`}</p>
-          {updateWaiting > 0 && <p className="workflow-small-note">其中 {updateWaiting} 位用当前版本已经再试过、还是没认出本人，现在全部重试结果也一样，所以不算在内；软件更新了认人方法后会自动变回可重试，也可以在明细里单独点「重试」。</p>}
-          <details><summary>查看明细与重试</summary><ul>{task.skipped_records!.map((record) => <li key={`${record.contactId}-${record.index}`}><span title={record.displayName}>{record.displayName || `第 ${record.index + 1} 位`}</span><small>{record.status === "recipient_unreachable_skipped" && record.unreachable_kind ? (record.unreachable_kind === "blocked" ? "被对方拉黑（消息被拒收）" : "对方已删除你（需要朋友验证）") : ["partial_sent_skipped", "recipient_unreachable_skipped"].includes(record.status) ? TOUCH_SKIP_LABELS[record.status] : record.reasonCode === "outcome_unknown" && record.blockedReason?.startsWith("部分内容已发送") ? "部分已发送，后续结果未知" : record.blockedReason?.startsWith("部分内容已发送") ? "部分已发送（后续内容未发）" : TOUCH_SKIP_LABELS[record.status] || "已跳过"}</small>{record.retryable === true && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || retryLocked} onClick={() => void retrySkipped(task, [record.contactId])}>重试</button>}{record.blockedReason && <p className="workflow-skip-reason">{taskErrorText(record.blockedReason)}</p>}</li>)}</ul></details>
-        </section>}
-        {task.type === "touch" && Boolean((task.unreachable_summary?.blocked_count || 0) + (task.unreachable_summary?.deleted_count || 0)) && <section className="workflow-touch-skipped" aria-label="拉黑与删除统计">
-          <div className="workflow-touch-skipped-head"><strong>被拉黑 {task.unreachable_summary!.blocked_count} 人 · 被删除 {task.unreachable_summary!.deleted_count} 人</strong></div>
-          <p className="workflow-small-note">消息被拒收算被拉黑，需要朋友验证算被删除；这些人以后的触达会自动跳过。</p>
-          <details><summary>查看名单</summary><ul>
+        {task.type === "touch" && touchSummary(task, retryableSkipped, retryLocked, canRetryWhileListening)}
+        {task.type === "touch" && openSkipList === task.id && <section className="touch-sum-list" aria-label="跳过与拉黑删除名单">
+          {Boolean(task.skipped_records?.length) && <><h4>本次跳过 {task.skipped_records!.length} 位</h4>{updateWaiting > 0 && <p className="touch-sum-hint">其中 {updateWaiting} 位已经用当前版本再试过，软件更新认人方法后会自动变回可重试。</p>}<ul>{task.skipped_records!.map((record) => <li key={`${record.contactId}-${record.index}`}><span title={record.displayName}>{record.displayName || `第 ${record.index + 1} 位`}</span><small>{record.status === "recipient_unreachable_skipped" && record.unreachable_kind ? (record.unreachable_kind === "blocked" ? "被对方拉黑（消息被拒收）" : "对方已删除你（需要朋友验证）") : ["partial_sent_skipped", "recipient_unreachable_skipped"].includes(record.status) ? TOUCH_SKIP_LABELS[record.status] : record.reasonCode === "outcome_unknown" && record.blockedReason?.startsWith("部分内容已发送") ? "部分已发送，后续结果未知" : record.blockedReason?.startsWith("部分内容已发送") ? "部分已发送（后续内容未发）" : TOUCH_SKIP_LABELS[record.status] || "已跳过"}</small>{record.retryable === true && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || retryLocked} onClick={() => void retrySkipped(task, [record.contactId])}>重试</button>}{record.blockedReason && <p className="workflow-skip-reason">{taskErrorText(record.blockedReason)}</p>}</li>)}</ul></>}
+          {Boolean((task.unreachable_summary?.blocked_count || 0) + (task.unreachable_summary?.deleted_count || 0)) && <><h4>拉黑和删除了你的人（以后自动跳过）</h4>
+          <ul>
             {task.unreachable_summary!.blocked.map((person, index) => <li key={`blocked-${index}`}><span title={person.name}>{person.name || "未命名联系人"}</span><small>被拉黑{person.found === "earlier" ? "（此前已发现，本次未发送）" : ""}</small></li>)}
             {task.unreachable_summary!.deleted.map((person, index) => <li key={`deleted-${index}`}><span title={person.name}>{person.name || "未命名联系人"}</span><small>被删除{person.found === "earlier" ? "（此前已发现，本次未发送）" : ""}</small></li>)}
-          </ul></details>
+          </ul>
+          </>}
         </section>}
         {task.accountMismatch && <p className="workflow-task-error">微信账号已切换，需切回原账号后执行。</p>}
         {task.status === "missed" && <p className="workflow-task-error">这是往日未执行的任务，请修改时间后加入，或取消。</p>}
@@ -657,6 +712,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
       />}
     </div>
 
+    {needsYou.length > 0 && <section className="workflow-needs-you" aria-label="需要你处理"><div className="workflow-list-head"><h2>需要你处理</h2><span>{needsYou.length} 项</span></div><ul className="workflow-task-list">{needsYou.map(taskRow)}</ul></section>}
     <div className="workflow-list-head"><h2>{mode === "home" ? "待办任务" : "已加入计划"}</h2><span>{activeTasks.length} 项</span>{unsuccessful.length > 0 && <button type="button" className="text-button workflow-cleanup" disabled={busy || planLocked} onClick={() => setDeletion({ ids: unsuccessful.map((task) => task.id), bulk: true })}><Trash2 size={14} />清理已跳过和已取消任务（{unsuccessful.length}）</button>}</div>
     {deletion?.bulk && deletePrompt(true)}
     {loading ? <div className="workflow-loading" aria-label="正在读取任务"><span /><span /><span /></div> : activeTasks.length ? <ul className="workflow-task-list">{activeTasks.map(taskRow)}</ul> : <div className="workflow-empty"><ListTodo size={25} /><div><strong>还没有待办任务</strong><p>{state.recipients.length ? "有客户消息时继续自动回复；需要触达、发布或互动时，在上方添加。" : "从上方添加一项任务。任务结束后，系统会持续接待已加入范围的客户。"}</p></div></div>}

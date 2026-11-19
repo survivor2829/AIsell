@@ -3,11 +3,29 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import re
+import threading
 import time
 
 UUID = re.compile(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\Z")
 SECRET = re.compile(r"[a-f0-9]{64}\Z")
+# 吐槽中心 (2026-11-18): each public post shows a cartoon face and an anonymous nickname, the same for
+# every post from one computer. Both come from a keyed hash (a secret that stays on this server) of the
+# install id, so nobody holding an install id can find that customer's posts; the id itself, the
+# account, phone or name never leave the server. A small number keeps two people from sharing a name.
+PERSONA_ADJECTIVES = ("勤快的", "爱琢磨的", "早起的", "认真的", "热心的", "靠谱的", "爽快的", "细心的", "能干的", "乐呵的",
+                      "实在的", "敢想的", "稳重的", "利索的", "开朗的", "踏实的", "机灵的", "大方的", "耐心的", "务实的")
+PERSONA_NOUNS = ("小老板", "店长", "采购员", "销售", "老师傅", "厂长", "经理", "运营", "设计师", "合伙人",
+                 "代理商", "工程师", "技术员", "业务员", "老板娘", "主管", "调度员", "售后", "质检员", "跟单员")
+
+
+def feedback_persona(source, key):
+    """A stable anonymous face seed and nickname for one computer; needs the server key to recompute."""
+    digest = hmac.new(key, ("feedback-persona:" + str(source)).encode("utf-8"), hashlib.sha256).hexdigest()
+    number = int(digest[:8], 16)
+    name = PERSONA_ADJECTIVES[number % len(PERSONA_ADJECTIVES)] + PERSONA_NOUNS[(number // 97) % len(PERSONA_NOUNS)]
+    return {"avatarSeed": digest[:12], "nickname": f"{name}·{number % 97 + 1}"}
 TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\Z")
 STATES = ("pending", "in_progress", "resolved")
 # Screenshots pasted into 吐槽 (user 2026-11-09): sent one by one after the text, as JPEG.
@@ -75,6 +93,35 @@ def validate_feedback(body, validate_report, safe_token):
 
 
 class FeedbackStoreMixin:
+    _persona_key_lock = threading.Lock()
+
+    def persona_key(self):
+        """The server-only key for anonymous feedback personas, created once beside the data.
+
+        Read once per process; requests racing on a fresh server wait on one lock so a single key is
+        written and every row of every response uses it (review 2026-11-18).
+        """
+        cached = getattr(self, "_persona_key_cache", None)
+        if cached:
+            return cached
+        with self._persona_key_lock:
+            cached = getattr(self, "_persona_key_cache", None)
+            if cached:
+                return cached
+            path = self.root / "feedback-persona.key"
+            try:
+                key = path.read_bytes()
+            except FileNotFoundError:
+                key = b""
+            if len(key) < 32:
+                tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+                tmp.write_bytes(os.urandom(32))
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, path)
+                key = path.read_bytes()
+            self._persona_key_cache = key
+            return key
+
     def initialize_feedback(self, db):
         db.executescript("""
             CREATE TABLE IF NOT EXISTS feedback (
@@ -174,11 +221,12 @@ class FeedbackStoreMixin:
             rows = db.execute("SELECT * FROM feedback WHERE visibility='public' AND hidden=0 ORDER BY received DESC,id DESC LIMIT ? OFFSET ?",
                               (limit, offset)).fetchall()
             total = db.execute("SELECT COUNT(*) FROM feedback WHERE visibility='public' AND hidden=0").fetchone()[0]
-        items = []
+        items, key = [], self.persona_key()
         for row in rows:
             body = json.loads(row["body"])
             items.append({"id": row["id"], "text": body["text"], "category": body["category"], "createdAt": body["createdAt"],
-                          "receivedAt": row["received"], "updatedAt": row["updated"], "status": row["status"], "officialReply": row["official_reply"]})
+                          "receivedAt": row["received"], "updatedAt": row["updated"], "status": row["status"], "officialReply": row["official_reply"],
+                          **feedback_persona((body.get("client") or {}).get("installId") or row["id"], key)})
         return {"items": items, "total": total}
 
     def feedback_statuses(self, body):

@@ -21,3 +21,17 @@
 .business-module-plan > button { display:inline-flex; align-items:center; gap:8px; margin-top:12px; }
 @media (max-width: 760px) { .business-page-head { flex-wrap: wrap; } }
 @media (max-width: 600px) { .business-module-nav > button { padding:22px 4px; gap:14px; } .business-module-nav strong { font-size:18px; } .business-module-plan h2 { font-size:21px; } }
+
+/* 2026-11-18 redesign (精准获客 design C): three big entry cards with coloured icon squares. */
+.business-module-nav { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; border-top: 0; }
+.business-module-nav > button { flex-direction: column; align-items: flex-start; gap: 14px; padding: 24px; border: 2px solid transparent; border-radius: 22px; background: #fff; box-shadow: 0 2px 10px rgba(16, 24, 40, .05); text-align: left; }
+.business-module-nav > button:hover { border-color: var(--brand-red, #e60000); background: #fff; }
+.business-module-nav > button > svg { width: 56px; height: 56px; padding: 14px; border-radius: 16px; color: #fff; background: #e60000; box-sizing: border-box; }
+.business-module-nav > button:nth-child(1) > svg { background: #7c4ddb; }
+.business-module-nav > button:nth-child(2) > svg { background: #2f6fe4; }
+.business-module-nav > button:nth-child(3) > svg { background: #e60000; }
+.business-module-nav strong { font-size: 22px; margin-bottom: 6px; }
+.business-module-nav strong + span { font-size: 16px; line-height: 1.6; }
+.business-personalize, .business-stage { font-size: 14px; }
+@media (max-width: 900px) { .business-module-nav { grid-template-columns: 1fr; } }
+.business-module-nav > button > svg:last-child { width: 22px; height: 22px; padding: 0; background: none !important; color: #9ca3af; align-self: flex-end; margin-top: -30px; }

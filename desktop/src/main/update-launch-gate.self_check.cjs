@@ -71,19 +71,52 @@ function harness(controller, { request } = {}) {
     void pending;
   }
 
-  // 3. 下载失败、断网：自动重试，间隔逐渐拉长（最长 60 秒），直到准备好再安装
+  // 3. 下载失败两次后成功：重试间隔逐渐拉长，准备好就安装，不提前放行
   {
-    const failures = Array.from({ length: 8 }, () => ({ stage: "error", nextVersion: "1.2.14", error: "更新检查或下载失败，已保留下载进度，请稍后重试。" }));
+    const failures = Array.from({ length: 2 }, () => ({ stage: "error", nextVersion: "1.2.14", error: "更新检查或下载失败，已保留下载进度，请稍后重试。" }));
     const controller = fakeController([...failures, { stage: "ready", nextVersion: "1.2.14" }]);
     let requested = 0;
     const run = harness(controller, { request: async () => { requested += 1; controller.notify({ updateRequested: true, stage: "waiting" }); return controller.status(); } });
     void run.gate.start();
     await new Promise(resolve => setTimeout(resolve, 100));
-    assert.equal(controller.checks, 9);
-    assert.deepEqual(run.sleeps, [2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000]);
+    assert.equal(controller.checks, 3);
+    assert.deepEqual(run.sleeps, [2000, 4000]);
     assert.equal(requested, 1); assert.deepEqual(run.opened, []);
   }
-
+  // 3b. 下载连续失败三次（现场 2026-11-18：网速慢、连接被掐断，客户一直进不去）：先放客户进当前版本，
+  //     更新在后台继续（间隔 2 分钟起、最长 10 分钟），下好就停，已下载的部分保留
+  {
+    const failures = Array.from({ length: 5 }, () => ({ stage: "error", nextVersion: "1.2.14", error: "更新检查或下载失败，已保留下载进度，请稍后重试。", errorCode: "cloud_timeout" }));
+    const controller = fakeController([...failures, { stage: "ready", nextVersion: "1.2.14" }]);
+    const run = harness(controller);
+    const result = await run.gate.start();
+    assert.equal(result.phase, "open"); assert.deepEqual(run.opened, ["download_failing"]);
+    assert.deepEqual(run.holds, [true, false], "business work starts on the current version");
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(controller.checks, 6, "the download keeps resuming in the background until it is ready");
+    assert.deepEqual(run.sleeps, [2000, 4000, 120000, 240000, 480000], "background retries start at 2 minutes and double");
+    assert.equal(controller.status().stage, "ready");
+  }
+  // 3c. 签名不对这类重试修不好的失败：不当成「网络不稳」提前放行（review 2026-11-18）
+  {
+    const bad = Array.from({ length: 4 }, () => ({ stage: "error", nextVersion: "1.2.14", error: "更新签名校验失败", errorCode: "cloud_signature_invalid" }));
+    const controller = fakeController([...bad, { stage: "current" }]);
+    const run = harness(controller);
+    await run.gate.start();
+    assert.deepEqual(run.opened, ["current"], "a bad package is never reported as a slow download");
+  }
+  // 3d. 下载卡住不动（连接开着但没有数据）：每次算一次失败，三次后放行；中间下好过一次就重新计数
+  {
+    const controller = fakeController([{ hang: true }, { hang: true }, { hang: true }, { stage: "ready", nextVersion: "1.2.14" }]);
+    const opened = [];
+    let clock = 0;
+    const gate = createLaunchGate({ controller, request: async () => controller.status(), setHold() {}, onOpen: reason => opened.push(reason),
+      checkTimeoutMs: 0, stallMs: 50, stallPollMs: 5, now: () => (clock += 20), sleep: async () => {} });
+    controller.notify({ nextVersion: "1.2.14" });
+    const keepAlive = setInterval(() => {}, 1000); // the stall watch is unref’d, as in the app
+    try { await gate.start(); } finally { clearInterval(keepAlive); }
+    assert.deepEqual(opened, ["download_failing"], "a download that never moves lets the customer in");
+  }
   // 4. 安装助手没能启动：回到重试，不放行
   {
     const controller = fakeController([{ stage: "ready", nextVersion: "1.2.14" }, { stage: "ready", nextVersion: "1.2.14" }]);
@@ -132,7 +165,7 @@ function harness(controller, { request } = {}) {
     assert.equal(requested, 1, "the install is not repeated");
     assert.deepEqual(run.opened, ["disk_full"]);
   }
-  // 已经知道有新版之后再断网，不放行，继续重试
+  // 已经知道有新版之后再断网（还没到三次）：不放行，继续重试
   {
     const controller = fakeController([{ stage: "error", nextVersion: "1.2.14", error: "x" }, { hang: true }]);
     const run = harness(controller);
@@ -154,5 +187,5 @@ function harness(controller, { request } = {}) {
     assert.doesNotMatch(source, /launchGateOpened\)\.then\(\(\) => readyWindow/u, "health never waits for the gate");
     assert.match(source, /setHold: value => \{ updateHolds\.install = value; applyUpdateHold\(\); \}/u, "an install retry cannot release the launch hold");
   }
-  console.log("update launch gate self-check passed: install before entry, retry with backoff, bypass only offline/rolled back/unsupported/damaged base");
+  console.log("update launch gate self-check passed: install before entry, retry with backoff, let in after repeated download failures and keep downloading, bypass offline/rolled back/unsupported/damaged base");
 })().catch(error => { console.error(error); process.exitCode = 1; });
