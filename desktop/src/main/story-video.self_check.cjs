@@ -63,13 +63,13 @@ const imagePrice = storyImagePrice({ success: true, data: { model_name: 'gpt-ima
 assert.deepEqual(imagePrice, { imageUsd: 0.02, estimatedImageUsd: 0.008 });
 const video = parseDirectPrices(directDoc, ttsDoc);
 const storyPrices = () => ({ ...video, storyPipeline: true, resolution: '480p', audio: true, videoCnyPerSecond: video.rates['480p'].audio, imageModel: 'gpt-image-2.5-ext',
-  ...imagePrice, fxCnyPerUsd: 8, storyReserveCny: 0.5, asrReserveCny: 1, checkedAt: new Date().toISOString() });
+  ...imagePrice, fxCnyPerUsd: 8, storyReserveCny: 0.2, asrReserveCny: 1, checkedAt: new Date().toISOString() });
 assert.equal(validPrices(storyPrices()), true);
 {
   const plan = story.planStoryVideo({ mode: 'product', durationSeconds: 30, productName: 'x' });
   const quote = quotePlan(plan, storyPrices(), 0);
-  // 30 s × 0.3 + 17 images (1 + 4 + 2 × 6) × 0.16 + 0.5 + 1, plus both 定妆照 redos and one segment kept for a redo.
-  assert.equal(quote.maximumCny, 18.04);
+  // 30 s × 0.3 + 17 images (1 + 4 + 2 × 6) × 0.16 + three story writes × 0.2 + 1, plus both 定妆照 redos and one segment kept for a redo.
+  assert.equal(quote.maximumCny, 18.14);
 }
 
 {
@@ -86,7 +86,7 @@ async function run() {
   const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
   const clip = Buffer.alloc(2048); clip.write('ftyp', 4, 'ascii');
   const posts = [], tasks = new Map();
-  let storyReply = JSON.stringify(sampleStory(2)), failImage = '';
+  let storyReply = JSON.stringify(sampleStory(2)), failImage = '', storyCalls = 0, lastFeedback = '';
   const provider = {
     imageUploadBody: (file) => ({ body: Buffer.from(path.basename(file)), headers: {} }), nodeOf: (p) => p?.output || p, taskIdOf,
     resultUrl: (p, kind) => `https://fixture.example/${p.task_id}.${kind === 'images' ? 'png' : 'mp4'}`,
@@ -109,7 +109,7 @@ async function run() {
   };
   const service = createProductVideoService({ rootDir: root, provider, pollMs: 1, readPrices: async () => storyPrices(),
     gatewayClient: { isEnabled: () => true, initialize: async () => ({ ready: true, capabilities: { apimart: true, bailian: true, bailian_video: true, volcengine_asr: true } }) },
-    writeStory: async ({ system, user }) => { assert.match(system, /只输出 JSON/u); assert.match(user, /CC1 Pro/u); return { content: storyReply }; },
+    writeStory: async ({ system, user }) => { storyCalls += 1; lastFeedback = user.includes('没有通过检查') ? user.split('没有通过检查：')[1] : ''; assert.match(system, /只输出 JSON/u); assert.match(user, /CC1 Pro/u); return { content: storyReply }; },
     mediaTools: {
       referenceJpeg: async ({ source, destination }) => fs.writeFileSync(destination, fs.readFileSync(source)),
       composeStoryboard: async ({ frames, destination }) => { assert.equal(frames.length, 6); fs.writeFileSync(destination, 'board'); },
@@ -147,6 +147,8 @@ async function run() {
     await service.confirmSheet(draft.id);
     task = await until(draft.id, (t) => t.status === 'needs_attention');
     assert.equal(task.errorCode, 'product_video_story_invalid');
+    assert.equal(storyCalls, 3, 'a failing story is written again twice, with the reason, before the customer is asked');
+    assert.match(lastFeedback, /两个人物/u);
     assert.equal(posts.filter((p) => p.route.includes('/images/generations')).length, 3, 'no picture after a bad story');
     storyReply = JSON.stringify(sampleStory(2)); failImage = '人物定妆照';
     await service.retryShot(draft.id);

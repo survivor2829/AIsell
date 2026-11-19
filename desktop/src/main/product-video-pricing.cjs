@@ -216,7 +216,7 @@ function createPriceReader({ fetchJson, fetchText, fetch: fetchImpl, gatewayClie
         const video = parseDirectVideoPrices(videoDocument);
         return { ...video, storyPipeline: true, resolution: '480p', audio: true, videoCnyPerSecond: video.rates['480p'].audio,
           imageModel: STORY_IMAGE_MODEL, ...storyImagePrice(image), fxCnyPerUsd: 8, fxNote: '图片美元价按预算汇率折算，非人民币账单',
-          storyReserveCny: 0.5, asrReserveCny: 1, asrCnyPerMinute: ASR_REFERENCE.cnyPerHour / 60, asrReference: ASR_REFERENCE,
+          storyReserveCny: 0.2, asrReserveCny: 1, asrCnyPerMinute: ASR_REFERENCE.cnyPerHour / 60, asrReference: ASR_REFERENCE,
           source: [DIRECT_PRICE_SOURCE, PRICE_ORIGIN + STORY_IMAGE_MODEL, ASR_REFERENCE.source] };
       })
       : direct
@@ -251,7 +251,8 @@ function quotePlan(plan, prices, budgetCny) {
     const imageReserveCny = plan.imageCount * round(prices.imageUsd * prices.fxCnyPerUsd), imageEstimateCny = plan.imageCount * prices.estimatedImageUsd * prices.fxCnyPerUsd;
     // Both redos of the 定妆照 the page offers, and one redo of a segment, are kept in the allowance.
     const retryReserveCny = round(2 * round(prices.imageUsd * prices.fxCnyPerUsd) + Math.max(0, ...plan.shots.map((shot) => shot.seconds)) * prices.videoCnyPerSecond);
-    const otherCny = prices.storyReserveCny + prices.asrReserveCny;
+    // The story may be written up to three times before anything else is paid for.
+    const otherCny = 3 * prices.storyReserveCny + prices.asrReserveCny;
     return { ready: true, estimatedCny: round(videoCny + imageEstimateCny + otherCny), maximumCny: round(videoCny + imageReserveCny + otherCny + retryReserveCny), retryReserveCny,
       reservedCny: 0, actualCny: 0, pendingCny: 0, budgetCny, videoCny, videoModel: prices.model, videoResolution: prices.resolution, videoAudio: true,
       videoCnyPerSecond: prices.videoCnyPerSecond, source: prices.source, checkedAt: prices.checkedAt, fxCnyPerUsd: prices.fxCnyPerUsd,

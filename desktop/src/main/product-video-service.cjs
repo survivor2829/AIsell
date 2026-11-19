@@ -193,7 +193,7 @@ function createProductVideoService(options = {}) {
       const image = round(task.prices.imageUsd * task.prices.fxCnyPerUsd); let total = 0;
       for (const key of ['sheet', ...storyImageKeys(task.plan.segments)]) if (!task.images?.[key]?.file && !task.operations[`img_${key}`] && exclude !== `img_${key}`) total += image;
       task.plan.shots.forEach((shot, index) => { if (!task.shots[index].file && !task.operations[`shot_${index}`] && exclude !== `shot_${index}`) total += videoReserve(task, shot); });
-      if (!task.operations.story && exclude !== 'story') total += task.prices.storyReserveCny;
+      if (!task.story && !Object.keys(task.operations).some((k) => /^story(?:_\d+)?$/u.test(k) && !task.operations[k].response) && !String(exclude || '').startsWith('story')) total += task.prices.storyReserveCny;
       if (!task.operations.asr && exclude !== 'asr') total += task.prices.asrReserveCny;
       return total;
     }
@@ -436,11 +436,20 @@ function createProductVideoService(options = {}) {
     if (task.status === 'writing_story') {
       if (typeof options.writeStory !== 'function') throw fail('product_video_story_unavailable', '写故事的服务暂未就绪，未继续花钱。');
       const scene = SCENES.find((row) => row.id === task.plan.sceneIds[0]) || SCENES[0];
-      const response = await operation(task, 'story', null, null, task.prices.storyReserveCny, {}, async () => {
-        const result = await options.writeStory(story.storyMessages({ productName: task.plan.productName, facts: task.facts, scene, segments }));
+      // A story that fails the checks is written again with the reason, up to three times in all
+      // (a few fen each), before the customer is asked to retry; no picture is paid for meanwhile.
+      const attempt = (task.storyAttempts ||= []).length;
+      const name = attempt ? `story_${attempt + 1}` : 'story';
+      const response = await operation(task, name, null, null, task.prices.storyReserveCny, {}, async () => {
+        const result = await options.writeStory(story.storyMessages({ productName: task.plan.productName, facts: task.facts, scene, segments, feedback: task.storyAttempts.at(-1) || '' }));
         return { content: String(result?.content || '') };
       });
-      task.story = story.parseStory(response.content, segments);
+      try { task.story = story.parseStory(response.content, segments); }
+      catch (error) {
+        if (error.code !== 'product_video_story_invalid' || task.storyAttempts.length >= 2) { task.storyAttempts = []; throw error; }
+        task.storyAttempts.push(String(error.message || '').replace(/，没有继续花钱，请重试。$/u, '')); save(task); return;
+      }
+      task.storyAttempts = [];
       // Every prompt is built once now, so a bad story stops before the first paid picture.
       storyImageKeys(segments).forEach((key) => storyImageSpec(task, key));
       task.plan.shots.forEach((_, index) => story.videoPrompt(task.story, index));
@@ -700,7 +709,10 @@ function createProductVideoService(options = {}) {
         const key = Object.keys(task.images || {}).find((k) => !task.images[k].file);
         if (key) { name = `img_${key}`; delete task.images[key]; }
         task.resumeStatus = 'imaging';
-      } else if (task.plan.pipelineVersion === 5 && task.errorCode === 'product_video_story_invalid') { name = 'story'; task.resumeStatus = 'writing_story'; delete task.story; }
+      } else if (task.plan.pipelineVersion === 5 && task.errorCode === 'product_video_story_invalid') {
+        for (const key of Object.keys(task.operations).filter((k) => /^story(?:_\d+)?$/u.test(k))) { (task.archivedOperations ||= []).push(task.operations[key]); delete task.operations[key]; }
+        task.resumeStatus = 'writing_story'; delete task.story; task.storyAttempts = [];
+      }
       else if (task.errorCode === 'product_video_frame_failed') { name = `frame_${index}`; task.resumeStatus = 'preparing_frames'; }
       else if (ASR_RETRY_ERRORS.has(task.errorCode)) { name = 'asr'; task.resumeStatus = 'transcribing'; delete task.captions; }
       else name = Object.keys(task.operations).find((key) => task.operations[key].rejected);
