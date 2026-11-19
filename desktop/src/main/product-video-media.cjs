@@ -262,4 +262,28 @@ async function assemblePreparedVideo({ task, shots, audioPath, destination, ffmp
   });
 }
 
-module.exports = { normalizeAndAssemble, assemblePreparedVideo, extractAudio, buildCaptions, renderCaptioned, run, probe, videoEncoderArgs };
+/** 剧情版: a reference picture as a JPEG of at most 1600 px, small enough to send inline. */
+async function referenceJpeg({ source, destination, ffmpegPath = 'ffmpeg' }) {
+  separateOutput(source, destination);
+  return temporaryWork(destination, async (directory) => {
+    const output = path.join(directory, 'ref.jpg');
+    await run(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y', '-i', path.resolve(source), '-frames:v', '1',
+      '-vf', "scale='min(1600,iw)':'min(1600,ih)':force_original_aspect_ratio=decrease", '-q:v', '3', output]);
+    await fs.rename(output, path.resolve(destination));
+    return destination;
+  });
+}
+/** 剧情版: six storyboard frames as one 3 × 2 board with thin white gaps, in reading order. */
+async function composeStoryboard({ frames, destination, ffmpegPath = 'ffmpeg' }) {
+  if (!Array.isArray(frames) || frames.length !== 6) throw mediaError('product_video_storyboard_invalid', '分镜需要正好六格。');
+  frames.forEach((frame) => separateOutput(frame, destination));
+  return temporaryWork(destination, async (directory) => {
+    const output = path.join(directory, 'board.jpg');
+    const tiles = frames.map((_, i) => `[${i}:v]scale=600:1066:force_original_aspect_ratio=decrease,pad=600:1066:(ow-iw)/2:(oh-ih)/2:white,pad=618:1078:9:6:white[t${i}]`).join(';');
+    await run(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y', ...frames.flatMap((frame) => ['-i', path.resolve(frame)]),
+      '-filter_complex', `${tiles};[t0][t1][t2][t3][t4][t5]xstack=inputs=6:layout=0_0|w0_0|w0+w1_0|0_h0|w0_h0|w0+w1_h0[out]`, '-map', '[out]', '-frames:v', '1', '-q:v', '3', output]);
+    await fs.rename(output, path.resolve(destination));
+    return destination;
+  });
+}
+module.exports = { referenceJpeg, composeStoryboard, normalizeAndAssemble, assemblePreparedVideo, extractAudio, buildCaptions, renderCaptioned, run, probe, videoEncoderArgs };

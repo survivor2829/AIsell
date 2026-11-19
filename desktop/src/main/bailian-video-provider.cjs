@@ -69,6 +69,19 @@ function directVideoRequest({ imageUrl, prompt, seconds, durationSeconds, resolu
     parameters: { resolution: quality, ratio: '9:16', duration, audio: false, prompt_extend: false, watermark: false } },
     headers: { ...ASYNC_HEADERS, ...(reference.startsWith('oss://') ? { 'X-DashScope-OssResourceResolve': 'enable' } : {}) } };
 }
+// 剧情版: several reference images (定妆照、场景、地面对照、分镜、两个人物) and the model's own sound with dialogue.
+// The spike's 3,821-character prompt was accepted; longer storyboards are refused before any request.
+function storyVideoRequest({ images, prompt, seconds = 15, resolution = '480P' } = {}) {
+  const quality = String(resolution).toUpperCase(), text = String(prompt || '').trim();
+  if (!Number.isInteger(seconds) || seconds < 2 || seconds > 15) throw fail('bailian_duration_invalid', '剧情版每段须为2至15秒。');
+  if (!['480P', '720P', '1080P'].includes(quality)) throw fail('bailian_resolution_invalid', 'Wan3视频支持480P、720P或1080P。');
+  if (!text || [...text].length > 4500) throw fail('bailian_prompt_invalid', '视频提示词须为1至4500字，不能截断导演要求。');
+  if (!Array.isArray(images) || images.length < 1 || images.length > 9) throw fail('bailian_media_invalid', '参考图须为1至9张。');
+  const media = images.map((url) => ({ type: 'reference_image', url: mediaReference(url, { image: true }) }));
+  return { route: ROUTES.video, body: { model: DIRECT_MODEL, input: { prompt: text, media },
+    parameters: { resolution: quality, ratio: '9:16', duration: seconds, audio: true, prompt_extend: false, watermark: false } },
+    headers: { ...ASYNC_HEADERS, ...(media.some((item) => item.url.startsWith('oss://')) ? { 'X-DashScope-OssResourceResolve': 'enable' } : {}) } };
+}
 function pollRequest(id) { return { route: ROUTES.task(id) }; }
 function nodeOf(payload) { return payload?.output && typeof payload.output === 'object' ? payload.output : {}; }
 function taskIdOf(payload) {
@@ -124,5 +137,5 @@ function createBailianVideoProvider(options = {}) {
     nodeOf, taskIdOf, statusOf, resultVideoUrl, normalizePoll, ttsPayload, ttsAudioUrl };
 }
 
-module.exports = { MODEL, DIRECT_MODEL, TTS_MODEL, ROUTES, ASYNC_HEADERS, createBailianVideoProvider, directVideoRequest,
+module.exports = { storyVideoRequest, MODEL, DIRECT_MODEL, TTS_MODEL, ROUTES, ASYNC_HEADERS, createBailianVideoProvider, directVideoRequest,
   videoPayload, videoRequest, pollRequest, nodeOf, taskIdOf, statusOf, resultVideoUrl, normalizePoll, ttsPayload, ttsAudioUrl };

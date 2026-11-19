@@ -145,7 +145,26 @@ function parsePrices(video, image, now = Date.now()) {
     source: [PRICE_ORIGIN + 'seedance-2.5', PRICE_ORIGIN + 'gpt-image-2', ASR_REFERENCE.source],
     checkedAt: new Date(now).toISOString() };
 }
+// 剧情版 (pipeline 5): Wan3 480P with sound, plus gpt-image-2.5-ext 1K images (定妆照、场景、人物、分镜).
+const STORY_IMAGE_MODEL = 'gpt-image-2.5-ext';
+function storyImagePrice(payload) {
+  const data = payload?.data;
+  if (payload?.success !== true || data?.model_name !== STORY_IMAGE_MODEL) throw fail('product_video_price_unavailable', '图片报价无法核实，未提交付费请求。');
+  // Priced per version for this model; the request names none, so reserve the dearest 1K price.
+  const listed = [data.resolution_prices?.['1K'], ...Object.values(data.version_resolution_prices || {}).map((row) => row?.['1K'])].map(Number).filter((n) => n > 0);
+  const paid = [data.resolution_paid_prices?.['1K'], ...Object.values(data.version_resolution_paid_prices || {}).map((row) => row?.['1K'])].map(Number).filter((n) => n > 0);
+  if (!listed.length) throw fail('product_video_price_unavailable', '图片报价不完整，未提交付费请求。');
+  const imageUsd = Math.max(...listed);
+  return { imageUsd, estimatedImageUsd: paid.length ? Math.min(imageUsd, Math.max(...paid)) : imageUsd };
+}
+function validStoryPrices(prices, now = Date.now()) {
+  return prices?.storyPipeline === true && prices.ready === true && prices.provider === 'bailian' && prices.model === DIRECT_MODEL && prices.region === 'cn-beijing'
+    && prices.resolution === '480p' && prices.audio === true && prices.videoCnyPerSecond === prices.rates?.['480p']?.audio && prices.imageModel === STORY_IMAGE_MODEL
+    && [prices.videoCnyPerSecond, prices.imageUsd, prices.fxCnyPerUsd, prices.asrReserveCny, prices.storyReserveCny].every((n) => Number.isFinite(n) && n > 0)
+    && recentPrices(prices, now);
+}
 function validPrices(prices, now = Date.now()) {
+  if (prices?.storyPipeline === true) return validStoryPrices(prices, now);
   if (prices?.provider === 'bailian' && prices.model === DIRECT_MODEL) return prices.ready === true && prices.region === 'cn-beijing'
     && prices.resolution === '480p' && prices.audio === false && prices.videoCnyPerSecond === prices.rates?.['480p']?.silent
     && [prices.videoCnyPerSecond, prices.ttsCnyPer10kChars, prices.asrReserveCny, prices.audioReserveCny].every(n => Number.isFinite(n) && n > 0)
@@ -160,15 +179,15 @@ function createPriceReader({ fetchJson, fetchText, fetch: fetchImpl, gatewayClie
   const read = fetchJson || (fetchImpl ? (url) => readFetchJson(url, fetchImpl) : readJson);
   const text = fetchText || (fetchImpl ? (url) => readFetchText(url, fetchImpl) : readText);
   const bailianPrices = createBailianPriceReader({ fetchText, fetch: fetchImpl });
-  async function readImagePrice() {
-    const source = PRICE_ORIGIN + 'gpt-image-2';
+  async function readImagePrice(model = 'gpt-image-2') {
+    const source = PRICE_ORIGIN + model;
     if (!gatewayClient?.isEnabled?.()) return read(source);
-    const response = await gatewayClient.fetch(gatewayClient.url('/capabilities?price_model=gpt-image-2'),
+    const response = await gatewayClient.fetch(gatewayClient.url('/capabilities?price_model=' + model),
       { method: 'GET', timeoutMs: 20000, maxBytes: MAX_PRICE_BYTES });
     if (!response.ok) throw fail('product_video_price_unavailable', '场景首帧报价暂不可用，未提交付费请求。');
     const result = await response.json(), price = result?.apimart_pricing;
     const age = Date.now() - Number(price?.checked_at) * 1000;
-    if (result?.ok !== true || price?.source !== source || price?.payload?.data?.model_name !== 'gpt-image-2'
+    if (result?.ok !== true || price?.source !== source || price?.payload?.data?.model_name !== model
       || !Number.isFinite(age) || age < -300000 || age >= MAX_AGE) {
       throw fail('product_video_price_unavailable', '场景首帧报价来源或有效期无法核实，未提交付费请求。');
     }
@@ -178,9 +197,18 @@ function createPriceReader({ fetchJson, fetchText, fetch: fetchImpl, gatewayClie
   // No-argument callers include digital-human preview/cover pricing. Product
   // creation always supplies its saved plan, so keep their legacy image quote.
   return async function prices(plan = { pipelineVersion: 3 }) {
-    const direct = plan.pipelineVersion === 4, official = plan.pipelineVersion >= 3, key = direct ? DIRECT_MODEL : official ? MODEL : 'legacy';
+    const story = plan.pipelineVersion === 5, direct = plan.pipelineVersion === 4, official = plan.pipelineVersion >= 3;
+    const key = story ? 'story' : direct ? DIRECT_MODEL : official ? MODEL : 'legacy';
     if (validPrices(cache.get(key))) return cache.get(key);
-    if (!pending.has(key)) pending.set(key, (direct
+    if (!pending.has(key)) pending.set(key, (story
+      ? Promise.all([text(DIRECT_PRICE_SOURCE), text(TTS_PRICE_SOURCE), readImagePrice(STORY_IMAGE_MODEL)]).then(([videoDocument, ttsDocument, image]) => {
+        const video = parseDirectPrices(videoDocument, ttsDocument);
+        return { ...video, storyPipeline: true, resolution: '480p', audio: true, videoCnyPerSecond: video.rates['480p'].audio,
+          imageModel: STORY_IMAGE_MODEL, ...storyImagePrice(image), fxCnyPerUsd: 8, fxNote: '图片美元价按预算汇率折算，非人民币账单',
+          storyReserveCny: 0.5, asrReserveCny: 1, asrCnyPerMinute: ASR_REFERENCE.cnyPerHour / 60, asrReference: ASR_REFERENCE,
+          source: [DIRECT_PRICE_SOURCE, PRICE_ORIGIN + STORY_IMAGE_MODEL, ASR_REFERENCE.source] };
+      })
+      : direct
       ? Promise.all([text(DIRECT_PRICE_SOURCE), text(TTS_PRICE_SOURCE)]).then(([videoDocument, ttsDocument]) => {
         const video = parseDirectPrices(videoDocument, ttsDocument);
         return { ...video, resolution: '480p', audio: false, videoCnyPerSecond: video.rates['480p'].silent,
@@ -206,6 +234,18 @@ function createPriceReader({ fetchJson, fetchText, fetch: fetchImpl, gatewayClie
   };
 }
 function quotePlan(plan, prices, budgetCny) {
+  if (plan.pipelineVersion === 5) {
+    if (!validStoryPrices(prices)) return { ready: false, budgetCny, estimatedCny: null, reservedCny: 0, actualCny: 0, pendingCny: 0, message: '报价暂不可用，方案已保留。' };
+    const seconds = plan.shots.reduce((sum, s) => sum + s.seconds, 0), videoCny = round(seconds * prices.videoCnyPerSecond);
+    const imageReserveCny = plan.imageCount * round(prices.imageUsd * prices.fxCnyPerUsd), imageEstimateCny = plan.imageCount * prices.estimatedImageUsd * prices.fxCnyPerUsd;
+    // One redo of the 定妆照 and one redo of a segment are kept in the allowance.
+    const retryReserveCny = round(round(prices.imageUsd * prices.fxCnyPerUsd) + Math.max(0, ...plan.shots.map((shot) => shot.seconds)) * prices.videoCnyPerSecond);
+    const otherCny = prices.storyReserveCny + prices.asrReserveCny;
+    return { ready: true, estimatedCny: round(videoCny + imageEstimateCny + otherCny), maximumCny: round(videoCny + imageReserveCny + otherCny + retryReserveCny), retryReserveCny,
+      reservedCny: 0, actualCny: 0, pendingCny: 0, budgetCny, videoCny, videoModel: prices.model, videoResolution: prices.resolution, videoAudio: true,
+      videoCnyPerSecond: prices.videoCnyPerSecond, source: prices.source, checkedAt: prices.checkedAt, fxCnyPerUsd: prices.fxCnyPerUsd,
+      note: '剧情版：图片美元价保守折算，视频按阿里北京区域 480P 有声人民币标价；写故事与字幕识别为预留，实际账单另行核对。' };
+  }
   const seconds = plan.shots.reduce((sum, s) => sum + s.seconds, 0), count = plan.pipelineVersion >= 2 && plan.pipelineVersion !== 4 ? plan.shots.length : 0;
   if (!validPrices(prices)) return { ready: false, budgetCny, estimatedCny: null, reservedCny: 0, actualCny: 0, pendingCny: 0, message: '报价暂不可用，方案已保留。' };
   if (plan.pipelineVersion >= 3) {
@@ -266,4 +306,4 @@ function createCoverPriceReader({ fetchJson, fetch: fetchImpl, gatewayClient } =
     return pending;
   };
 }
-module.exports = { createCoverPriceReader, parseCoverPrice, createPriceReader, parsePrices, validPrices, quotePlan, round, createBailianPriceReader, parseBailianPrices, parseDirectPrices, validBailianPrices, createReferencePriceReader };
+module.exports = { STORY_IMAGE_MODEL, storyImagePrice, validStoryPrices, createCoverPriceReader, parseCoverPrice, createPriceReader, parsePrices, validPrices, quotePlan, round, createBailianPriceReader, parseBailianPrices, parseDirectPrices, validBailianPrices, createReferencePriceReader };

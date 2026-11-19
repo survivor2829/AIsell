@@ -715,6 +715,15 @@ function createDeepSeekClient({ keyStore, gatewayClient, fetchImpl = global.fetc
       const metric = key => Number.isFinite(payload?.usage?.[key]) ? payload.usage[key] : null;
       return { content: completion.content, model: DEEPSEEK_MODEL, usage: { promptTokens: metric('prompt_tokens'), completionTokens: metric('completion_tokens') } };
     },
+    // 场景效果视频 · 剧情版: a short story as JSON; the facts arrive as data inside the user message.
+    async videoStory({ system, user }) {
+      if (typeof system !== 'string' || typeof user !== 'string' || !user.trim() || user.length > 30000) throw new DeepSeekApiError('AI_INPUT_INVALID', '产品资料无效，请检查后重试。');
+      const payload = await request({ key: readCredential(), maxTokens: 8000, responseFormat: { type: 'json_object' }, disableThinking: true, temperature: 0.8, billingFeature: 'product_video',
+        messages: [{ role: 'system', content: system }, { role: 'user', content: user }] });
+      const completion = completionChoice(payload);
+      if (completion.finishReason !== 'stop') throw new DeepSeekApiError('AI_RESPONSE_INCOMPLETE', '故事没有写完整，请重试。');
+      return { content: completion.content };
+    },
     async geoContent({ prompt }) {
       if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 30000) throw new DeepSeekApiError('AI_INPUT_INVALID', '请先填写有效的公司资料。');
       const payload = await request({ key: readCredential(), maxTokens: 4000, responseFormat: { type: 'json_object' }, disableThinking: true, billingFeature: 'geo',
