@@ -483,6 +483,8 @@ function createContentEngineSidecar(options = {}) {
           fail(String(error?.code || "CONTENT_ENGINE_RESPONSE_INVALID"));
         }
       });
+      // Decode stderr on the stream too: a traceback with a Chinese path must not be garbled (2026-11-19).
+      child.stderr?.setEncoding?.("utf8");
       child.stderr?.on("data", (chunk) => {
         run.stderrBytes = Math.min(
           MAX_RESPONSE_LINE_BYTES,

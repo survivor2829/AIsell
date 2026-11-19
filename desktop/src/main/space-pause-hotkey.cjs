@@ -168,6 +168,7 @@ function createSpacePauseHotkey({ onDoubleTap = () => {}, onEvent = () => {}, sp
     }
     child = process_;
     let buffered = "";
+    process_.stdout.setEncoding?.("utf8");
     process_.stdout.on("data", (chunk) => {
       buffered += String(chunk);
       let end;
