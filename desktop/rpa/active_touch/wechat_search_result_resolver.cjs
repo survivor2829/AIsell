@@ -636,6 +636,38 @@ function uniqueNamePrefixRow(observation, identity) {
   return captionRead || matches[0] === firstRow ? matches[0] : null;
 }
 
+// Field (2026-11-16..19, 9 computers, ~6,000 times): when no row could be read as the name
+// (a name with emoji or symbols, a green highlight OCR cannot read), Enter was pressed and
+// WeChat opened 搜一搜 for the query instead of the contact; the title check then failed and
+// the person was skipped, with 搜一搜 tabs piling up. Instead, click the first row of the local
+// results above the network rows, by mouse. The opened chat title is still checked exactly as
+// before; when only network rows (搜一搜、搜索网络结果、网络查找) are shown, nothing is clicked.
+const FIRST_ROW_RULES = new Set(["search-r015", "search-r022"]);
+const isNetworkRowText = (value) => {
+  const text = normalized(value);
+  return NETWORK_SEARCH_LABELS.some((label) => text.includes(normalized(label))) || isNetworkLookupText(value) || text.includes("查找");
+};
+function firstLocalContactRow(observation, identity) {
+  const popup = validRectangle(observation?.popupBounds);
+  const dpi = Number(observation?.popupDpi);
+  if (!popup || !(dpi > 0) || observation.captureSource !== "popup" || observation.ocrOk !== true) return null;
+  const column = (left) => (Number(left) - popup.left) / (dpi / 96);
+  const all = [...(observation.visualCandidates || []), ...(observation.webSearchCandidates || [])].filter((line) => hasValidBounds(line) && isInside(line, popup));
+  // The "🔍 <query>" suggestion row opens 搜一搜 too: like the 4.2 sectioned popup, it ends the local rows.
+  const queryText = normalized(identity?.query || "");
+  const isQueryEcho = (value) => { const text = normalized(value); return queryText.length >= 2 && (text === queryText || text.replace(/^(?:[^\p{L}\p{N}]{1,2}|[0oq])/iu, "") === queryText); };
+  // Everything from the first network row, query echo or other section (群聊、聊天记录、公众号…) down is not a contact.
+  const bottom = Math.min(Number(popup.bottom), ...all.filter((line) => isNetworkRowText(line.text) || isOtherSearchSection(line.text)
+    || (column(line.left) <= 70 && isQueryEcho(line.text))).map((line) => Number(line.top)));
+  const rows = all.filter((line) => column(line.left) > 60 && Number(line.bottom) <= bottom && !isQueryEcho(line.text)
+    && !isLocalContactSection(line.text) && !isUnsafeVisualText(line.text) && !isNetworkRowText(line.text)
+    && wechatIdLabelValue(line) === null)
+    .sort((a, b) => Number(a.top) - Number(b.top));
+  if (!rows.length) return null;
+  const first = rows[0];
+  return { text: String(first.text || ""), left: Number(first.left), top: Number(first.top), right: Number(first.right), bottom: Number(first.bottom),
+    x: Math.round((Number(first.left) + Number(first.right)) / 2), y: Math.round((Number(first.top) + Number(first.bottom)) / 2) };
+}
 function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   const result = resolveWechatSearchResultObservationStrict(observation, identity);
   if (result.status === "selected" || !["name", "name_fallback"].includes(String(identity.queryType || ""))
@@ -643,6 +675,13 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   const row = uniqueNamePrefixRow(observation, identity);
   return row ? { status: "selected", mode: "name_prefix_visual", candidate: row,
     diagnostics: { ...(result.diagnostics || {}), prior_rule_id: result.rule_id } } : result;
+}
+// The driver's last resort for a name search whose rows could not be read (the place where Enter used to be).
+function firstLocalRowFallback(observation, identity, resolution, fallbackReason = "") {
+  if (resolution?.status === "selected" || fallbackReason === "wechat_id_unverified" || !["name", "name_fallback"].includes(String(identity.queryType || ""))
+    || !FIRST_ROW_RULES.has(String(resolution?.rule_id || ""))) return null;
+  const first = firstLocalContactRow(observation, identity);
+  return first ? { status: "selected", mode: "name_first_local_row", candidate: first, diagnostics: { ...(resolution.diagnostics || {}), prior_rule_id: resolution.rule_id } } : null;
 }
 
 function resolveWechatSearchResultObservationStrict(observation = {}, identity = {}) {
@@ -886,4 +925,4 @@ function isVerifiedWechatSearchResultMode(mode) {
   return ["unique_local_uia", "identity_matched_uia", "exact_wechat_id_visual", "unique_local_visual", "exact_wechat_id_local_visual", "unique_local_surface_visual", "unique_local_wechat_id_uia", "unique_local_wechat_id_visual", "exact_name_contact_section_visual", "sectioned_wechat_id_visual", "sectioned_name_visual"].includes(mode);
 }
 
-module.exports = { NETWORK_SEARCH_LABELS, isNetworkSearchLabel, isVerifiedWechatSearchResultMode, resolveWechatSearchResultObservation, searchObservationEvidence };
+module.exports = { firstLocalContactRow, firstLocalRowFallback, NETWORK_SEARCH_LABELS, isNetworkSearchLabel, isVerifiedWechatSearchResultMode, resolveWechatSearchResultObservation, searchObservationEvidence };

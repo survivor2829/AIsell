@@ -124,7 +124,7 @@ function resumableFreshEdit(task, multipart) {
 function finiteSearchEvidence(diagnostics = {}, includeAttempts = true) {
   const evidence = {};
   if (['wechat_id', 'name', 'name_fallback'].includes(diagnostics.search_query_type)) evidence.search_query_type = diagnostics.search_query_type;
-  if (['', 'wechat_id_empty', 'wechat_id_no_result', 'wechat_id_near_title_mismatch', 'wechat_id_invalid_placeholder'].includes(diagnostics.fallback_reason)) evidence.fallback_reason = diagnostics.fallback_reason;
+  if (['', 'wechat_id_empty', 'wechat_id_no_result', 'wechat_id_near_title_mismatch', 'wechat_id_invalid_placeholder', 'wechat_id_unverified'].includes(diagnostics.fallback_reason)) evidence.fallback_reason = diagnostics.fallback_reason;
   if (includeAttempts && Array.isArray(diagnostics.search_attempts)) evidence.search_attempts = diagnostics.search_attempts.slice(0,2).map(attempt => ({
     ...finiteSearchEvidence(attempt, false), rule_id: /^search-r\d+$/u.test(attempt?.rule_id) ? attempt.rule_id : ''
   }));

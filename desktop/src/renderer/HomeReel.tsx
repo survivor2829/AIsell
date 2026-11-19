@@ -1,17 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import { isWindowShown, onWindowShownChange } from "./window-shown";
+import { lowPowerDevice, useWindowActive } from "./power-saving";
 
 // 首页示例成片（用户 2026-11-09）：产品效果、线索混剪两只手机一样大，打开就同时循环播放，不用点。
 // 文件是首页专用的 15 秒 480p 无声短片；看不到首页时暂停，减少动效或只有两个核的电脑只放封面图。
 const CLIPS = ["cc1-pro", "lead-mix"] as const;
 const clip = (name: string, kind: "mp4" | "jpg") => `./home-reel/${name}.${kind}`;
-const prefersStill = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches || (navigator.hardwareConcurrency || 4) <= 2;
+// 省电 (2026-11-19): a low-power computer shows the covers, and the clips play only while the window is in use.
+const prefersStill = () => lowPowerDevice;
 
 export function HomeReel() {
   const still = useRef(prefersStill()).current;
   const [broken, setBroken] = useState(false);
   const [seen, setSeen] = useState(false);
-  const [foreground, setForeground] = useState(isWindowShown);
+  const foreground = useWindowActive();
   const box = useRef<HTMLDivElement>(null);
   const videos = useRef<(HTMLVideoElement | null)[]>([]);
   const running = seen && foreground;
@@ -20,8 +21,7 @@ export function HomeReel() {
   useEffect(() => {
     const observer = new IntersectionObserver(([entry]) => setSeen(entry.isIntersecting));
     if (box.current) observer.observe(box.current);
-    const offShown = onWindowShownChange(() => setForeground(isWindowShown()));
-    return () => { observer.disconnect(); offShown(); };
+    return () => { observer.disconnect(); };
   }, []);
   useEffect(() => {
     for (const video of videos.current) {

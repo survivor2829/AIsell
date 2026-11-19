@@ -1,4 +1,5 @@
 import { ArrowRight, Eye, EyeOff } from "lucide-react";
+import { lowPowerDevice, useWindowActive } from "./power-saving";
 import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type MouseEvent } from "react";
 import "./LoginScreen.css";
 import { AGENT_ROLE_IDENTITIES, AGENT_ROLE_ORDER, ROLE_CATALOG, characterAsset, type AgentRoleKey } from "./role-appearance";
@@ -148,9 +149,13 @@ function prefersStill() {
   return Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
 }
 
+// 省电 (2026-11-19): the greeting types only while the window is in use; otherwise, and on a
+// low-power computer, the first line simply stands.
 function useTyping(lines: string[]) {
   const [text, setText] = useState("");
+  const active = useWindowActive();
   useEffect(() => {
+    if (!active || lowPowerDevice) { setText(lines[0] || ""); return; }
     let line = 0, index = 0, pause = 0;
     setText("");
     const timer = window.setInterval(() => {
@@ -160,7 +165,7 @@ function useTyping(lines: string[]) {
       line += 1; index = 0; pause = 28;
     }, 70);
     return () => window.clearInterval(timer);
-  }, [lines]);
+  }, [lines, active]);
   return text;
 }
 
@@ -176,7 +181,9 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
   // own, and a resting pointer often sits over the big figure, so pausing for either stopped the rotation
   // for good (2026-10-30).
   const [hovering, setHovering] = useState(false);
-  const rotating = !hovering;
+  // 省电: the six presenters take turns only while the window is in use.
+  const windowActive = useWindowActive();
+  const rotating = !hovering && windowActive;
   const [still] = useState(prefersStill);
   const [clipFailed, setClipFailed] = useState(false);
   const [clipEnded, setClipEnded] = useState(false);

@@ -146,9 +146,18 @@ function isInvalidWechatIdPlaceholder(value) {
 
 const SEARCH_FALLBACK_RULES = Object.freeze({ noResult: "search-r017", invalidPlaceholder: "search-r018" });
 
+// Emoji, symbols and decorations in a remark or nickname («✳💰何气生») are not found by WeChat's
+// contact search and sent the search to 搜一搜 on customer computers (2026-11-19). Search by the
+// words of the name; the opened chat is still checked against the full name.
+function searchableName(value) {
+  const text = String(value || "").trim();
+  // Emoji and decorative symbols only; ①、™、full-width letters stay as written, since WeChat does not fold them.
+  const stripped = text.replace(/(?![\u00A9\u00AE\u2122])(?:[\p{Extended_Pictographic}\uFE0F\u200D\u20E3]|[\u2600-\u27BF\u2B00-\u2BFF])/gu, "").replace(/\s+/gu, " ").trim();
+  return stripped !== text && [...stripped.replace(/\s/gu, "")].length >= 2 ? stripped : text;
+}
 function customerSearchPlan(customer) {
   const wechatId = String(customer?.wechatId || "").trim();
-  const nameQuery = String(customer?.remark || customer?.nickname || customer?.name || "").trim();
+  const nameQuery = searchableName(customer?.remark || customer?.nickname || customer?.name || "");
   if (!wechatId || isInvalidWechatIdPlaceholder(wechatId)) {
     return { query: nameQuery, queryType: "name_fallback", fallbackReason: !wechatId ? "wechat_id_empty" : "wechat_id_invalid_placeholder", fallbackRuleId: !wechatId ? "" : SEARCH_FALLBACK_RULES.invalidPlaceholder };
   }
@@ -736,8 +745,11 @@ function clickSearchResultDryRun(
       nearVerified = nearCheck || { ok: false };
     }
   }
-  const nameFallbackReason = nearMismatch ? "wechat_id_near_title_mismatch" : "wechat_id_no_result";
-  if (((!inputResult?.ok && inputResult?.reason === "exact_search_result_not_found") || nearMismatch)
+  const nameFallbackReason = nearMismatch ? "wechat_id_near_title_mismatch" : !inputResult?.ok && inputResult?.reason === "search_result_identity_unverified" ? "wechat_id_unverified" : "wechat_id_no_result";
+  // A WeChat-ID search whose result could not be confirmed (field 2026-11-16..19: about 2,400 skips on
+  // 10 computers) is also tried by name before the person is skipped; the opened chat title decides.
+  const idUnverified = !inputResult?.ok && inputResult?.reason === "search_result_identity_unverified";
+  if (((!inputResult?.ok && inputResult?.reason === "exact_search_result_not_found") || idUnverified || nearMismatch)
     && searchPlan.queryType === "wechat_id"
     && searchPlan.fallbackQuery && searchPlan.fallbackQuery !== searchQuery) {
     discardSearchCapture(inputResult);
@@ -1212,6 +1224,7 @@ function verifySendResultDryRun(baseDir = __dirname, titleReader = readWindowTit
 }
 
 module.exports = {
+  searchableName,
   wechatWindowBlockText,
   calibrate,
   clickSearchResultDryRun,

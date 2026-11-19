@@ -51,7 +51,8 @@ async function runScenario(kind) {
   onSearch = () => {
     searches += 1;
     if (kind === "pause") enabled = false;
-    if (kind === "exception") {
+    // Once: an unconfirmed WeChat-ID result is now searched again by name, which must not stack the injection.
+    if (kind === "exception" && searches === 1) {
       const original = fs.appendFileSync;
       fs.appendFileSync = (...args) => {
         fs.appendFileSync = original;

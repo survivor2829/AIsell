@@ -85,3 +85,34 @@ html[data-beat="1"] .pv2-bars .is-now i b{opacity:.55}
 .pv2-side .pv2-empty .pv2-note{font-size:16px;font-weight:700;color:#4b5563}
 .pv2-side .pv2-canvas{position:relative}
 .pv2-side .pv2-canvas img{position:absolute;inset:0;width:100%;height:100%;max-width:none;max-height:none;object-fit:contain}
+
+/* 剧情版 progress (2026-11-19): the 定妆照 to confirm, six stages, the story and its people, one card per part. */
+.sv-sheet{display:grid;gap:14px}
+.sv-sheet h3{margin:0;font-size:26px;font-weight:900}
+.sv-sheet p{margin:0;font-size:17px;font-weight:700;color:#4b5563;line-height:1.6}
+.sv-sheet-image{aspect-ratio:1/1;border-radius:20px;background:#fff;border:1.5px solid var(--pv-line);display:grid;place-items:center;overflow:hidden;color:var(--pv-accent)}
+.sv-sheet-image img{width:100%;height:100%;object-fit:contain}
+.sv-sheet-actions{display:flex;flex-wrap:wrap;gap:12px}
+.sv-sheet-actions .pv2-btn{height:60px;font-size:19px;padding:0 24px}
+.sv-progress{display:grid;gap:16px}
+.sv-stages{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.sv-stages li{display:flex;align-items:center;gap:10px;padding:11px 12px;border-radius:16px;background:color-mix(in srgb,var(--pv-accent) 7%,white);font-size:17px;font-weight:800;color:#9ca3af}
+.sv-stages li>span{width:34px;height:34px;border-radius:11px;display:grid;place-items:center;flex:none;background:#fff;color:var(--pv-accent)}
+.sv-stages li.is-done,.sv-stages li.is-now{color:#1f2937;background:color-mix(in srgb,var(--pv-accent) 16%,white)}
+.sv-stages li.is-done>span,.sv-stages li.is-now>span{background:var(--pv-accent);color:#fff}
+html[data-beat="1"] .sv-stages li.is-now>span{opacity:.6}
+.sv-story{display:grid;gap:10px;padding:16px 18px;border-radius:18px;background:#fff;border:1.5px solid var(--pv-line)}
+.sv-story>b{font-size:21px;font-weight:900}.sv-story>p{margin:0;font-size:17px;font-weight:700;color:#374151;line-height:1.6}
+.sv-cast{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.sv-cast figure{margin:0;display:grid;gap:6px}
+.sv-cast img,.sv-cast figure>span{width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:14px;background:var(--pv-soft);display:grid;place-items:center;color:var(--pv-accent)}
+.sv-cast figcaption{font-size:15px;font-weight:700;color:#4b5563}.sv-cast figcaption b{margin-right:6px;font-size:16px;color:#1f2937}
+.sv-lines{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.sv-lines li{font-size:17px;font-weight:700;color:#1f2937}.sv-lines li b{display:inline-block;min-width:3.5em;margin-right:6px;color:var(--pv-accent)}
+.sv-parts{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.sv-parts figure{margin:0;display:grid;gap:6px}
+.sv-parts img,.sv-parts video,.sv-parts figure>span{width:100%;aspect-ratio:9/12;object-fit:cover;border-radius:16px;background:var(--pv-soft);display:grid;place-items:center;color:var(--pv-accent)}
+.sv-parts video{background:#1b1520}
+.sv-parts figure.is-now img{outline:3px solid var(--pv-accent);outline-offset:-3px}
+.sv-parts figcaption{font-size:16px;font-weight:800;color:#374151}
+.sv-parts figure.is-done figcaption{color:#16a34a}

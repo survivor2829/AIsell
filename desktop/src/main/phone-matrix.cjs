@@ -168,7 +168,13 @@ function createPhoneMatrix({ dataDir, onChange = () => {}, adbPath = findAdb(), 
   return {
     adbPath, snapshot, update, forget, poll,
     start() { if (!timer) { void poll(); timer = setTimer(() => void poll(), POLL_MS); timer?.unref?.(); } },
-    stop() { clearTimer(timer); timer = null; }
+    stop() { clearTimer(timer); timer = null; },
+    // On closing: adb leaves its server running after the app exits (seen 2026-11-19). End it, unless
+    // 来喜 is open: it shares the same server.
+    async endServer() {
+      if (!adbPath || await Promise.resolve(isLaixiRunning({ unknownAs: true })).catch(() => true) !== false) return false;
+      await adb(["kill-server"], 5000).catch(() => {}); return true;
+    }
   };
 }
 
@@ -181,9 +187,9 @@ function runFile(file, args, timeout) {
 }
 
 // 来喜 and this app both drive the phones through ADB; running both makes phones drop off.
-function laixiRunning() {
+function laixiRunning({ unknownAs = false } = {}) {
   if (os.platform() !== "win32") return Promise.resolve(false);
-  return runFile("tasklist.exe", ["/FI", "IMAGENAME eq Laixi.exe", "/NH"], 5000).then((out) => /Laixi\.exe/i.test(out)).catch(() => false);
+  return runFile("tasklist.exe", ["/FI", "IMAGENAME eq Laixi.exe", "/NH"], 5000).then((out) => /Laixi\.exe/i.test(out)).catch(() => unknownAs);
 }
 
 module.exports = { VENDOR_DIR, createPhoneMatrix, findAdb, adbCandidates, parseDevices, parseBattery, parseSize };

@@ -3,7 +3,7 @@ const { createProductVideoService } = require("./product-video-service.cjs");
 const { cleanMessage, fail } = require("./digital-human-provider.cjs");
 
 const CHANNELS = Object.freeze(Object.fromEntries(
-  ["capabilities", "import-image", "import-facts", "create", "list", "get", "start", "retry-shot", "refresh", "media", "shot-media", "export", "export-source"]
+  ["capabilities", "import-image", "import-facts", "create", "list", "get", "start", "retry-shot", "refresh", "media", "shot-media", "image-media", "confirm-sheet", "redo-sheet", "export", "export-source"]
     .map((name) => [name, `product-video:${name}`])
 ));
 const ID = /^pv_[a-f0-9-]{36}$/u;
@@ -35,6 +35,12 @@ function registerProductVideoIpc(options = {}) {
     "retry-shot": (payload) => service.retryShot(idOf(payload)),
     refresh: (payload) => service.refresh(idOf(payload)),
     media: (payload) => service.media(idOf(payload)),
+    "confirm-sheet": (payload) => service.confirmSheet(idOf(payload)),
+    "redo-sheet": (payload) => service.redoSheet(idOf(payload)),
+    "image-media": (payload) => {
+      if (!/^(?:sheet|scene|floor|person_[ab]|grid_\d{1,2})$/u.test(String(payload.key || ""))) throw fail("product_video_invalid_input", "请刷新页面后重试。");
+      return service.imageMedia(idOf(payload), payload.key);
+    },
     "shot-media": (payload) => {
       if (!Number.isInteger(payload.index) || payload.index < 0 || payload.index > 20) throw fail("product_video_invalid_input", "请刷新页面后重试。");
       return service.shotMedia(idOf(payload), payload.index);
@@ -61,8 +67,8 @@ function registerProductVideoIpc(options = {}) {
         if (!window?.webContents || event.sender !== window.webContents || (event.senderFrame && event.senderFrame !== window.webContents.mainFrame)) {
           throw fail("product_video_untrusted_sender", "请在应用主窗口操作。");
         }
-        if (["start", "retry-shot"].includes(name)) await options.requireTrustedClick(event, payload, name);
-        if (!["create", "import-image", "import-facts"].includes(name) && Object.keys(payload).some((key) => !["id", "clickToken", ...(name === "shot-media" ? ["index"] : [])].includes(key))) {
+        if (["start", "retry-shot", "confirm-sheet", "redo-sheet"].includes(name)) await options.requireTrustedClick(event, payload, name);
+        if (!["create", "import-image", "import-facts"].includes(name) && Object.keys(payload).some((key) => !["id", "clickToken", ...(name === "shot-media" ? ["index"] : name === "image-media" ? ["key"] : [])].includes(key))) {
           throw fail("product_video_invalid_input", "请刷新页面后重试。");
         }
         return { ok: true, data: await handler(payload) };

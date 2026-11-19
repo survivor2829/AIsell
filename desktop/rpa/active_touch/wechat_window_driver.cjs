@@ -14,7 +14,7 @@ const { findWechatExecutable } = require("../contact_sync/contact_sync_cli.cjs")
 const { readWechatWindowDiagnostics, readMomentsDiagnostics } = require("../../src/shared/wechat-window-diagnostics.cjs");
 const { sanitizeImageProgress } = require("../../src/shared/failure-diagnostics.cjs");
 const { WECHAT_MAIN_WINDOW_VISUAL_SCRIPT } = require("./wechat_window_visual.cjs");
-const { NETWORK_SEARCH_LABELS, resolveWechatSearchResultObservation, searchObservationEvidence } = require("./wechat_search_result_resolver.cjs");
+const { NETWORK_SEARCH_LABELS, firstLocalRowFallback, resolveWechatSearchResultObservation, searchObservationEvidence } = require("./wechat_search_result_resolver.cjs");
 const { WECHAT_SEARCH_INPUT_GUARD_CSHARP } = require("./wechat_search_input.cjs");
 
 let cachedWechatExecutable = "";
@@ -2691,7 +2691,8 @@ function buildSearchEvidence(observed, resolution, query, context) {
       query_present: Boolean(String(query || "").trim()),
       expected_name_present: Boolean(String(context.searchIdentity.expectedName || "").trim()),
       network_lookup_isolated: resolution.status === "selected" || !["search-r008", "search-r009", "search-r010", "search-r011", "search-r012"].includes(String(resolution.rule_id || "")),
-      identity_match: resolution.status === "selected" && !resolution.mode?.startsWith("unique_local_wechat_id_"),
+      identity_match: resolution.status === "selected" && !resolution.mode?.startsWith("unique_local_wechat_id_") && resolution.mode !== "name_first_local_row",
+      guessed_row: resolution.mode === "name_first_local_row",
       local_candidate_unique: resolution.mode?.startsWith("unique_local_wechat_id_") === true
     },
     ocr_observation: searchObservationEvidence(observation, { query, queryType: context.searchQueryType })
@@ -2715,42 +2716,9 @@ function detachedSearchCapture(observed, resolution, captureFailure = false) {
   } catch { return { observed: safeObserved, diagnostics: resolution.diagnostics }; }
 }
 
-// WeChat 4.2 highlights the matched name in green and draws section captions in
-// light gray; Windows OCR often reads neither (dev machine 4.2.0.12, 2026-11-04).
-// For a name search the popup's own first, highlighted result is then opened
-// with Enter. Nothing is sent from this: the opened chat must still pass the
-// exact-title gate before any draft is typed or sent.
-const NAME_ENTER_FALLBACK_RULES = new Set(["search-r015", "search-r022"]);
-function allowsNameEnterFallback(observed, resolution, context) {
-  const observation = observed?.searchResultObservation || {};
-  const lines = Array.isArray(observation.visualCandidates) ? observation.visualCandidates : [];
-  return ["name", "name_fallback"].includes(String(context.searchQueryType || ""))
-    && observation.captureSource === "popup" && observation.ocrOk === true
-    // The popup may also end with a "搜索网络结果" row (customer 4.2.0.8): Enter still
-    // opens the highlighted first result at the top; the exact title gate decides.
-    && NAME_ENTER_FALLBACK_RULES.has(String(resolution.rule_id || ""))
-    && lines.length > 0
-    && !lines.some((line) => /查找/u.test(String(line?.text || "").normalize("NFKC").replace(/\s+/gu, "")));
-}
-
-function nameEnterFallbackEnvironment(query, observed, context) {
-  return {
-    XIAOXI_SEARCH_QUERY: String(query),
-    XIAOXI_PRESS_ENTER: "1",
-    XIAOXI_EXPECTED_PID: String(observed.pid ?? context.pid ?? ""),
-    XIAOXI_EXPECTED_HWND: String(observed.hWnd ?? context.hWnd ?? ""),
-    XIAOXI_WECHAT_MIN_IDLE_MS: String(context.minIdleMs ?? 0)
-  };
-}
-
-function nameEnterFallbackResult(entered, capture, query, context, searchEvidence) {
-  if (!entered?.ok || entered.exactSearchOpened !== true) return null;
-  discardSearchCapture({ diagnostics: capture.diagnostics });
-  return { ...capture.observed, ...entered, searchQuery: String(query),
-    searchQueryType: String(context.searchQueryType || "unknown"), searchFallbackReason: String(context.searchFallbackReason || ""),
-    searchResultMode: "name_enter_first_result",
-    searchEvidence: { ...searchEvidence, resolver_mode: "name_enter_first_result", enter_fallback_rule_id: searchEvidence.rule_id } };
-}
+// A name search whose rows could not be read is no longer opened with Enter (it opened 搜一搜
+// for the query on customer computers, 2026-11-19): the resolver picks the first local row
+// above the network rows and it is clicked by mouse like any other result.
 
 function discardSearchCapture(result) {
   const file = String(result?.diagnostics?.search_capture_file || "");
@@ -2789,19 +2757,12 @@ function openWechatSearchResult(query, context = {}) {
       XIAOXI_WECHAT_MIN_IDLE_MS: String(context.minIdleMs ?? 0)
     }, { ensure: false });
     if (!observed?.ok) return observed || { ok: false, reason: "wechat_operation_failed" };
-    const resolution = resolveWechatSearchResultObservation(observed.searchResultObservation, {
-      query,
-      expectedName: context.searchIdentity.expectedName,
-      queryType: context.searchQueryType
-    });
+    const identity = { query, expectedName: context.searchIdentity.expectedName, queryType: context.searchQueryType };
+      const strict = resolveWechatSearchResultObservation(observed.searchResultObservation, identity);
+      const resolution = firstLocalRowFallback(observed.searchResultObservation, identity, strict, String(context.searchFallbackReason || "")) || strict;
     const searchEvidence = buildSearchEvidence(observed, resolution, query, context);
     const capture = detachedSearchCapture(observed, resolution, context.captureSearchFailure === true);
     if (resolution.status !== "selected") {
-      if (allowsNameEnterFallback(observed, resolution, context)) {
-        const opened = nameEnterFallbackResult(runner(SEARCH_SCRIPT, nameEnterFallbackEnvironment(query, observed, context), { ensure: false }),
-          capture, query, context, searchEvidence);
-        if (opened) return opened;
-      }
       if (!context.runner && evidenceEnvironment().XIAOXI_FAILURE_DIR) {
         try { runPowerShell(`Write-XiaoxiFailure "${resolution.rule_id}" "${resolution.reason}" | Out-Null`, {}, { ensure: false }); } catch {}
       }
@@ -2845,19 +2806,12 @@ function openWechatSearchResultAsync(query, context = {}) {
         XIAOXI_WECHAT_MIN_IDLE_MS: String(context.minIdleMs ?? 0)
       }, { ensure: false });
       if (!observed?.ok) return observed || { ok: false, reason: "wechat_operation_failed" };
-      const resolution = resolveWechatSearchResultObservation(observed.searchResultObservation, {
-      query,
-      expectedName: context.searchIdentity.expectedName,
-      queryType: context.searchQueryType
-    });
+      const identity = { query, expectedName: context.searchIdentity.expectedName, queryType: context.searchQueryType };
+      const strict = resolveWechatSearchResultObservation(observed.searchResultObservation, identity);
+      const resolution = firstLocalRowFallback(observed.searchResultObservation, identity, strict, String(context.searchFallbackReason || "")) || strict;
       const searchEvidence = buildSearchEvidence(observed, resolution, query, context);
       const capture = detachedSearchCapture(observed, resolution, context.captureSearchFailure === true);
       if (resolution.status !== "selected") {
-        if (allowsNameEnterFallback(observed, resolution, context)) {
-          const opened = nameEnterFallbackResult(await runner(SEARCH_SCRIPT, nameEnterFallbackEnvironment(query, observed, context), { ensure: false }),
-            capture, query, context, searchEvidence);
-          if (opened) return opened;
-        }
         if (!context.runner && evidenceEnvironment().XIAOXI_FAILURE_DIR) {
           try { await runPowerShellAsync(`Write-XiaoxiFailure "${resolution.rule_id}" "${resolution.reason}" | Out-Null`, {}, { ensure: false }); } catch {}
         }

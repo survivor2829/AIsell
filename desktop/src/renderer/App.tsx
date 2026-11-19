@@ -928,7 +928,7 @@ function ContactSyncPage({
       <div className="page-head">
         <div>
           <h1>同步微信联系人</h1>
-          <p>同步后即可选择触达客户。首次同步会重启微信，请按提示重新登录。</p>
+          <p>同步后即可选择触达客户。首次同步会重启微信，请在 5 分钟内扫码登录。</p>
         </div>
         <div className="actions">
           <button className="secondary-button" onClick={onRefresh} disabled={busy}>
