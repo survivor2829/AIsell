@@ -61,13 +61,14 @@ const base = { mode: 'product', durationSeconds: 30, deviceId: 'robot_scrubber',
 // The plan: one shot per selling point, a cleaning shot when none was picked, fillers for short lists.
 {
   const plan = real.planRealShoot({ ...base, pointIds: ['water', 'lift', 'obstacle'], extraImageIds: ['x'] });
-  assert.equal(plan.pipelineVersion, 6); assert.equal(plan.imageCount, 1); assert.equal(plan.productImages, 2);
+  assert.equal(plan.pipelineVersion, 6); assert.equal(plan.imageCount, 2, 'the 定妆照 and the scene picture'); assert.equal(plan.productImages, 2); assert.equal(plan.sheet, true);
   assert.deepEqual(plan.shots.map((shot) => shot.pointId), ['clean', 'water', 'lift', 'obstacle'], 'no cleaning point picked: the cleaning shot leads');
   assert.equal(plan.shots.reduce((sum, shot) => sum + shot.seconds, 0), 30);
   assert.deepEqual(plan.shots.map((shot) => shot.place), ['venue', 'other', 'other', 'venue']);
   assert.match(plan.shots[0].prompt, /图1、图2是这台机器不同角度的真实产品照片/u);
-  assert.match(plan.shots[0].prompt, /图3是这个场地/u, 'the scene picture comes after the product photos');
-  assert.doesNotMatch(plan.shots[1].prompt, /图3是这个场地/u, 'a station shot does not use the venue picture');
+  assert.match(plan.shots[0].prompt, /图3是同一台机器的四视角定妆图/u, 'the 定妆照 follows the real photos');
+  assert.match(plan.shots[0].prompt, /图4是这个场地/u, 'the scene picture comes last');
+  assert.doesNotMatch(plan.shots[1].prompt, /是这个场地/u, 'a station shot does not use the venue picture');
   assert.match(plan.shots[0].prompt, /只有工作部件实际经过之后/u);
   assert.match(plan.shots[0].prompt, /发暗的油渍/u);
   assert.doesNotMatch(plan.shots[1].prompt, /清洁规则/u);
@@ -77,7 +78,7 @@ const base = { mode: 'product', durationSeconds: 30, deviceId: 'robot_scrubber',
   assert.equal(new Set(short.shots.map((shot) => shot.caption)).size, short.shots.length, 'filler shots do not repeat a subtitle');
   const full = real.planRealShoot({ ...base, durationSeconds: 15, pointIds: ['water', 'lift', 'charge'] });
   assert.equal(full.shots.length, 3, 'a full list keeps its points without an extra shot');
-  assert.equal(full.imageCount, 0, 'no shot in the venue: no scene picture is made or paid for');
+  assert.equal(full.imageCount, 1, 'no shot in the venue: only the 定妆照, no scene picture is made or paid for');
   assert.ok(real.plannedCaptions(full).every((cue, i, all) => cue.end > cue.start && (!i || cue.start >= all[i - 1].end)));
   const bad = (change, pattern) => assert.throws(() => real.planRealShoot({ ...base, ...change }), pattern);
   bad({ durationSeconds: 20 }, /15、30、45或60秒/u);
@@ -95,8 +96,10 @@ const base = { mode: 'product', durationSeconds: 30, deviceId: 'robot_scrubber',
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoxi-eta-'));
   try {
     const plan = real.planRealShoot({ ...base, pointIds: ['water', 'lift'] });
-    const task = { plan, status: 'imaging', images: {}, shots: plan.shots.map(() => ({})), operations: {} };
+    const task = { plan, status: 'imaging', images: {}, shots: plan.shots.map(() => ({})), operations: {}, sheetConfirmedAt: '2026-11-19T10:00:00Z' };
     const video = (seconds) => DEFAULTS.videoBase + DEFAULTS.videoPerSecond * seconds;
+    // Before the 定妆照 is confirmed only that picture is counted.
+    assert.equal(estimateTask({ ...task, status: 'uploading', sheetConfirmedAt: undefined }, readTimings(root)), DEFAULTS.upload + DEFAULTS.image);
     assert.equal(estimateTask(task, readTimings(root)), DEFAULTS.image + video(10) + DEFAULTS.finish);
     assert.equal(estimateTask({ ...task, status: 'awaiting_sheet' }, readTimings(root)), null, 'no estimate while waiting for the customer');
     assert.equal(estimateTask({ ...task, status: 'needs_attention' }, readTimings(root)), null);
@@ -125,7 +128,8 @@ assert.equal(validPrices(prices()), true);
 {
   const quote = quotePlan(real.planRealShoot({ ...base, pointIds: ['water', 'lift'] }), prices(), 0);
   // 30 s × 0.3 + one picture 0.16, plus one picture and the longest shot (10 s) kept for a redo.
-  assert.equal(quote.maximumCny, 12.32); assert.equal(quote.videoAudio, true);
+  // 30 s × 0.3 + 定妆照 and scene picture 2 × 0.16, plus both 定妆照 redos, one picture redo and the longest shot (10 s).
+  assert.equal(quote.maximumCny, 12.80); assert.equal(quote.videoAudio, true);
 }
 
 // The official price page arrives in network chunks; a Chinese character split between two chunks
@@ -168,6 +172,7 @@ async function run() {
           throw Object.assign(new Error('服务未完成请求：Throttling'), { code: 'digital_human_provider_error', status: 429 });
         }
         posts.push({ route, body: request.body });
+        if (route.endsWith('/uploads/images')) return { url: 'https://fixture.example/product.png' };
         if (route.includes('/images/')) return { task_id: `img_${posts.length}` };
         const task_id = `v_${videoTasks.size}`;
         videoTasks.set(task_id, { status: 'running', polls: 0, prompt: request.body.input.prompt });
@@ -217,18 +222,27 @@ async function run() {
     failVideo = '自己乘电梯'; throttleOnce = true;
     await service.start(draft.id);
     let task = service.get(draft.id);
-    assert.equal(task.status, 'imaging'); assert.ok(task.etaSeconds > 0 && Date.parse(task.estimatedFinishAt) > Date.now());
+    assert.ok(['uploading', 'imaging'].includes(task.status)); assert.ok(task.etaSeconds > 0 && Date.parse(task.estimatedFinishAt) > Date.now());
+    // The 定妆照 comes first and waits for the customer; nothing else is paid for meanwhile.
+    task = await until(draft.id, (t) => t.status === 'awaiting_sheet');
+    assert.equal(task.statusLabel, '请确认定妆照'); assert.equal(task.etaSeconds, null); assert.deepEqual(task.imagesReady, { sheet: true, plate: false });
+    assert.equal(posts.filter((p) => p.route.includes('video-synthesis')).length, 0);
+    await service.redoSheet(draft.id); task = await until(draft.id, (t) => t.status === 'awaiting_sheet');
+    assert.equal(task.sheetRedos, 1);
+    assert.match((await service.imageMedia(draft.id, 'sheet')).dataUrl, /^data:image\/jpeg;base64,/u);
+    await service.confirmSheet(draft.id);
     // The failed shot is redone by itself, once, automatically; the others are kept.
     task = await until(draft.id, (t) => t.status === 'completed');
     assert.ok(maxRunning >= 2 && maxRunning <= 3, `shots are filmed a few at a time (${maxRunning})`);
     const images = posts.filter((p) => p.route.includes('/images/generations'));
-    assert.equal(images.length, 1, 'one scene picture'); assert.equal(images[0].body.image_urls, undefined);
+    assert.equal(images.length, 3, 'the 定妆照 twice (one redo) and one scene picture');
+    assert.deepEqual(images[0].body.image_urls, ['https://fixture.example/product.png']); assert.equal(images[2].body.image_urls, undefined);
     const videos = posts.filter((p) => p.route.includes('video-synthesis')).map((p) => p.body);
     assert.equal(videos.length, 5, 'four shots and one redo');
     assert.ok(videos.every((b) => b.parameters.audio === true && b.parameters.resolution === '480P'));
     const byPoint = (name) => videos.find((b) => b.input.prompt.includes(`展示「${name}」`));
-    assert.equal(byPoint('自动避障').input.media.length, 3, 'two product photos and the scene picture');
-    assert.equal(byPoint('自动上下水').input.media.length, 2, 'a station shot uses the product photos only');
+    assert.equal(byPoint('自动避障').input.media.length, 4, 'two product photos, the 定妆照 and the scene picture');
+    assert.equal(byPoint('自动上下水').input.media.length, 3, 'a station shot uses the product photos and the 定妆照');
     assert.equal(task.shotsReady.every(Boolean), true);
     assert.deepEqual(rendered.cues.map((cue) => cue.text), draft.plan.shots.map((shot) => shot.caption));
     assert.ok(rendered.cues.every((cue) => cue.lines.length === 1));
@@ -239,10 +253,11 @@ async function run() {
     // answer whose outcome is unknown pauses at once, keeping its receipt instead of ordering again.
     badCaptionsOnce = true; unknownBusyOnce = true;
     const second = await service.create({ ...base, durationSeconds: 15, style: 'real', imageId: front.id, pointIds: ['water', 'charge', 'lift'] });
-    assert.equal(second.plan.imageCount, 0);
+    assert.equal(second.plan.imageCount, 1);
     await service.start(second.id);
+    await until(second.id, (t) => t.status === 'awaiting_sheet'); await service.confirmSheet(second.id);
     let paused = await until(second.id, (t) => t.status === 'outcome_unknown');
-    assert.equal(posts.filter((p) => p.route.includes('/images/generations')).length, 1, 'no scene picture for a video without venue shots');
+    assert.equal(posts.filter((p) => p.route.includes('/images/generations')).length, 4, 'only its 定妆照: no scene picture for a video without venue shots');
     // The receipt says the request went through; nothing is sent again.
     const fixedFile = path.join(root, second.id, 'task.json'), saved = JSON.parse(fs.readFileSync(fixedFile, 'utf8'));
     const pending = Object.values(saved.operations).find((op) => !op.response);

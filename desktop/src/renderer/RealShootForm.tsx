@@ -22,7 +22,8 @@ export function realEstimate(timing: Timing | undefined, catalog: RealCatalog | 
   if (!timing || !catalog) return 0;
   const limit = catalog.pointLimit[durationSeconds] || 5;
   const shots = Math.max(catalog.minShots[durationSeconds] || 3, Math.min(limit, picked + 1));
-  return timing.image + Math.ceil(shots / timing.shotSlots) * videoSeconds(timing, durationSeconds / shots) + timing.finish;
+  // The 定妆照 and the scene picture, then the shots a few at a time.
+  return 10 + 2 * timing.image + Math.ceil(shots / timing.shotSlots) * videoSeconds(timing, durationSeconds / shots) + timing.finish;
 }
 export function storyEstimate(timing: Timing | undefined, durationSeconds: number) {
   if (!timing) return 0;
@@ -100,12 +101,14 @@ export function ProductPhotos({ images, disabled, onAdd, onRemove }: { images: P
 
 type ProgressTask = {
   id: string; status: string; durationSeconds: number; shotsReady?: boolean[]; shotsRunning?: boolean[]; imagesReady?: Record<string, boolean>;
+  sheetConfirmed?: boolean; sheetStep?: boolean;
   plan: { shots: { index: number; title: string; caption?: string; seconds: number }[] };
 };
-const STAGES = [{ label: "画场地", Icon: MapPin }, { label: "拍镜头", Icon: Clapperboard }, { label: "加字幕", Icon: Subtitles }];
+const STAGES = [{ label: "定妆照", Icon: ImagePlus }, { label: "画场地", Icon: MapPin }, { label: "拍镜头", Icon: Clapperboard }, { label: "加字幕", Icon: Subtitles }];
 export function RealShootProgress({ task, shotVideos }: { task: ProgressTask; shotVideos: Record<string, string> }) {
   const finishing = ["assembling", "packaging"].includes(task.status);
-  const stage = task.status === "completed" ? 3 : finishing ? 2 : task.imagesReady?.plate ? 1 : 0;
+  const sheetDone = !task.sheetStep || task.sheetConfirmed;
+  const stage = task.status === "completed" ? 4 : finishing ? 3 : sheetDone && task.imagesReady?.plate ? 2 : sheetDone ? 1 : 0;
   const stuck = ["needs_attention", "outcome_unknown"].includes(task.status);
   return <div className="sv-progress">
     <ol className="sv-stages">{STAGES.map(({ label, Icon }, index) => <li key={label} className={index < stage ? "is-done" : index === stage ? "is-now" : ""}>

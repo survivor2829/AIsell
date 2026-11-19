@@ -103,8 +103,9 @@ const POINTS = Object.freeze([
     camera: '墙角处的低机位，镜头沿着墙根方向，固定不动，机器贴着墙根从远处驶近', action: '{work}。机器贴着墙根和柱脚前进，边刷伸进墙角，墙根处的脏污也被清走，墙边一条干净。' },
   { id: 'narrow', name: '窄道灵活', caption: '窄通道 转弯灵活', devices: ['robot_scrubber', 'robot_sweeper', 'robot_dust', 'robot_combo', 'walk_scrubber', 'walk_sweeper', 'ride_scrubber', 'ride_sweeper'], cleaning: false, place: 'venue',
     camera: '通道拐角外侧的固定机位，成人胸口高度，能同时看到拐角前后两段通道', action: '机器沿着窄通道前进，到拐角处平稳减速，顺着机头方向转过拐角，不碰到两侧货架或墙面，转过去后继续清洁前进。' },
+  // Third paid round (2026-11-19): two obstacles and a following camera made the cone jump and the machine flip; now one cone, a fixed camera, one direction.
   { id: 'obstacle', name: '自动避障', caption: '遇到障碍 自己绕开', devices: ['robot_scrubber', 'robot_sweeper', 'robot_dust', 'robot_combo', 'robot_outdoor'], cleaning: false, place: 'venue',
-    camera: '机器斜后方的跟拍机位，成人腰部高度，同速跟随', action: '机器前进途中，前方通道上放着一辆空的购物推车（或一个黄色锥桶），机器在离障碍物约半米处减速，平稳地从旁边绕过，绕过后回到原来的路线继续清洁。' },
+    camera: '通道一侧的固定机位，成人腰部高度，侧面拍，能同时看到机器、锥桶和绕行的全过程', action: '通道中间只放着一个黄色锥桶，位置从头到尾固定不动。机器从画面左侧沿通道朝画面右侧直线开来，在离锥桶约半米处减速，平稳地从锥桶旁边绕过，绕过后回到原来的路线继续往右开。机器全程只朝这一个方向前进，不掉头，画面里没有其他障碍物。' },
   { id: 'water', name: '自动上下水', caption: '自动上下水 不用人管', devices: ['robot_scrubber', 'robot_combo'], cleaning: false, place: 'other',
     camera: '工作站正侧面的固定中景，成人胸口高度，能同时看到机器和靠墙的工作站', action: '机器自己驶向靠墙的自动工作站，缓慢对准后停稳，工作站的管路接上机器，透明管里能看到清水灌进机器、污水被抽走，工作站指示灯亮起。全程没有人碰它。' },
   { id: 'charge', name: '自动回充', caption: '电量低 自己回去充电', devices: ['robot_scrubber', 'robot_sweeper', 'robot_dust', 'robot_combo', 'robot_outdoor'], cleaning: false, place: 'other',

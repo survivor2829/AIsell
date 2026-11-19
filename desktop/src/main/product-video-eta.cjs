@@ -68,7 +68,10 @@ function estimateTask(task, timings, { now = Date.now(), shotSlots = 3, imageSlo
   if (!task?.plan || ['draft', 'completed', 'needs_attention', 'outcome_unknown', 'awaiting_sheet'].includes(task.status)) return null;
   const r = rates(timings || {});
   if (task.plan.pipelineVersion === 6) {
-    const plate = FINISHING.has(task.status) || task.plan.imageCount === 0 ? 0 : imageLeft(task, 'plate', r, now);
+    const venue = task.plan.shots.some((shot) => shot.place === 'venue');
+    // Before the customer confirms the 定妆照 only that picture is counted; the rest follows the confirmation.
+    if (task.plan.sheet && !task.sheetConfirmedAt) return Math.round(DEFAULTS.upload + imageLeft(task, 'sheet', r, now));
+    const plate = FINISHING.has(task.status) || !venue ? 0 : imageLeft(task, 'plate', r, now);
     const shots = FINISHING.has(task.status) ? 0 : shotsLeft(task, r, shotSlots, now);
     return Math.round(plate + shots + finishLeft(task, r, now));
   }
