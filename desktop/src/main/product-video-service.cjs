@@ -310,10 +310,20 @@ function createProductVideoService(options = {}) {
     op.supplierStatus = node?.status || ''; save(task);
   }
   async function upload(task) {
-    if (task.imageUrl) return;
-    const request = provider.imageUploadBody(asset(task.imageId).path);
-    const payload = await operation(task, 'upload_image', '/apimart/uploads/images', request.body, 0, request.headers);
-    task.imageUrl = remoteUrl(provider.nodeOf(payload).url || payload.url); save(task);
+    if (!task.imageUrl) {
+      const request = provider.imageUploadBody(asset(task.imageId).path);
+      const payload = await operation(task, 'upload_image', '/apimart/uploads/images', request.body, 0, request.headers);
+      task.imageUrl = remoteUrl(provider.nodeOf(payload).url || payload.url); save(task);
+    }
+    // 无人实拍: the side/back photos go to the 定妆照 too (uploads are free).
+    if (task.plan.pipelineVersion !== 6 || !task.plan.sheet) return;
+    task.extraImageUrls ||= [];
+    for (const [index, id] of (task.extraImageIds || []).entries()) {
+      if (task.extraImageUrls[index]) continue;
+      const request = provider.imageUploadBody(asset(id).path);
+      const payload = await operation(task, `upload_extra_${index}`, '/apimart/uploads/images', request.body, 0, request.headers);
+      task.extraImageUrls[index] = remoteUrl(provider.nodeOf(payload).url || payload.url); save(task);
+    }
   }
   async function poll(task, kind) {
     const index = task.currentShot, shot = task.shots[index], name = `${kind === 'frame' ? 'frame' : 'shot'}_${index}`;
@@ -436,7 +446,10 @@ function createProductVideoService(options = {}) {
   function storyImageSpec(task, key) {
     if (key === 'plate' && task.plan.pipelineVersion === 6) return { prompt: task.plan.platePrompt, refs: [], size: '9:16' };
     const st = task.story;
-    if (key === 'sheet') return { prompt: story.sheetPrompt(task.plan.productName), refs: ['product'], size: '1:1' };
+    if (key === 'sheet') {
+      const extra = task.plan.pipelineVersion === 6 ? (task.extraImageIds || []).map((_, index) => `extra_${index}`) : [];
+      return { prompt: story.sheetPrompt(task.plan.productName, 1 + extra.length), refs: ['product', ...extra], size: '1:1' };
+    }
     if (!st) throw fail('product_video_story_missing', '故事还没写好，未提交出图。');
     if (key === 'scene') return { prompt: story.scenePrompt(st), refs: [], size: '9:16' };
     if (key === 'floor') return { prompt: story.floorPrompt(st), refs: ['scene'], size: '16:9' };
@@ -478,7 +491,7 @@ function createProductVideoService(options = {}) {
     for (const key of keys) {
       if (running >= IMAGE_SLOTS) break;
       if (task.images[key]?.file || task.images[key]?.taskId) continue;
-      if (storyImageSpec(task, key).refs.some((ref) => ref !== 'product' && !task.images[ref]?.file)) continue;
+      if (storyImageSpec(task, key).refs.some((ref) => ref !== 'product' && !/^extra_/u.test(ref) && !task.images[ref]?.file)) continue;
       try { await storyImage(task, key); running += 1; }
       catch (error) {
         // The service is busy: wait for the pictures already ordered and try this one again later.
@@ -549,6 +562,11 @@ function createProductVideoService(options = {}) {
   // References for later pictures are uploaded from the local file once (free), not taken from result links that may expire.
   async function storyReferenceUrl(task, key) {
     if (key === 'product') return task.imageUrl;
+    if (/^extra_\d$/u.test(key)) {
+      const url = task.extraImageUrls?.[Number(key.slice(6))];
+      if (!url) throw fail('product_video_reference_missing', '产品图还没准备好，未提交出图。');
+      return url;
+    }
     const image = task.images[key];
     if (!image?.file) throw fail('product_video_reference_missing', '参考图还没准备好，未提交出图。');
     if (image.refUrl && image.refSha256 === image.sha256) return image.refUrl;

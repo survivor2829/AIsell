@@ -154,7 +154,8 @@ async function run() {
   const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
   const clip = Buffer.alloc(2048); clip.write('ftyp', 4, 'ascii');
   const posts = [], videoTasks = new Map();
-  let maxRunning = 0, failVideo = '', throttleOnce = false, unknownBusyOnce = false, badCaptionsOnce = false;
+  let maxRunning = 0, failVideo = '', throttleOnce = false, unknownBusyOnce = false, badCaptionsOnce = false, failSheetOnce = false;
+  const imageTasks = new Map();
   const running = () => [...videoTasks.values()].filter((task) => task.status === 'running').length;
   const provider = {
     imageUploadBody: (file) => ({ body: Buffer.from(path.basename(file)), headers: {} }), nodeOf: (p) => p?.output || p, taskIdOf,
@@ -173,7 +174,7 @@ async function run() {
         }
         posts.push({ route, body: request.body });
         if (route.endsWith('/uploads/images')) return { url: 'https://fixture.example/product.png' };
-        if (route.includes('/images/')) return { task_id: `img_${posts.length}` };
+        if (route.includes('/images/')) { const task_id = `img_${posts.length}`; imageTasks.set(task_id, request.body.prompt); return { task_id }; }
         const task_id = `v_${videoTasks.size}`;
         videoTasks.set(task_id, { status: 'running', polls: 0, prompt: request.body.input.prompt });
         maxRunning = Math.max(maxRunning, running());
@@ -188,6 +189,8 @@ async function run() {
         task.status = failed ? 'failed' : 'done';
         return failed ? { output: { task_id, task_status: 'FAILED', message: '内容未通过' } } : { output: { task_id, task_status: 'SUCCEEDED', video_url: `https://fixture.example/${task_id}.mp4` } };
       }
+      // A 定妆照 can fail once (review of #310): only that picture is ordered again.
+      if (failSheetOnce && /产品定妆设定图/u.test(imageTasks.get(task_id) || '')) { failSheetOnce = false; return { task_id, status: 'failed', error: '内容未通过' }; }
       return { task_id, status: 'completed' };
     }
   };
@@ -219,24 +222,32 @@ async function run() {
     const draft = await service.create({ ...base, style: 'real', imageId: front.id, extraImageIds: [side.id], pointIds: ['water', 'lift', 'obstacle', 'edge'] });
     assert.equal(draft.realPipeline, true); assert.equal(draft.plan.shots.length, 4);
     assert.equal(draft.etaSeconds, null, 'a draft has no countdown');
-    failVideo = '自己乘电梯'; throttleOnce = true;
+    failVideo = '自己乘电梯'; throttleOnce = true; failSheetOnce = true;
     await service.start(draft.id);
+    let failed = await until(draft.id, (t) => t.status === 'needs_attention');
+    assert.equal(failed.errorCode, 'product_video_image_failed'); assert.match(failed.error, /定妆照没有画成/u);
+    await service.retryShot(draft.id);
     let task = service.get(draft.id);
     assert.ok(['uploading', 'imaging'].includes(task.status)); assert.ok(task.etaSeconds > 0 && Date.parse(task.estimatedFinishAt) > Date.now());
     // The 定妆照 comes first and waits for the customer; nothing else is paid for meanwhile.
     task = await until(draft.id, (t) => t.status === 'awaiting_sheet');
     assert.equal(task.statusLabel, '请确认定妆照'); assert.equal(task.etaSeconds, null); assert.deepEqual(task.imagesReady, { sheet: true, plate: false });
     assert.equal(posts.filter((p) => p.route.includes('video-synthesis')).length, 0);
+    // The side photo goes to the 定妆照 too, so its back view is not invented from the front alone.
+    const sheetOrders = posts.filter((p) => p.route.includes('/images/generations') && /产品定妆设定图/u.test(p.body.prompt));
+    assert.equal(sheetOrders.at(-1).body.image_urls.length, 2); assert.match(sheetOrders.at(-1).body.prompt, /2张参考图/u);
     await service.redoSheet(draft.id); task = await until(draft.id, (t) => t.status === 'awaiting_sheet');
     assert.equal(task.sheetRedos, 1);
     assert.match((await service.imageMedia(draft.id, 'sheet')).dataUrl, /^data:image\/jpeg;base64,/u);
+    await service.redoSheet(draft.id); task = await until(draft.id, (t) => t.status === 'awaiting_sheet');
+    await assert.rejects(service.redoSheet(draft.id), (e) => e.code === 'product_video_sheet_retry_limit');
     await service.confirmSheet(draft.id);
     // The failed shot is redone by itself, once, automatically; the others are kept.
     task = await until(draft.id, (t) => t.status === 'completed');
     assert.ok(maxRunning >= 2 && maxRunning <= 3, `shots are filmed a few at a time (${maxRunning})`);
     const images = posts.filter((p) => p.route.includes('/images/generations'));
-    assert.equal(images.length, 3, 'the 定妆照 twice (one redo) and one scene picture');
-    assert.deepEqual(images[0].body.image_urls, ['https://fixture.example/product.png']); assert.equal(images[2].body.image_urls, undefined);
+    assert.equal(images.length, 5, 'the 定妆照 four times (failed, retried, two redos) and one scene picture');
+    assert.equal(images[0].body.image_urls.length, 2); assert.equal(images[4].body.image_urls, undefined);
     const videos = posts.filter((p) => p.route.includes('video-synthesis')).map((p) => p.body);
     assert.equal(videos.length, 5, 'four shots and one redo');
     assert.ok(videos.every((b) => b.parameters.audio === true && b.parameters.resolution === '480P'));
@@ -257,7 +268,7 @@ async function run() {
     await service.start(second.id);
     await until(second.id, (t) => t.status === 'awaiting_sheet'); await service.confirmSheet(second.id);
     let paused = await until(second.id, (t) => t.status === 'outcome_unknown');
-    assert.equal(posts.filter((p) => p.route.includes('/images/generations')).length, 4, 'only its 定妆照: no scene picture for a video without venue shots');
+    assert.equal(posts.filter((p) => p.route.includes('/images/generations')).length, 6, 'only its 定妆照 (five before it): no scene picture for a video without venue shots');
     // The receipt says the request went through; nothing is sent again.
     const fixedFile = path.join(root, second.id, 'task.json'), saved = JSON.parse(fs.readFileSync(fixedFile, 'utf8'));
     const pending = Object.values(saved.operations).find((op) => !op.response);
@@ -270,6 +281,15 @@ async function run() {
     const done = await until(second.id, (t) => t.status === 'completed');
     assert.equal(posts.filter((p) => p.route.includes('/asr/')).length, 0, 'no speech recognition is ever bought');
     assert.ok(done.canExport);
+    // A video planned before the 定妆照 step (no plan.sheet) runs as it did: no 定妆照, no waiting.
+    const legacy = await service.create({ ...base, durationSeconds: 15, style: 'real', imageId: front.id, pointIds: ['wide'] });
+    const legacyFile = path.join(root, legacy.id, 'task.json'), legacyTask = JSON.parse(fs.readFileSync(legacyFile, 'utf8'));
+    delete legacyTask.plan.sheet; legacyTask.plan.imageCount = 1; fs.writeFileSync(legacyFile, JSON.stringify(legacyTask));
+    const sheetsBefore = posts.filter((p) => /产品定妆设定图/u.test(p.body?.prompt || '')).length;
+    await service.start(legacy.id);
+    const legacyDone = await until(legacy.id, (t) => t.status === 'completed');
+    assert.equal(posts.filter((p) => /产品定妆设定图/u.test(p.body?.prompt || '')).length, sheetsBefore, 'no 定妆照 for an older plan');
+    assert.equal(legacyDone.sheetStep, false);
   } finally { await service.close(); fs.rmSync(root, { recursive: true, force: true }); }
 }
 run().then(() => console.log('real-shoot self-check passed: pick lists, plans and prompts, prices, time estimate, scene picture, shots a few at a time, busy service, failed shot redo, one-line subtitles'),

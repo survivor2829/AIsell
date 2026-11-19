@@ -146,7 +146,7 @@ function choices() {
       defaults: Object.fromEntries(device.scenes.map((id) => [id, sceneDefaults(id, device)])) })),
     scenes: SCENES.map((scene) => ({ id: scene.id, name: scene.name })),
     floors: FLOORS.map(({ id, name }) => ({ id, name })), dirt: DIRT.map(({ id, name }) => ({ id, name })),
-    points: POINTS.filter((point) => !point.core).map(({ id, name, caption }) => ({ id, name, caption })),
+    points: POINTS.filter((point) => !point.core).map(({ id, name, caption, place, cleaning }) => ({ id, name, caption, place, cleaning: Boolean(cleaning) })),
     durations: DURATIONS, pointLimit: POINT_LIMIT, minShots: MIN_SHOTS };
 }
 module.exports = { GROUPS, DEVICES, FLOORS, DIRT, SCENE_DETAIL, POINTS, POINT_LIMIT, MIN_SHOTS, DURATIONS, CAPTION_WIDTH, forDevice, sceneDefaults, choices };

@@ -148,7 +148,7 @@ export function ProductVideoPage() {
   const running = Boolean(selected && ACTIVE.has(selected.status));
   const realReady = Boolean(realDraft.deviceId && realDraft.sceneId && realDraft.floorId && realDraft.dirtIds.length);
   const canGenerate = Boolean(draft.imageId && !busy && !running && draft.facts.length <= 12000 && (style === "story" || realReady));
-  const estimate = style === "real" ? realEstimate(capability?.timing, capability?.catalog, draft.durationSeconds, realDraft.pointIds.length) : storyEstimate(capability?.timing, draft.durationSeconds);
+  const estimate = style === "real" ? realEstimate(capability?.timing, capability?.catalog, draft.durationSeconds, realDraft.pointIds) : storyEstimate(capability?.timing, draft.durationSeconds);
   const addImage = (extra: boolean) => api && void perform("image", () => unwrap(api.importImage()), item => {
     if (!item) return;
     setImages(old => extra ? [...old.filter(row => row.id !== item.id), item].slice(0, 3) : [item, ...old.slice(1)]);
