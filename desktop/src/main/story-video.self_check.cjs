@@ -50,8 +50,8 @@ const sampleStory = (segments = 1) => ({
   assert.ok([...video].length <= story.VIDEO_PROMPT_LIMIT);
   // An unmanned robot is never driven, sat on or pushed; people never touch or merge into it (customer video, 2026-11-19).
   const robot = story.videoPrompt({ ...parsed, unmanned: true }, 1);
-  assert.match(robot, /没有方向盘/u); assert.match(robot, /人坐在或站在机器上/u); assert.ok([...robot].length <= story.VIDEO_PROMPT_LIMIT);
-  assert.doesNotMatch(video, /没有方向盘/u, 'a ride-on machine keeps its seat');
+  assert.match(robot, /不开它/u); assert.match(robot, /产品图里没有的座椅、方向盘不要加上去/u); assert.match(robot, /人坐在或站在机器上/u); assert.ok([...robot].length <= story.VIDEO_PROMPT_LIMIT);
+  assert.doesNotMatch(video, /不开它/u, 'a ride-on machine may be driven');
   assert.match(video, /隔着至少一米/u);
   assert.equal(story.planStoryVideo({ mode: 'product', durationSeconds: 15, productName: 'CC1 Pro 洗地机器人' }).unmanned, true);
   assert.match(story.storyMessages({ productName: 'x', facts: '', scene: { name: '医院', description: '' }, segments: 1, unmanned: true }).system, /人物只在旁边看，不动手帮忙/u);
