@@ -251,30 +251,21 @@ def _even_split(tokens, max_width):
     count = len(tokens)
     if not count:
         return []
-    widths = {}
-
-    def width(i, j):
-        if (i, j) not in widths:
-            widths[(i, j)] = _line_width("".join(tokens[i:j]))
-        return widths[(i, j)]
-
-    # best[j]: (largest page width, sizes) splitting tokens[:j] into the current number of pages.
-    best = {0: (0.0, [])}
-    for _ in range(count):
-        layer = {}
-        for j in range(1, count + 1):
-            choice = None
-            for i, (largest, sizes) in best.items():
-                if i < j and (j - i == 1 or width(i, j) <= max_width):
-                    candidate = max(largest, width(i, j))
-                    if choice is None or candidate < choice[0]:
-                        choice = (candidate, sizes + [j - i])
-            if choice is not None:
-                layer[j] = choice
-        best = layer
-        if count in layer:
-            return layer[count][1]
-    return [1] * count
+    # best[j] = (pages, largest page width, sizes) for tokens[:j]: fewest pages first, then the most even.
+    # Widths only grow as a page reaches further back, so each end looks back at most one line.
+    best = [(0, 0.0, [])] + [None] * count
+    for j in range(1, count + 1):
+        used = _line_width(tokens[j - 1])
+        for i in range(j - 1, -1, -1):
+            if i < j - 1:
+                used += _caption_width(tokens[i])
+                if used > max_width:
+                    break
+            pages, largest, sizes = best[i]
+            candidate = (pages + 1, max(largest, used), sizes + [j - i])
+            if best[j] is None or candidate[:2] < best[j][:2]:
+                best[j] = candidate
+    return best[count][2]
 
 
 def _split_even(items, max_width, text_of=lambda item: item):
@@ -288,7 +279,7 @@ def _split_even(items, max_width, text_of=lambda item: item):
 
 def _audio_proportional_caption_units(text, start_ms, end_ms, max_width):
     """Split long copy while keeping the measured phrase audio boundaries."""
-    clauses = re.findall(r"[^，。！？；,!?;]+[，。！？；,!?;]*", str(text or ""))
+    clauses = [clause for clause in re.findall(r"[^，。！？；,!?;]*[，。！？；,!?;]*", str(text or "")) if clause]
     chunks, current = [], ""
     for clause in clauses:
         if _line_width(clause) > max_width:
@@ -507,7 +498,8 @@ def reference_caption_cues(captions, base=0, max_width=CAPTION_LINE_WIDTH, *, se
         if sentence_pages:
             units = [page for unit in units for page in _semantic_caption_pages(unit, max_width)]
         for unit in units:
-            if _line_width(unit["text"]) > max_width:
+            spoken_words = [word for word in unit.get("words") or [] if spoken_key(word["text"])]
+            if _line_width(unit["text"]) > max_width and not (unit.get("words") and len(spoken_words) <= 1):
                 raise ContentEngineError("narrated_caption_timing_insufficient",
                     "语音识别没有给出足够细的字幕时间，这句话过长，无法排成一行字幕。请将该段改短后重新确认，正文未被自动修改。")
             cues.append({"text": unit["text"], "start_ms": max(0, int(unit["start_ms"]) - base),

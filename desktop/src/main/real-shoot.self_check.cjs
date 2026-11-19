@@ -74,6 +74,7 @@ const base = { mode: 'product', durationSeconds: 30, deviceId: 'robot_scrubber',
   assert.equal(new Set(short.shots.map((shot) => shot.caption)).size, short.shots.length, 'filler shots do not repeat a subtitle');
   const full = real.planRealShoot({ ...base, durationSeconds: 15, pointIds: ['water', 'lift', 'charge'] });
   assert.equal(full.shots.length, 3, 'a full list keeps its points without an extra shot');
+  assert.equal(full.imageCount, 0, 'no shot in the venue: no scene picture is made or paid for');
   assert.ok(real.plannedCaptions(full).every((cue, i, all) => cue.end > cue.start && (!i || cue.start >= all[i - 1].end)));
   const bad = (change, pattern) => assert.throws(() => real.planRealShoot({ ...base, ...change }), pattern);
   bad({ durationSeconds: 20 }, /15、30、45或60秒/u);
@@ -129,7 +130,7 @@ async function run() {
   const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
   const clip = Buffer.alloc(2048); clip.write('ftyp', 4, 'ascii');
   const posts = [], videoTasks = new Map();
-  let maxRunning = 0, failVideo = '', throttleOnce = false;
+  let maxRunning = 0, failVideo = '', throttleOnce = false, unknownBusyOnce = false, badCaptionsOnce = false;
   const running = () => [...videoTasks.values()].filter((task) => task.status === 'running').length;
   const provider = {
     imageUploadBody: (file) => ({ body: Buffer.from(path.basename(file)), headers: {} }), nodeOf: (p) => p?.output || p, taskIdOf,
@@ -137,6 +138,11 @@ async function run() {
     download: async (url, dest) => fs.writeFileSync(dest, url.endsWith('.png') ? Buffer.concat([png, Buffer.from(url)]) : clip),
     request: async (route, request = {}) => {
       if (request.method === 'POST') {
+        if (route.includes('video-synthesis') && unknownBusyOnce && running() > 0) {
+          unknownBusyOnce = false;
+          // Busy, but the answer could not be read: the request may have gone through.
+          throw Object.assign(new Error('服务返回的数据无法识别。'), { code: 'digital_human_response_invalid', status: 429, outcomeUnknown: true });
+        }
         if (route.includes('video-synthesis') && throttleOnce && running() > 0) {
           throttleOnce = false;
           throw Object.assign(new Error('服务未完成请求：Throttling'), { code: 'digital_human_provider_error', status: 429 });
@@ -165,8 +171,12 @@ async function run() {
     gatewayClient: { isEnabled: () => true, initialize: async () => ({ ready: true, capabilities: { apimart: true, bailian: true, bailian_video: true } }) },
     mediaTools: {
       referenceJpeg: async ({ source, destination }) => fs.writeFileSync(destination, fs.readFileSync(source)),
-      normalizeAndAssemble: async ({ shots, destination }) => { assert.equal(shots.reduce((sum, shot) => sum + shot.seconds, 0), 30); fs.writeFileSync(destination, clip); },
+      normalizeAndAssemble: async ({ shots, destination }) => { assert.ok([15, 30].includes(shots.reduce((sum, shot) => sum + shot.seconds, 0))); fs.writeFileSync(destination, clip); },
       renderCaptioned: async ({ destination, captions }) => { rendered = captions; fs.writeFileSync(destination, clip); },
+      buildPlannedCaptions: (input) => {
+        if (badCaptionsOnce) { badCaptionsOnce = false; throw Object.assign(new Error('字幕过长'), { code: 'product_video_caption_too_long' }); }
+        return require('./product-video-media.cjs').buildPlannedCaptions(input);
+      },
       extractAudio: async () => { throw new Error('无人实拍不做语音识别'); }
     } });
   const until = async (id, predicate) => {
@@ -205,6 +215,26 @@ async function run() {
     assert.equal(task.progress, 100); assert.equal(task.etaSeconds, null); assert.equal(task.canExport, true);
     assert.ok(task.quote.reservedCny <= task.quote.budgetCny + 1e-9, 'spending stays within the quoted allowance');
     assert.ok(readTimings(root).video.length >= 4 && readTimings(root).finish.length === 1, 'real step times are kept for the next estimate');
+    // Review fixes: subtitles of this mode are redone by assembling again (no speech recognition), and a busy
+    // answer whose outcome is unknown pauses at once, keeping its receipt instead of ordering again.
+    badCaptionsOnce = true; unknownBusyOnce = true;
+    const second = await service.create({ ...base, durationSeconds: 15, style: 'real', imageId: front.id, pointIds: ['water', 'charge', 'lift'] });
+    assert.equal(second.plan.imageCount, 0);
+    await service.start(second.id);
+    let paused = await until(second.id, (t) => t.status === 'outcome_unknown');
+    assert.equal(posts.filter((p) => p.route.includes('/images/generations')).length, 1, 'no scene picture for a video without venue shots');
+    // The receipt says the request went through; nothing is sent again.
+    const fixedFile = path.join(root, second.id, 'task.json'), saved = JSON.parse(fs.readFileSync(fixedFile, 'utf8'));
+    const pending = Object.values(saved.operations).find((op) => !op.response);
+    assert.ok(pending, 'the unknown request keeps its receipt');
+    provider.request = ((original) => async (route, request = {}) => route === `/operations/${pending.id}` ? { output: { task_id: 'v_recovered' } } : original(route, request))(provider.request);
+    videoTasks.set('v_recovered', { status: 'running', polls: 0, prompt: '' });
+    paused = await until(second.id, (t) => t.status === 'needs_attention');
+    assert.equal(paused.errorCode, 'product_video_caption_too_long'); assert.equal(paused.retryLabel, '重新合成');
+    await service.retryShot(second.id);
+    const done = await until(second.id, (t) => t.status === 'completed');
+    assert.equal(posts.filter((p) => p.route.includes('/asr/')).length, 0, 'no speech recognition is ever bought');
+    assert.ok(done.canExport);
   } finally { await service.close(); fs.rmSync(root, { recursive: true, force: true }); }
 }
 run().then(() => console.log('real-shoot self-check passed: pick lists, plans and prompts, prices, time estimate, scene picture, shots a few at a time, busy service, failed shot redo, one-line subtitles'),

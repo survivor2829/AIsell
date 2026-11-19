@@ -79,7 +79,9 @@ function planRealShoot(input) {
   });
   return {
     version: REAL_VERSION, pipelineVersion: 6, videoProvider: 'bailian', videoModel: DIRECT_MODEL, videoAudio: true,
-    sourceResolution: '480p', outputSize: '1080x1920', imageModel: IMAGE_MODEL, imageCount: 1, director: '实拍导演',
+    sourceResolution: '480p', outputSize: '1080x1920', imageModel: IMAGE_MODEL,
+    // The scene picture is only made (and paid for) when a shot happens in the venue.
+    imageCount: planned.some((shot) => shot.place === 'venue') ? 1 : 0, director: '实拍导演',
     productName, productImages, deviceId: device.id, device: device.name, operator: device.operator, scene: scene.name, sceneIds: [scene.id],
     floorId: floor.id, surface: floor.name, dirtIds, dirt: dirt.map((row) => row.name).join('、'), pointIds,
     platePrompt: platePrompt({ scene, detail, floor, dirt }), shots: planned,

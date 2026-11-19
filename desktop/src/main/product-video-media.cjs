@@ -126,8 +126,47 @@ function spokenCharacters(text) {
   }
   return result;
 }
+// Fewest one-line pieces of about equal length, cut after punctuation where possible; each piece gets
+// the utterance's own time in proportion to its spoken characters. Used when word timings are missing
+// or do not match the text, so one-line subtitles never fail where two lines used to fit.
+function proportionalParts(text, span) {
+  const tokens = [];
+  for (const char of text) {
+    const last = tokens.at(-1) || '';
+    // Punctuation stays with what it closes; a model name or number is never cut in the middle.
+    if (last && (/[\p{P}\s]/u.test(char) || (/[A-Za-z0-9.%]/u.test(char) && /[A-Za-z0-9.%]$/u.test(last)))) tokens[tokens.length - 1] += char; else tokens.push(char);
+  }
+  const best = [{ pages: 0, largest: 0, sizes: [] }];
+  for (let j = 1; j <= tokens.length; j += 1) {
+    let choice = null, used = 0;
+    for (let i = j - 1; i >= 0; i -= 1) {
+      used += width(tokens[i].trim());
+      if (j - i > 1 && used > LINE_WIDTH) break;
+      // A cut right after punctuation reads better: count it as slightly shorter.
+      const prior = best[i], score = Math.max(prior.largest, used - (/[\p{P}]\s*$/u.test(tokens[j - 1]) ? 0.5 : 0));
+      if (!choice || prior.pages + 1 < choice.pages || (prior.pages + 1 === choice.pages && score < choice.largest)) choice = { pages: prior.pages + 1, largest: score, sizes: [...prior.sizes, j - i] };
+    }
+    best[j] = choice;
+  }
+  const chunks = []; let at = 0;
+  for (const size of best[tokens.length].sizes) { chunks.push(tokens.slice(at, at + size).join('').trim()); at += size; }
+  const weights = chunks.map((chunk) => Math.max(1, spokenCharacters(chunk).length)), total = weights.reduce((a, b) => a + b, 0);
+  let consumed = 0;
+  return chunks.map((chunk, index) => {
+    const start = span.start + (span.end - span.start) * consumed / total;
+    consumed += weights[index];
+    return { start, end: index === chunks.length - 1 ? span.end : span.start + (span.end - span.start) * consumed / total, text: chunk };
+  });
+}
 function timedParts(utterance, text, span, scale) {
   if (width(text) <= LINE_WIDTH) return [{ ...span, text }];
+  try { return wordParts(utterance, text, span, scale); }
+  catch (error) {
+    if (!/^product_video_caption_words_/u.test(error.code || '')) throw error;
+    return proportionalParts(text, span);
+  }
+}
+function wordParts(utterance, text, span, scale) {
   if (!Array.isArray(utterance.words) || !utterance.words.length) {
     throw mediaError('product_video_caption_words_missing', '较长的对白缺少词级时间，原声已保留，请重新识别字幕。');
   }

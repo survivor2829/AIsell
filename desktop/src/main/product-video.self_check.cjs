@@ -77,8 +77,9 @@ async function run() {
         if (route.endsWith('/uploads/images')) return { url: 'https://fixture.example/' + request.body.toString('utf8') };
         if (route === '/bailian/tts-fixture') { const result={output:{audio:{url:'https://fixture.example/audio.wav'}}};receipts.set(request.operationId,result);return result; }
         if (route.includes('/asr/')) {
-          const text = badCaptionsOnce ? '这是一段长度超过单屏字幕限制但没有词级时间的识别文本需要重新识别' : '现场清洁'; badCaptionsOnce = false;
-          return { result: { utterances: [{ text, start_time: 1000, end_time: 2000 }] } };
+          // A recognition whose time runs past the video cannot be laid out without recognising again.
+          const end = badCaptionsOnce ? 99000 : 2000; badCaptionsOnce = false;
+          return { result: { utterances: [{ text: '现场清洁', start_time: 1000, end_time: end }] } };
         }
         const kind = route.includes('/images/') ? 'frame' : 'video', task_id = `${kind}_${tasks.size}`;
         tasks.set(task_id, { kind, fail: kind === 'video' && (failedOnce || failedVideoCount > 0) });
@@ -235,7 +236,7 @@ async function run() {
     badCaptionsOnce=true;
     const captionsBroken=await service.create(input); await service.start(captionsBroken.id);
     const captionPause=await until(service,captionsBroken.id,(t)=>t.status==='needs_attention');
-    assert.equal(captionPause.errorCode,'product_video_caption_words_missing'); assert.equal(captionPause.retryLabel,'重新识别字幕');
+    assert.equal(captionPause.errorCode,'product_video_caption_out_of_bounds'); assert.equal(captionPause.retryLabel,'重新识别字幕');
     const captionPosts=posts.length;
     await service.retryShot(captionsBroken.id); await until(service,captionsBroken.id,(t)=>t.status==='completed');
     assert.deepEqual(posts.slice(captionPosts).map((p)=>p.route),['/volcengine/asr/recognize/flash',VIDEO_ROUTE,VIDEO_ROUTE,VIDEO_ROUTE],'retry recognition before first video; reuse frames and audio');

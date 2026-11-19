@@ -87,15 +87,15 @@ function createProductVideoService(options = {}) {
     if (task.status === 'completed') return 100;
     const total = Math.max(1, task.plan.shots.length), done = task.shots.filter((shot) => shot.file).length;
     const finishing = ['assembling', 'transcribing', 'packaging', 'enhancing'].includes(task.status) ? 1 : 0;
-    if (task.plan.pipelineVersion === 6) return Math.min(97, Math.round((task.images?.plate?.file ? 10 : 0) + done / total * 80 + finishing * 5));
+    if (task.plan.pipelineVersion === 6) return Math.min(97, Math.round((task.images?.plate?.file || !task.plan.imageCount ? 10 : 0) + done / total * 80 + finishing * 5));
     if (task.plan.pipelineVersion === 5) {
       const pictures = Object.keys(task.images || {}).filter((key) => !key.startsWith('grid_') && task.images[key].file).length;
       return Math.min(97, Math.round(pictures / Math.max(1, task.plan.imageCount) * 45 + (task.story ? 5 : 0) + done / total * 42 + finishing * 5));
     }
     return Math.round(done / total * 88 + finishing * 4);
   }
-  function publicTask(task) {
-    const eta = estimateTask(task, readTimings(root), { shotSlots: SHOT_SLOTS, imageSlots: IMAGE_SLOTS });
+  function publicTask(task, timings = readTimings(root)) {
+    const eta = estimateTask(task, timings, { shotSlots: SHOT_SLOTS, imageSlots: IMAGE_SLOTS });
     const shotsDone = task.shots.filter((shot) => shot.file).length;
     return { id: task.id, mode: task.mode, version: task.version, status: task.status,
       statusLabel: task.plan.pipelineVersion === 6 && task.status === 'imaging' ? '画拍摄场地'
@@ -109,7 +109,7 @@ function createProductVideoService(options = {}) {
       plan: task.plan, currentShot: task.currentShot, completedShots: shotsDone, shotsReady: task.shots.map((shot) => Boolean(shot.file)),
       shotsRunning: task.shots.map((shot) => Boolean(shot.providerTaskId && !shot.file)),
       progress: progressOf(task), etaSeconds: eta, estimatedFinishAt: eta === null ? null : new Date(Date.now() + eta * 1000).toISOString(),
-      ...(task.plan.pipelineVersion === 6 ? { realPipeline: true, imagesReady: { plate: Boolean(task.images?.plate?.file) } } : {}),
+      ...(task.plan.pipelineVersion === 6 ? { realPipeline: true, imagesReady: { plate: Boolean(task.images?.plate?.file || !task.plan.imageCount) } } : {}),
       preparation: task.plan.pipelineVersion >= 3 ? { referenceMode: task.plan.pipelineVersion === 4 ? 'original_product_image' : 'scene_first_frames',
         inputsLocked: Boolean(task.frameManifest), framesReady: task.shots.filter((shot) => shot.frameFile).length, framesLocked: task.plan.pipelineVersion !== 4 && Boolean(task.frameManifest),
         ruleCheck: task.frameManifest?.ruleCheck || 'pending', visualReview: 'not_performed', audioReady: Boolean(task.audio), music: publicMusic(task.audio?.music) } : undefined,
@@ -118,13 +118,14 @@ function createProductVideoService(options = {}) {
         story: task.story ? { title: task.story.title, logline: task.story.logline, characters: task.story.characters.map((person) => ({ name: person.name, role: person.role })),
           lines: task.story.segments.flatMap((segment) => segment.shots.flatMap((shot) => shot.lines.map((row) => ({ who: row.who, line: row.line })))) } : null } : {}),
       error: cleanMessage(task.error || ''), errorCode: task.errorCode || '', resumeStatus: task.resumeStatus || '', canRetry: task.status === 'needs_attention' && !((task.videoRetryCount || 0) >= 1 && (Number.isInteger(task.failedShotIndex) || ['product_video_video_failed','product_video_shot_failed'].includes(task.errorCode))),
-      retryLabel: Number.isInteger(task.failedShotIndex) ? `重新生成第 ${task.failedShotIndex + 1} 段` : ASR_RETRY_ERRORS.has(task.errorCode) ? '重新识别字幕' : '',
+      retryLabel: Number.isInteger(task.failedShotIndex) ? `重新生成第 ${task.failedShotIndex + 1} 段` : ASR_RETRY_ERRORS.has(task.errorCode) ? (task.plan.pipelineVersion === 6 ? '重新合成' : '重新识别字幕') : '',
       canRefresh: RUNNING.has(task.status) || ['outcome_unknown', 'draft'].includes(task.status), canExport: task.status === 'completed', canExportSource: Boolean(task.sourceFile), canPreview: task.status === 'completed' && Boolean(task.finalFile) };
   }
   function taskIds() { return fs.existsSync(root) ? fs.readdirSync(root).filter((name) => TASK_ID.test(name)) : []; }
   function list() {
     const items = [];
-    for (const id of taskIds()) { try { items.push(publicTask(read(id))); } catch { /* Keep other usable history visible when one task is corrupt. */ } }
+    const timings = readTimings(root);
+    for (const id of taskIds()) { try { items.push(publicTask(read(id), timings)); } catch { /* Keep other usable history visible when one task is corrupt. */ } }
     return { items: items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) };
   }
   function asset(id) {
@@ -238,7 +239,7 @@ function createProductVideoService(options = {}) {
     if (task.plan.pipelineVersion === 6) {
       if (!task.prices.storyPipeline) throw fail('product_video_price_unavailable', '报价与无人实拍不匹配，未提交付费请求。');
       let total = 0;
-      if (!task.images?.plate?.file && !task.operations.img_plate && exclude !== 'img_plate') total += round(task.prices.imageUsd * task.prices.fxCnyPerUsd);
+      if (task.plan.imageCount && !task.images?.plate?.file && !task.operations.img_plate && exclude !== 'img_plate') total += round(task.prices.imageUsd * task.prices.fxCnyPerUsd);
       task.plan.shots.forEach((shot, index) => { if (!task.shots[index].file && !task.operations[`shot_${index}`] && exclude !== `shot_${index}`) total += videoReserve(task, shot); });
       return total;
     }
@@ -475,7 +476,7 @@ function createProductVideoService(options = {}) {
       try { await storyImage(task, key); running += 1; }
       catch (error) {
         // The service is busy: wait for the pictures already ordered and try this one again later.
-        if (error.status !== 429 || !running) throw error;
+        if (error.status !== 429 || error.outcomeUnknown || !running) throw error;
         releaseRejected(task, `img_${key}`); delete task.images[key]; save(task); break;
       }
     }
@@ -515,7 +516,7 @@ function createProductVideoService(options = {}) {
       let response;
       try { response = await operation(task, `shot_${index}`, request.route, request.body, videoReserve(task, task.plan.shots[index]), request.headers); }
       catch (error) {
-        if (error.status !== 429 || !running) throw error;
+        if (error.status !== 429 || error.outcomeUnknown || !running) throw error;
         releaseRejected(task, `shot_${index}`); save(task); break;
       }
       shot.providerTaskId = wan.taskIdOf(response); shot.submittedAt = new Date().toISOString(); save(task); running += 1;
@@ -638,7 +639,7 @@ function createProductVideoService(options = {}) {
   async function advanceReal(task) {
     ensureRunning();
     if (task.status === 'imaging') {
-      if (!await advanceImages(task, ['plate'])) return;
+      if (task.plan.imageCount && !await advanceImages(task, ['plate'])) return;
       task.status = 'submitting'; save(task);
     }
     if (['submitting', 'generating'].includes(task.status)) {
@@ -878,6 +879,7 @@ function createProductVideoService(options = {}) {
         task.resumeStatus = 'writing_story'; delete task.story; task.storyAttempts = [];
       }
       else if (task.errorCode === 'product_video_frame_failed') { name = `frame_${index}`; task.resumeStatus = 'preparing_frames'; }
+      else if (ASR_RETRY_ERRORS.has(task.errorCode) && task.plan.pipelineVersion === 6) { task.resumeStatus = 'assembling'; delete task.captions; }
       else if (ASR_RETRY_ERRORS.has(task.errorCode)) { name = 'asr'; task.resumeStatus = 'transcribing'; delete task.captions; }
       else name = Object.keys(task.operations).find((key) => task.operations[key].rejected);
       if (name && task.operations[name]) { (task.archivedOperations ||= []).push(task.operations[name]); delete task.operations[name]; }

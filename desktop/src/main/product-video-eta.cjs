@@ -68,7 +68,7 @@ function estimateTask(task, timings, { now = Date.now(), shotSlots = 3, imageSlo
   if (!task?.plan || ['draft', 'completed', 'needs_attention', 'outcome_unknown', 'awaiting_sheet'].includes(task.status)) return null;
   const r = rates(timings || {});
   if (task.plan.pipelineVersion === 6) {
-    const plate = FINISHING.has(task.status) ? 0 : imageLeft(task, 'plate', r, now);
+    const plate = FINISHING.has(task.status) || task.plan.imageCount === 0 ? 0 : imageLeft(task, 'plate', r, now);
     const shots = FINISHING.has(task.status) ? 0 : shotsLeft(task, r, shotSlots, now);
     return Math.round(plate + shots + finishLeft(task, r, now));
   }
