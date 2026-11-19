@@ -28,6 +28,8 @@ const storyImageKeys = (segments) => ['scene', 'floor', 'person_a', 'person_b',
   ...Array.from({ length: segments }, (_, s) => Array.from({ length: story.SHOTS_PER_SEGMENT }, (_, k) => `frame_${s}_${k}`)).flat()];
 const IMAGE_LABEL = { sheet: '定妆照', scene: '场景图', floor: '地面对照图', person_a: '人物', person_b: '人物', plate: '场景图' };
 const shotPipeline = (task) => task.plan.pipelineVersion >= 5;
+// 无人实拍: the scene picture is made only when a shot happens in the venue (plans before the 定妆照 counted only that picture).
+const realPlateNeeded = (task) => task.plan.shots.some((shot) => shot.place === 'venue');
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const publicMusic = (music) => music ? { status: music.status === 'ready' ? 'ready' : 'unavailable',
   source: cleanMessage(music.source || ''), message: cleanMessage(music.message || ''),
@@ -87,7 +89,8 @@ function createProductVideoService(options = {}) {
     if (task.status === 'completed') return 100;
     const total = Math.max(1, task.plan.shots.length), done = task.shots.filter((shot) => shot.file).length;
     const finishing = ['assembling', 'transcribing', 'packaging', 'enhancing'].includes(task.status) ? 1 : 0;
-    if (task.plan.pipelineVersion === 6) return Math.min(97, Math.round((task.images?.plate?.file || !task.plan.imageCount ? 10 : 0) + done / total * 80 + finishing * 5));
+    if (task.plan.pipelineVersion === 6) return Math.min(97, Math.round((task.sheetConfirmedAt || !task.plan.sheet ? 5 : task.images?.sheet?.file ? 3 : 0)
+      + (task.images?.plate?.file || !realPlateNeeded(task) ? 5 : 0) + done / total * 80 + finishing * 5));
     if (task.plan.pipelineVersion === 5) {
       const pictures = Object.keys(task.images || {}).filter((key) => !key.startsWith('grid_') && task.images[key].file).length;
       return Math.min(97, Math.round(pictures / Math.max(1, task.plan.imageCount) * 45 + (task.story ? 5 : 0) + done / total * 42 + finishing * 5));
@@ -98,7 +101,7 @@ function createProductVideoService(options = {}) {
     const eta = estimateTask(task, timings, { shotSlots: SHOT_SLOTS, imageSlots: IMAGE_SLOTS });
     const shotsDone = task.shots.filter((shot) => shot.file).length;
     return { id: task.id, mode: task.mode, version: task.version, status: task.status,
-      statusLabel: task.plan.pipelineVersion === 6 && task.status === 'imaging' ? '画拍摄场地'
+      statusLabel: task.plan.pipelineVersion === 6 && task.status === 'imaging' ? (task.plan.sheet && !task.sheetConfirmedAt ? '出定妆照' : '画拍摄场地') : task.plan.pipelineVersion === 6 && task.status === 'uploading' ? '准备产品图'
         : task.plan.pipelineVersion === 6 && ['submitting', 'generating'].includes(task.status) ? `拍镜头（${shotsDone}/${task.shots.length} 好了）`
         : task.plan.pipelineVersion === 6 && task.status === 'assembling' ? '拼接镜头' : task.plan.pipelineVersion === 6 && task.status === 'packaging' ? '加字幕'
         : task.plan.pipelineVersion === 5 && task.status === 'imaging' ? (task.story ? '画场景、人物和分镜' : '出定妆照') : task.plan.pipelineVersion === 5 && task.status === 'uploading' ? '准备产品图'
@@ -109,7 +112,8 @@ function createProductVideoService(options = {}) {
       plan: task.plan, currentShot: task.currentShot, completedShots: shotsDone, shotsReady: task.shots.map((shot) => Boolean(shot.file)),
       shotsRunning: task.shots.map((shot) => Boolean(shot.providerTaskId && !shot.file)),
       progress: progressOf(task), etaSeconds: eta, estimatedFinishAt: eta === null ? null : new Date(Date.now() + eta * 1000).toISOString(),
-      ...(task.plan.pipelineVersion === 6 ? { realPipeline: true, imagesReady: { plate: Boolean(task.images?.plate?.file || !task.plan.imageCount) } } : {}),
+      ...(task.plan.pipelineVersion === 6 ? { realPipeline: true, sheetStep: Boolean(task.plan.sheet), sheetRedos: task.sheetRedos || 0, sheetConfirmed: Boolean(task.sheetConfirmedAt),
+        imagesReady: { sheet: Boolean(task.images?.sheet?.file), plate: Boolean(task.images?.plate?.file || !realPlateNeeded(task)) } } : {}),
       preparation: task.plan.pipelineVersion >= 3 ? { referenceMode: task.plan.pipelineVersion === 4 ? 'original_product_image' : 'scene_first_frames',
         inputsLocked: Boolean(task.frameManifest), framesReady: task.shots.filter((shot) => shot.frameFile).length, framesLocked: task.plan.pipelineVersion !== 4 && Boolean(task.frameManifest),
         ruleCheck: task.frameManifest?.ruleCheck || 'pending', visualReview: 'not_performed', audioReady: Boolean(task.audio), music: publicMusic(task.audio?.music) } : undefined,
@@ -239,7 +243,9 @@ function createProductVideoService(options = {}) {
     if (task.plan.pipelineVersion === 6) {
       if (!task.prices.storyPipeline) throw fail('product_video_price_unavailable', '报价与无人实拍不匹配，未提交付费请求。');
       let total = 0;
-      if (task.plan.imageCount && !task.images?.plate?.file && !task.operations.img_plate && exclude !== 'img_plate') total += round(task.prices.imageUsd * task.prices.fxCnyPerUsd);
+      const image = round(task.prices.imageUsd * task.prices.fxCnyPerUsd);
+      if (task.plan.sheet && !task.images?.sheet?.file && !task.operations.img_sheet && exclude !== 'img_sheet') total += image;
+      if (realPlateNeeded(task) && !task.images?.plate?.file && !task.operations.img_plate && exclude !== 'img_plate') total += image;
       task.plan.shots.forEach((shot, index) => { if (!task.shots[index].file && !task.operations[`shot_${index}`] && exclude !== `shot_${index}`) total += videoReserve(task, shot); });
       return total;
     }
@@ -304,10 +310,20 @@ function createProductVideoService(options = {}) {
     op.supplierStatus = node?.status || ''; save(task);
   }
   async function upload(task) {
-    if (task.imageUrl) return;
-    const request = provider.imageUploadBody(asset(task.imageId).path);
-    const payload = await operation(task, 'upload_image', '/apimart/uploads/images', request.body, 0, request.headers);
-    task.imageUrl = remoteUrl(provider.nodeOf(payload).url || payload.url); save(task);
+    if (!task.imageUrl) {
+      const request = provider.imageUploadBody(asset(task.imageId).path);
+      const payload = await operation(task, 'upload_image', '/apimart/uploads/images', request.body, 0, request.headers);
+      task.imageUrl = remoteUrl(provider.nodeOf(payload).url || payload.url); save(task);
+    }
+    // 无人实拍: the side/back photos go to the 定妆照 too (uploads are free).
+    if (task.plan.pipelineVersion !== 6 || !task.plan.sheet) return;
+    task.extraImageUrls ||= [];
+    for (const [index, id] of (task.extraImageIds || []).entries()) {
+      if (task.extraImageUrls[index]) continue;
+      const request = provider.imageUploadBody(asset(id).path);
+      const payload = await operation(task, `upload_extra_${index}`, '/apimart/uploads/images', request.body, 0, request.headers);
+      task.extraImageUrls[index] = remoteUrl(provider.nodeOf(payload).url || payload.url); save(task);
+    }
   }
   async function poll(task, kind) {
     const index = task.currentShot, shot = task.shots[index], name = `${kind === 'frame' ? 'frame' : 'shot'}_${index}`;
@@ -430,7 +446,10 @@ function createProductVideoService(options = {}) {
   function storyImageSpec(task, key) {
     if (key === 'plate' && task.plan.pipelineVersion === 6) return { prompt: task.plan.platePrompt, refs: [], size: '9:16' };
     const st = task.story;
-    if (key === 'sheet') return { prompt: story.sheetPrompt(task.plan.productName), refs: ['product'], size: '1:1' };
+    if (key === 'sheet') {
+      const extra = task.plan.pipelineVersion === 6 ? (task.extraImageIds || []).map((_, index) => `extra_${index}`) : [];
+      return { prompt: story.sheetPrompt(task.plan.productName, 1 + extra.length), refs: ['product', ...extra], size: '1:1' };
+    }
     if (!st) throw fail('product_video_story_missing', '故事还没写好，未提交出图。');
     if (key === 'scene') return { prompt: story.scenePrompt(st), refs: [], size: '9:16' };
     if (key === 'floor') return { prompt: story.floorPrompt(st), refs: ['scene'], size: '16:9' };
@@ -472,7 +491,7 @@ function createProductVideoService(options = {}) {
     for (const key of keys) {
       if (running >= IMAGE_SLOTS) break;
       if (task.images[key]?.file || task.images[key]?.taskId) continue;
-      if (storyImageSpec(task, key).refs.some((ref) => ref !== 'product' && !task.images[ref]?.file)) continue;
+      if (storyImageSpec(task, key).refs.some((ref) => ref !== 'product' && !/^extra_/u.test(ref) && !task.images[ref]?.file)) continue;
       try { await storyImage(task, key); running += 1; }
       catch (error) {
         // The service is busy: wait for the pictures already ordered and try this one again later.
@@ -543,6 +562,11 @@ function createProductVideoService(options = {}) {
   // References for later pictures are uploaded from the local file once (free), not taken from result links that may expire.
   async function storyReferenceUrl(task, key) {
     if (key === 'product') return task.imageUrl;
+    if (/^extra_\d$/u.test(key)) {
+      const url = task.extraImageUrls?.[Number(key.slice(6))];
+      if (!url) throw fail('product_video_reference_missing', '产品图还没准备好，未提交出图。');
+      return url;
+    }
     const image = task.images[key];
     if (!image?.file) throw fail('product_video_reference_missing', '参考图还没准备好，未提交出图。');
     if (image.refUrl && image.refSha256 === image.sha256) return image.refUrl;
@@ -638,14 +662,21 @@ function createProductVideoService(options = {}) {
   // picture for shots in the venue) with the machine's own sound, then one subtitle line per shot.
   async function advanceReal(task) {
     ensureRunning();
+    if (task.status === 'uploading') { await upload(task); task.status = 'imaging'; save(task); }
     if (task.status === 'imaging') {
-      if (task.plan.imageCount && !await advanceImages(task, ['plate'])) return;
+      // The 定妆照 first; once the customer confirms it, the scene picture (only when a shot is in the venue).
+      if (task.plan.sheet && !task.sheetConfirmedAt) {
+        if (!await advanceImages(task, ['sheet'])) return;
+        task.status = 'awaiting_sheet'; save(task); return;
+      }
+      if (realPlateNeeded(task) && !await advanceImages(task, ['plate'])) return;
       task.status = 'submitting'; save(task);
     }
     if (['submitting', 'generating'].includes(task.status)) {
       const done = await advanceShots(task, async (index) => {
         const shot = task.plan.shots[index], images = [];
         for (const id of [task.imageId, ...(task.extraImageIds || [])]) images.push(await productReference(task, id));
+        if (task.plan.sheet) images.push(await storyReference(task, 'sheet'));
         if (shot.place === 'venue') images.push(await storyReference(task, 'plate'));
         return wan.storyVideoRequest({ images, prompt: shot.prompt, seconds: shot.seconds });
       });
@@ -855,7 +886,7 @@ function createProductVideoService(options = {}) {
       checkPlan(task);
       const status = await capabilities(task.plan); if (!status.ready) throw fail('product_video_provider_unavailable', status.message);
       await verifyQuote(task); hold();
-      task.status = task.plan.pipelineVersion === 4 ? 'locking_frames' : task.plan.pipelineVersion === 6 ? 'imaging' : 'uploading';
+      task.status = task.plan.pipelineVersion === 4 ? 'locking_frames' : task.plan.pipelineVersion === 6 && !task.plan.sheet ? 'imaging' : 'uploading';
       task.startedAt = new Date().toISOString(); save(task); schedule(id); return publicTask(task);
     });
   }
@@ -906,15 +937,15 @@ function createProductVideoService(options = {}) {
   async function confirmSheet(id) {
     return admitTask(id, async () => {
       const task = read(id);
-      if (task.plan.pipelineVersion !== 5 || task.status !== 'awaiting_sheet' || !task.images?.sheet?.file) throw fail('product_video_sheet_unavailable', '现在没有待确认的定妆照。');
+      if (task.plan.pipelineVersion < 5 || task.status !== 'awaiting_sheet' || !task.images?.sheet?.file) throw fail('product_video_sheet_unavailable', '现在没有待确认的定妆照。');
       await verifyQuote(task); hold();
-      task.sheetConfirmedAt = new Date().toISOString(); task.status = 'writing_story'; save(task); schedule(id); return publicTask(task);
+      task.sheetConfirmedAt = new Date().toISOString(); task.status = task.plan.pipelineVersion === 6 ? 'imaging' : 'writing_story'; save(task); schedule(id); return publicTask(task);
     });
   }
   async function redoSheet(id) {
     return admitTask(id, async () => {
       const task = read(id);
-      if (task.plan.pipelineVersion !== 5 || task.status !== 'awaiting_sheet') throw fail('product_video_sheet_unavailable', '现在没有待确认的定妆照。');
+      if (task.plan.pipelineVersion < 5 || task.status !== 'awaiting_sheet') throw fail('product_video_sheet_unavailable', '现在没有待确认的定妆照。');
       if ((task.sheetRedos || 0) >= 2) throw fail('product_video_sheet_retry_limit', '定妆照已经重出过两次，请换一张更清楚的产品图再新建。');
       hold();
       if (task.operations.img_sheet) { (task.archivedOperations ||= []).push(task.operations.img_sheet); delete task.operations.img_sheet; }

@@ -252,8 +252,8 @@ function quotePlan(plan, prices, budgetCny) {
     if (!validStoryPrices(prices)) return { ready: false, budgetCny, estimatedCny: null, reservedCny: 0, actualCny: 0, pendingCny: 0, message: '报价暂不可用，方案已保留。' };
     const seconds = plan.shots.reduce((sum, s) => sum + s.seconds, 0), videoCny = round(seconds * prices.videoCnyPerSecond);
     const imageReserveCny = plan.imageCount * round(prices.imageUsd * prices.fxCnyPerUsd), imageEstimateCny = plan.imageCount * prices.estimatedImageUsd * prices.fxCnyPerUsd;
-    // One failed shot may be redone, and one failed scene picture.
-    const retryReserveCny = round(round(prices.imageUsd * prices.fxCnyPerUsd) + Math.max(0, ...plan.shots.map((shot) => shot.seconds)) * prices.videoCnyPerSecond);
+    // One failed shot may be redone, and one failed picture; with a 定妆照, both redos the page offers too.
+    const retryReserveCny = round((plan.sheet ? 3 : 1) * round(prices.imageUsd * prices.fxCnyPerUsd) + Math.max(0, ...plan.shots.map((shot) => shot.seconds)) * prices.videoCnyPerSecond);
     return { ready: true, estimatedCny: round(videoCny + imageEstimateCny), maximumCny: round(videoCny + imageReserveCny + retryReserveCny), retryReserveCny,
       reservedCny: 0, actualCny: 0, pendingCny: 0, budgetCny, videoCny, videoModel: prices.model, videoResolution: prices.resolution, videoAudio: true,
       videoCnyPerSecond: prices.videoCnyPerSecond, source: prices.source, checkedAt: prices.checkedAt, fxCnyPerUsd: prices.fxCnyPerUsd,

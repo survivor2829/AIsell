@@ -81,7 +81,8 @@ function planRealShoot(input) {
     version: REAL_VERSION, pipelineVersion: 6, videoProvider: 'bailian', videoModel: DIRECT_MODEL, videoAudio: true,
     sourceResolution: '480p', outputSize: '1080x1920', imageModel: IMAGE_MODEL,
     // The scene picture is only made (and paid for) when a shot happens in the venue.
-    imageCount: planned.some((shot) => shot.place === 'venue') ? 1 : 0, director: '实拍导演',
+    // The 定妆照 (four views from the product photo, confirmed by the customer) always; the scene picture only when a shot is in the venue.
+    sheet: true, imageCount: 1 + (planned.some((shot) => shot.place === 'venue') ? 1 : 0), director: '实拍导演',
     productName, productImages, deviceId: device.id, device: device.name, operator: device.operator, scene: scene.name, sceneIds: [scene.id],
     floorId: floor.id, surface: floor.name, dirtIds, dirt: dirt.map((row) => row.name).join('、'), pointIds,
     platePrompt: platePrompt({ scene, detail, floor, dirt }), shots: planned,
@@ -100,7 +101,10 @@ ${STYLE}
 }
 
 function shotPrompt({ device, scene, detail, floor, soil, point, camera, seconds, productImages = 1 }) {
-  const products = productImages > 1 ? `${Array.from({ length: productImages }, (_, i) => `图${i + 1}`).join('、')}是这台机器不同角度的真实产品照片` : '图1是这台机器的真实产品照片', plate = `图${productImages + 1}`;
+  // Real photos first, then the confirmed 定妆照 (third paid round, 2026-11-19: it kept the back and sides true), then the scene.
+  const photos = productImages > 1 ? `${Array.from({ length: productImages }, (_, i) => `图${i + 1}`).join('、')}是这台机器不同角度的真实产品照片` : '图1是这台机器的真实产品照片';
+  const sheet = `图${productImages + 1}`, plate = `图${productImages + 2}`;
+  const products = `${photos}，${sheet}是同一台机器的四视角定妆图（前侧、正侧面、背后、工作部件近景），照片里看不到的面以${sheet}为准`;
   const people = PEOPLE[device.operator];
   const light = point.night ? '夜里营业结束后，场地只开着一部分顶灯，光线偏暗但看得清，没有任何人。' : `${detail.light}。`;
   const place = point.place === 'venue' ? `${detail.place}（${scene.description}）。${plate}是这个场地：陈设、地面和光线以${plate}为准，${plate}里的地面就是没清洁过的样子。`

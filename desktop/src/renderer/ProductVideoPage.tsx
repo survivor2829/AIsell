@@ -4,7 +4,7 @@ import "./ProductVideoPage.css";
 import { ExampleBanner } from './VideoExamples';
 import { SceneIcon } from "./SceneIcons";
 import { formatWan } from "./BillingBadge";
-import { StoryVideoProgress, storyProgress, type StoryTask } from "./StoryVideoProgress";
+import { SheetConfirm, StoryVideoProgress, storyProgress, type StoryTask } from "./StoryVideoProgress";
 import { Countdown, ProductPhotos, RealShootFields, RealShootProgress, initialReal, minutes, realEstimate, storyEstimate, type ProductImage, type RealCatalog, type RealDraft, type Timing } from "./RealShootForm";
 
 type Choice = { id: string; name: string };
@@ -17,7 +17,7 @@ type Plan = {
 type VideoTask = {
   id: string; mode: "product" | "social"; status: string; statusLabel: string; createdAt: string;
   durationSeconds: number; sceneIds?: string[]; productName?: string; facts: string; imageId: string; plan: Plan; currentShot: number;
-  completedShots: number; shotsReady?: boolean[]; shotsRunning?: boolean[]; storyPipeline?: boolean; realPipeline?: boolean; progress?: number; etaSeconds?: number | null; estimatedFinishAt?: string | null; imagesReady?: Record<string, boolean>; imageTotal?: number; sheetRedos?: number;
+  completedShots: number; shotsReady?: boolean[]; shotsRunning?: boolean[]; storyPipeline?: boolean; realPipeline?: boolean; progress?: number; etaSeconds?: number | null; estimatedFinishAt?: string | null; imagesReady?: Record<string, boolean>; imageTotal?: number; sheetRedos?: number; sheetStep?: boolean; sheetConfirmed?: boolean;
   story?: StoryTask["story"]; error: string; resumeStatus?: string; retryLabel?: string; canRetry: boolean; canExport: boolean; canExportSource?: boolean; canPreview: boolean; canRefresh?: boolean; quote?: Quote;
 };
 type Result<T> = { ok: boolean; data?: T; error?: string; code?: string; task?: VideoTask };
@@ -148,7 +148,7 @@ export function ProductVideoPage() {
   const running = Boolean(selected && ACTIVE.has(selected.status));
   const realReady = Boolean(realDraft.deviceId && realDraft.sceneId && realDraft.floorId && realDraft.dirtIds.length);
   const canGenerate = Boolean(draft.imageId && !busy && !running && draft.facts.length <= 12000 && (style === "story" || realReady));
-  const estimate = style === "real" ? realEstimate(capability?.timing, capability?.catalog, draft.durationSeconds, realDraft.pointIds.length) : storyEstimate(capability?.timing, draft.durationSeconds);
+  const estimate = style === "real" ? realEstimate(capability?.timing, capability?.catalog, draft.durationSeconds, realDraft.pointIds) : storyEstimate(capability?.timing, draft.durationSeconds);
   const addImage = (extra: boolean) => api && void perform("image", () => unwrap(api.importImage()), item => {
     if (!item) return;
     setImages(old => extra ? [...old.filter(row => row.id !== item.id), item].slice(0, 3) : [item, ...old.slice(1)]);
@@ -198,7 +198,7 @@ export function ProductVideoPage() {
         }}>{seconds} 秒</button>)}</div>
         <button type="button" className="pv2-go" data-product-video-action="start" disabled={!canGenerate} onClick={() => void generate()}>{busy === "start" ? <LoaderCircle size={24} className="spin" /> : <Play size={24} />}生成视频{estimate > 0 && <small className="rs-go-eta">预计 {minutes(estimate)}</small>}</button>
         <p className="pv2-note">{!draft.imageId ? "先放一张产品图。" : style === "real" && !realReady ? "选好设备、场景、地面和脏东西就能生成。" : running ? "这条还在做，做完再开始下一条。"
-          : `做完后按实际用量扣算力，没做成的不扣。${style === "story" ? "预计时间不含你确认定妆照的时间。" : ""}`}</p>
+          : "做完后按实际用量扣算力，没做成的不扣。预计时间不含你确认定妆照的时间。"}</p>
         {capability && style === "story" && !capability.story?.ready && capability.story?.message && <p className="pv2-note">{capability.story.message}</p>}
         {capability && style === "real" && !capability.real?.ready && capability.real?.message && <p className="pv2-note">{capability.real.message}</p>}
       </section>
@@ -215,9 +215,13 @@ export function ProductVideoPage() {
             </div>
             {selected.plan.sendText && <div className="pv2-send"><b>发给客户时可以配这句话</b><p>{selected.plan.sendText}</p></div>}
           </div> : selected.realPipeline && !STUCK.has(selected.status) && selected.status !== "draft" ? <>
-            <div className="pv2-progress"><Ring value={progressOf(selected)} lines={[selected.statusLabel, `${selected.durationSeconds} 秒 · ${shots.length} 个镜头`]} />
-              <div className="rs-side-info"><Countdown finishAt={selected.estimatedFinishAt} /><p className="pv2-note">几个镜头同时在拍，拍好一个就显示一个。可以先去做别的，做好了桌宠会告诉你。</p></div></div>
-            <RealShootProgress task={selected} shotVideos={shotVideos} />
+            <div className="pv2-progress"><Ring value={progressOf(selected)} lines={[selected.status === "awaiting_sheet" ? "等你确认" : selected.statusLabel, `${selected.durationSeconds} 秒 · ${shots.length} 个镜头`]} />
+              {selected.status !== "awaiting_sheet" && <div className="rs-side-info"><Countdown finishAt={selected.estimatedFinishAt} /><p className="pv2-note">几个镜头同时在拍，拍好一个就显示一个。可以先去做别的，做好了桌宠会告诉你。</p></div>}</div>
+            {selected.status === "awaiting_sheet"
+              ? <SheetConfirm taskId={selected.id} redos={selected.sheetRedos || 0} busy={!!busy} imageMedia={(id, key) => api ? api.imageMedia(id, key) : Promise.resolve({ ok: false })}
+                onConfirm={() => api && void perform("confirm", () => unwrap(api.confirmSheet(selected.id)), updateTask)}
+                onRedo={() => api && void perform("redo", () => unwrap(api.redoSheet(selected.id)), updateTask)} />
+              : <RealShootProgress task={selected} shotVideos={shotVideos} />}
           </> : selected.storyPipeline && !STUCK.has(selected.status) && selected.status !== "draft" ? <>
             <div className="pv2-progress"><Ring value={progressOf(selected)} lines={[selected.status === "awaiting_sheet" ? "等你确认" : selected.statusLabel, `${selected.durationSeconds} 秒 · ${shots.length} 段`]} />
               {selected.status !== "awaiting_sheet" && <div className="rs-side-info"><Countdown finishAt={selected.estimatedFinishAt} /></div>}</div>
@@ -250,7 +254,7 @@ export function ProductVideoPage() {
         </> : <div className="pv2-empty">
           <div className="pv2-canvas">{image ? <img src={image.previewDataUrl} alt="已选择的产品图" /> : <ImagePlus size={70} strokeWidth={1.2} />}</div>
           <ol className="pv2-journey"><li><span><ImagePlus size={26} /></span>放产品图</li><li><span><SceneIcon id="market" size={34} /></span>{style === "real" ? "点选场景卖点" : "选场景"}</li><li><span><Play size={26} /></span>点生成</li></ol>
-          <p className="pv2-note">{style === "real" ? "不用把设备拉到现场：放产品图，点选设备、场景和卖点，AI 拍出它在现场干活的真实画面，每个卖点一个镜头，配一行字幕。"
+          <p className="pv2-note">{style === "real" ? "不用把设备拉到现场：放产品图，点选设备、场景和卖点。AI 先照产品图画四个角度给你确认，再拍出它在现场干活的真实画面，每个卖点一个镜头，配一行字幕。"
             : "AI 先照产品画定妆照，你确认后再写故事、找演员、画分镜，拍出带对话的现场视频。"}</p>
         </div>}
         {history.length > 0 && <div className="pv2-history"><h3>做过的</h3><div>{history.slice(0, 9).map(task => <button type="button" key={task.id} onClick={() => selectTask(task)} className={`is-${task.status === "completed" ? "done" : STUCK.has(task.status) ? "stuck" : "other"}`}>

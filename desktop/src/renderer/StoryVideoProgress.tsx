@@ -42,6 +42,30 @@ export function storyProgress(task: StoryTask) {
   return Math.min(97, Math.round(done / total * 45 + (task.story ? 5 : 0) + task.completedShots / parts * 42 + (storyStage(task) >= 5 ? 5 : 0)));
 }
 
+// The 定妆照 to confirm: four views of the customer's machine; the whole video follows it. Used by both the 剧情版 and 无人实拍.
+function SheetCard({ picture, redos, busy, onConfirm, onRedo }: { picture?: string; redos: number; busy: boolean; onConfirm: () => void; onRedo: () => void }) {
+  return <div className="sv-sheet">
+    <h3>这是你的产品吗？</h3>
+    <p>AI 先照着产品图画了四个角度。像的话就继续，后面整条视频都按这台机器来拍。</p>
+    <div className="sv-sheet-image">{picture ? <img src={picture} alt="定妆照" /> : <LoaderCircle size={40} className="spin" />}</div>
+    <div className="sv-sheet-actions">
+      <button type="button" className="pv2-btn is-main" data-product-video-action="confirm-sheet" disabled={busy || !picture} onClick={onConfirm}><Check size={20} />就是这台，继续</button>
+      <button type="button" className="pv2-btn" data-product-video-action="redo-sheet" disabled={busy || redos >= 2} onClick={onRedo}><RefreshCw size={18} />不像，重出一张{redos < 2 ? `（还能 ${2 - redos} 次）` : ""}</button>
+    </div>
+  </div>;
+}
+// 无人实拍: loads the 定妆照 itself (again after a redo) and shows the same card.
+export function SheetConfirm({ taskId, redos, busy, imageMedia, onConfirm, onRedo }: { taskId: string; redos: number; busy: boolean;
+  imageMedia: (id: string, key: string) => Promise<MediaResult>; onConfirm: () => void; onRedo: () => void }) {
+  const [picture, setPicture] = useState("");
+  useEffect(() => {
+    let disposed = false; setPicture("");
+    void imageMedia(taskId, "sheet").then((result) => { if (!disposed && result.ok && result.data) setPicture(result.data.dataUrl); }).catch(() => {});
+    return () => { disposed = true; };
+  }, [taskId, redos]);
+  return <SheetCard picture={picture} redos={redos} busy={busy} onConfirm={onConfirm} onRedo={onRedo} />;
+}
+
 export function StoryVideoProgress({ task, busy, imageMedia, shotMedia, onConfirm, onRedo }: Props) {
   const [pictures, setPictures] = useState<Record<string, string>>({});
   const [videos, setVideos] = useState<Record<number, string>>({});
@@ -66,15 +90,7 @@ export function StoryVideoProgress({ task, busy, imageMedia, shotMedia, onConfir
     return () => { disposed = true; };
   }, [task.id, task.completedShots]);
 
-  if (task.status === "awaiting_sheet") return <div className="sv-sheet">
-    <h3>这是你的产品吗？</h3>
-    <p>AI 先照着产品图画了四个角度。像的话就继续，后面整条视频都按这台机器来拍。</p>
-    <div className="sv-sheet-image">{pictures.sheet ? <img src={pictures.sheet} alt="定妆照" /> : <LoaderCircle size={40} className="spin" />}</div>
-    <div className="sv-sheet-actions">
-      <button type="button" className="pv2-btn is-main" data-product-video-action="confirm-sheet" disabled={busy || !pictures.sheet} onClick={onConfirm}><Check size={20} />就是这台，继续</button>
-      <button type="button" className="pv2-btn" data-product-video-action="redo-sheet" disabled={busy || (task.sheetRedos || 0) >= 2} onClick={onRedo}><RefreshCw size={18} />不像，重出一张{(task.sheetRedos || 0) < 2 ? `（还能 ${2 - (task.sheetRedos || 0)} 次）` : ""}</button>
-    </div>
-  </div>;
+  if (task.status === "awaiting_sheet") return <SheetCard picture={pictures.sheet} redos={task.sheetRedos || 0} busy={busy} onConfirm={onConfirm} onRedo={onRedo} />;
 
   const stage = storyStage(task);
   return <div className="sv-progress">

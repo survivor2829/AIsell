@@ -8,7 +8,7 @@ type Item = { id: string; name: string };
 export type RealCatalog = {
   groups: Item[];
   devices: (Item & { group: string; operator: string; scenes: string[]; floors: string[]; dirt: string[]; points: string[]; defaults: Record<string, { floorId: string; dirtIds: string[] }> })[];
-  scenes: Item[]; floors: Item[]; dirt: Item[]; points: (Item & { caption: string })[];
+  scenes: Item[]; floors: Item[]; dirt: Item[]; points: (Item & { caption: string; place?: string; cleaning?: boolean })[];
   durations: number[]; pointLimit: Record<string, number>; minShots: Record<string, number>;
 };
 export type Timing = { image: number; story: number; finish: number; video15: number; video6: number; shotSlots: number; imageSlots: number };
@@ -18,11 +18,16 @@ export type ProductImage = { id: string; name: string; previewDataUrl: string };
 
 // A video shot takes roughly this long, between the measured 6- and 15-second times.
 const videoSeconds = (timing: Timing, seconds: number) => Math.max(60, timing.video6 + (timing.video15 - timing.video6) * (seconds - 6) / 9);
-export function realEstimate(timing: Timing | undefined, catalog: RealCatalog | undefined, durationSeconds: number, picked: number) {
+export function realEstimate(timing: Timing | undefined, catalog: RealCatalog | undefined, durationSeconds: number, pointIds: string[]) {
   if (!timing || !catalog) return 0;
   const limit = catalog.pointLimit[durationSeconds] || 5;
-  const shots = Math.max(catalog.minShots[durationSeconds] || 3, Math.min(limit, picked + 1));
-  return timing.image + Math.ceil(shots / timing.shotSlots) * videoSeconds(timing, durationSeconds / shots) + timing.finish;
+  const points = pointIds.map((id) => catalog.points.find((row) => row.id === id)).filter(Boolean) as RealCatalog["points"];
+  // Same as the plan: a cleaning shot leads when none was picked and there is room; fillers make up short lists.
+  const core = !points.some((point) => point.cleaning) && points.length < limit;
+  const shots = Math.max(catalog.minShots[durationSeconds] || 3, points.length + (core ? 1 : 0));
+  const venue = core || shots > points.length || points.some((point) => point.place === "venue");
+  // The 定妆照, the scene picture when a shot is in the venue, then the shots a few at a time.
+  return 10 + (venue ? 2 : 1) * timing.image + Math.ceil(shots / timing.shotSlots) * videoSeconds(timing, durationSeconds / shots) + timing.finish;
 }
 export function storyEstimate(timing: Timing | undefined, durationSeconds: number) {
   if (!timing) return 0;
@@ -100,12 +105,20 @@ export function ProductPhotos({ images, disabled, onAdd, onRemove }: { images: P
 
 type ProgressTask = {
   id: string; status: string; durationSeconds: number; shotsReady?: boolean[]; shotsRunning?: boolean[]; imagesReady?: Record<string, boolean>;
-  plan: { shots: { index: number; title: string; caption?: string; seconds: number }[] };
+  sheetConfirmed?: boolean; sheetStep?: boolean;
+  plan: { shots: { index: number; title: string; caption?: string; seconds: number; place?: string }[] };
 };
-const STAGES = [{ label: "画场地", Icon: MapPin }, { label: "拍镜头", Icon: Clapperboard }, { label: "加字幕", Icon: Subtitles }];
+// Only the steps this video really has: no 定妆照 on videos started before it, no scene picture without a venue shot.
 export function RealShootProgress({ task, shotVideos }: { task: ProgressTask; shotVideos: Record<string, string> }) {
   const finishing = ["assembling", "packaging"].includes(task.status);
-  const stage = task.status === "completed" ? 3 : finishing ? 2 : task.imagesReady?.plate ? 1 : 0;
+  const sheetDone = !task.sheetStep || task.sheetConfirmed;
+  const STAGES = [
+    ...(task.sheetStep ? [{ label: "定妆照", Icon: ImagePlus, done: Boolean(sheetDone) }] : []),
+    ...(task.plan.shots.some((shot) => shot.place === "venue") ? [{ label: "画场地", Icon: MapPin, done: Boolean(sheetDone && task.imagesReady?.plate) }] : []),
+    { label: "拍镜头", Icon: Clapperboard, done: finishing || task.status === "completed" },
+    { label: "加字幕", Icon: Subtitles, done: task.status === "completed" }
+  ];
+  const stage = STAGES.findIndex((row) => !row.done) < 0 ? STAGES.length : STAGES.findIndex((row) => !row.done);
   const stuck = ["needs_attention", "outcome_unknown"].includes(task.status);
   return <div className="sv-progress">
     <ol className="sv-stages">{STAGES.map(({ label, Icon }, index) => <li key={label} className={index < stage ? "is-done" : index === stage ? "is-now" : ""}>

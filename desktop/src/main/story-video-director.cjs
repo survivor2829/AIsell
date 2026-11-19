@@ -121,8 +121,8 @@ function parseStory(text, segments) {
 const personText = (person) => `${person.name}（${person.role}）：${person.look}${person.prop ? `，手里拿着${person.prop}` : ''}。`;
 const machineRule = (story) => `机器必须是图1这一台，造型、比例、配色、零件以图1为准，不新增零件，不变成其他型号。机器${story.machine.size}，实实在在压在地面上，下方有接地阴影。机器只朝机头方向前进。画面里只有这一台机器。${story.unmanned ? UNMANNED_RULE : ''}${CONTACT_RULE}`;
 
-function sheetPrompt(productName) {
-  return `产品定妆设定图。参考图是「${productName}」的真实产品照。请在纯白无缝背景上生成同一台产品的四个视图，2×2等分排列，格与格之间用留白分隔，不加边框、文字、标注、箭头。
+function sheetPrompt(productName, photos = 1) {
+  return `产品定妆设定图。${photos > 1 ? `${photos}张参考图是「${productName}」同一台产品不同角度的真实照片，照片里拍到的面严格照照片画` : `参考图是「${productName}」的真实产品照`}。请在纯白无缝背景上生成同一台产品的四个视图，2×2等分排列，格与格之间用留白分隔，不加边框、文字、标注、箭头。
 左上：前左侧四分之三视角（与参考图相同的角度），完整机身。右上：正侧面平视视角，完整机身。左下：后侧四分之三视角，完整机身。右下：底部或前端工作部件的近景特写。
 要求：四格必须是同一台产品，严格保持参考图的造型、比例和配色，保留机身上原有的字样。不新增零件，不改变颜色，不变成其他型号。参考图里看不到的面保持简洁合理，沿用相同的材质和配色，不添加文字和标志。去掉参考图上的水印文字。
 柔和均匀的影棚光，商业产品摄影质感，产品下方有轻微接地阴影，写实，细节清晰。`;
