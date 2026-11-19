@@ -49,7 +49,7 @@ export function MixCount({ value, disabled, onChange }: { value: string; disable
   </div>;
 }
 
-export function MixPlayer({ videos, onOpenFolder }: { videos: Candidate[]; onOpenFolder?: () => void }) {
+export function MixPlayer({ videos, waiting = [], onOpenFolder }: { videos: Candidate[]; waiting?: MixRow[]; onOpenFolder?: () => void }) {
   const [index, setIndex] = useState(0);
   useEffect(() => { if (index >= videos.length) setIndex(Math.max(0, videos.length - 1)); }, [videos.length, index]);
   const current = videos[index];
@@ -65,6 +65,7 @@ export function MixPlayer({ videos, onOpenFolder }: { videos: Candidate[]; onOpe
       <div className="mix-player-actions"><VideoDownloadButton generatedId={current.generated_video_id} />{onOpenFolder && <button type="button" onClick={onOpenFolder}>打开成片文件夹</button>}</div>
       {videos.length > 1 && <div className="mix-player-strip">{videos.map((video, i) => <button key={video.candidate_id} type="button" className={i === index ? "is-on" : ""} onClick={() => setIndex(i)} aria-label={`看第 ${i + 1} 条`}>
         <img src={videoUrl(video.generated_video_id!, "thumbnail")} alt="" /><span>{i + 1}</span></button>)}</div>}
+      {waiting.length > 0 && <div className="mix-player-more" aria-label="还在做的">{waiting.map(row => <div key={row.key}><span>{row.state === "now" ? <Clapperboard size={20} /> : <Clock3 size={20} />}</span>{row.label} · {row.state === "now" ? "制作中" : row.state === "failed" ? "没做成" : "排队"}</div>)}</div>}
     </div>
   </section>;
 }

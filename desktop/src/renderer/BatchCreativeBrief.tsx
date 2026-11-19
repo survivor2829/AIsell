@@ -15,18 +15,17 @@ export function BatchCreativeBrief({ value, onChange, cta, onCtaChange, suggesti
   cta: string; onCtaChange: (value: string) => void; suggestions?: Batch["brief_suggestions"];
 }) {
   return <section className="batch-creative-brief" aria-label="创作需求">
-    <label><span>给谁看？ <span className="batch-field-note">必填</span></span>
+    <label><span>给谁看？<span className="batch-field-note">必填</span></span>
       <input required aria-label="目标客户群体" value={value.target_audience} maxLength={150}
         placeholder="例如：物业保洁负责人"
         onChange={(event) => onChange({ ...value, target_audience: event.target.value })} />
     </label>
-    <div className="batch-brief-field"><label><span>想讲什么？ <span className="batch-field-note">选填</span></span>
+    <div className="batch-brief-field"><label><span>想讲什么？</span>
       <textarea aria-label="想讲什么" value={value.expression} maxLength={14000} rows={4}
-        placeholder="粘贴文案将保留原文；留空则根据素材和目标客户生成"
+        placeholder="可以直接粘贴文案；不写也行，AI 会根据素材来写"
         onChange={(event) => onChange({ ...value, expression: event.target.value })} /></label>
       <label className="batch-provided-script"><input type="checkbox" checked={value.script_source === "ideas"} onChange={(event) => onChange({ ...value, script_source: event.target.checked ? "ideas" : "provided", script_action: value.script_action === "expand" ? "expand" : "rewrite" })} /><span>让 AI 根据这些想法改写或扩写</span></label>
       {value.script_source === "ideas" && !!value.expression.trim() && <label><span>文案处理</span><select aria-label="文案处理方式" value={value.script_action === "expand" ? "expand" : "rewrite"} onChange={(event) => onChange({ ...value, script_action: event.target.value as "rewrite" | "expand" })}><option value="rewrite">改写 · 保留原意，调整表达</option><option value="expand">扩写 · 补充讲解，保留已有信息</option></select></label>}
-      {value.script_source === "provided" && value.expression.trim() && <small className="batch-hint">保留原文，按实际长度制作，最多 2400 字。</small>}
       {!value.expression.trim() && expressionText(suggestions) && <details className="batch-inline-suggestion"><summary>查看 AI 建议</summary>
         <p>{expressionText(suggestions)}</p><button type="button" onClick={() => onChange({ ...value, expression: expressionText(suggestions), script_source: "ideas" })}>采用并修改</button>
       </details>}

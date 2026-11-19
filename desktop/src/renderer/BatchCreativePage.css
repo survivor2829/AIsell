@@ -423,3 +423,45 @@ html[data-beat="1"] .mix-ring-value.is-waiting { opacity: .5; }
 .is-visual-flow .batch-step-action .batch-primary, .is-visual-flow .batch-script-confirm .batch-primary { height: 60px; padding: 0 30px; border-radius: 16px; font-size: 20px; font-weight: 900; box-shadow: 0 8px 18px color-mix(in srgb, var(--mix-accent) 26%, transparent); }
 .is-visual-flow .batch-script-confirm > div > p:first-child { font-size: 18px; font-weight: 800; }
 .batch-page .mix-player-actions > :first-child button, .batch-page .mix-player-actions > button:first-child { background: var(--mix-accent, var(--brand-red)); color: #fff; border-color: transparent; }
+
+/* Round 3 (2026-11-18, user: 少留白、字加大加粗、去掉非必要小字): the brief rail fills the height of the
+   materials, labels and fields are big and bold, and the finished-video card has no empty half. */
+.is-visual-flow .batch-start-layout { align-items: stretch; }
+.is-visual-flow .batch-brief-rail { display: flex; flex-direction: column; gap: 16px; }
+.is-visual-flow .batch-brief-rail .batch-creative-brief { flex: 1; display: flex; flex-direction: column; gap: 22px; }
+.is-visual-flow .batch-brief-rail .batch-creative-brief label > span:first-child { display: flex; align-items: center; gap: 8px; font-size: 22px; font-weight: 900; color: #1f2937; }
+.is-visual-flow .batch-brief-rail .batch-field-note { padding: 2px 10px; border-radius: 999px; background: color-mix(in srgb, var(--mix-accent) 12%, white); color: var(--mix-accent); font-size: 14px; font-weight: 800; margin: 0; }
+.is-visual-flow .batch-brief-rail input:not([type=checkbox]):not([type=radio]) { height: 56px; font-size: 18px; font-weight: 700; border-radius: 14px; padding: 0 16px; }
+.is-visual-flow .batch-brief-rail .batch-brief-field { flex: 1; display: flex; flex-direction: column; gap: 12px; }
+.is-visual-flow .batch-brief-rail .batch-brief-field > label:first-child { flex: 1; }
+.is-visual-flow .batch-brief-rail textarea { flex: 1; min-height: 260px; font-size: 18px; font-weight: 600; line-height: 1.8; border-radius: 14px; padding: 14px 16px; }
+.is-visual-flow .batch-brief-rail .batch-provided-script span { font-size: 17px; font-weight: 800; color: #374151; }
+.is-visual-flow .batch-brief-rail .batch-provided-script input { width: 20px; height: 20px; }
+.is-visual-flow .batch-brief-rail .batch-brief-optional summary { font-size: 17px; font-weight: 800; }
+.is-visual-flow .batch-minimum-duration { font-size: 18px; font-weight: 900; }
+.is-visual-flow .batch-minimum-duration input { height: 52px; font-size: 18px; font-weight: 800; }
+.is-visual-flow .batch-brief-rail > .batch-hint { font-size: 15px; font-weight: 700; }
+.is-visual-flow .batch-material-board header h2 { font-size: 22px; font-weight: 900; }
+.is-visual-flow .batch-material-board header span { font-size: 16px; font-weight: 700; }
+.is-visual-flow .batch-material-board footer button { font-size: 16px; font-weight: 800; }
+.is-visual-flow .batch-material-name { font-size: 15px; font-weight: 700; }
+.batch-page.is-visual-flow .batch-step-action > span { font-size: 17px; font-weight: 800; color: #374151; }
+.is-visual-flow .batch-collection-picker summary { font-size: 16px; font-weight: 800; }
+/* Finished videos: the video sets the height, the words fill the side, nothing left empty. */
+.mix-player { grid-template-columns: minmax(260px, 360px) minmax(0, 1fr); align-items: stretch; }
+.mix-player-side { align-content: start; gap: 18px; }
+.mix-player-nav { font-size: 26px; font-weight: 900; }
+.mix-player-side h3 { font-size: 28px; font-weight: 900; }
+.mix-player-copy { font-size: 20px; font-weight: 700; line-height: 1.8; max-height: none; color: #1f2937; padding: 18px 20px; border-radius: 18px; background: #fff; border: 1.5px solid var(--mix-line, #eee); }
+.batch-page .mix-player-actions button { height: 58px; padding: 0 26px; font-size: 19px; border-radius: 16px; }
+.mix-player-strip { grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); }
+.mix-player-more { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.mix-player-more > div { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-radius: 16px; background: color-mix(in srgb, var(--mix-accent, var(--brand-red)) 8%, white); font-size: 17px; font-weight: 900; color: #374151; }
+.mix-player-more > div > span { width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center; background: #fff; color: var(--mix-accent, var(--brand-red)); flex: none; }
+.mix-player { grid-template-columns: minmax(240px, 300px) minmax(0, 1fr); }
+.mix-player-more { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+.mix-player-more > div { flex-direction: column; justify-content: center; gap: 10px; min-height: 130px; font-size: 19px; text-align: center; }
+.mix-player-more > div > span { width: 52px; height: 52px; border-radius: 16px; }
+.is-visual-flow .batch-progress-message { font-size: 17px; font-weight: 800; color: #1f2937; }
+.is-visual-flow .batch-progress-meta { font-size: 15px; font-weight: 700; }
+.is-visual-flow .batch-output-row:not(:has(.batch-notice)) { display: none; }
