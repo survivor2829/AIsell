@@ -18,27 +18,27 @@ const HARD = ['tile', 'anti_slip', 'marble', 'terrazzo', 'epoxy', 'pvc', 'concre
 // operator: none = 画面里没有人; walk = 只拍操作员的手和下半身; ride = 只拍驾驶员肩部以下.
 const DEVICES = Object.freeze([
   { id: 'robot_scrubber', group: 'robot', name: '洗地机器人', operator: 'none', scenes: INDOOR, floors: HARD, dirt: ['footprints', 'drink', 'oil', 'water', 'tire', 'dust'],
-    body: '商用洗地机器人', parts: '底部滚刷或盘刷加水刷洗地面，机尾吸水扒把污水吸干', work: '底部刷盘一边加水刷洗一边前进，机尾吸水扒随即把污水吸走' },
+    body: '商用洗地机器人', parts: '底部刷盘贴着地面刷洗，刷过的地面立刻干燥', work: '底部刷盘贴着地面刷洗，边刷边前进，刷过的地方污渍直接消失，身后的地面立刻干净、干燥' },
   { id: 'robot_sweeper', group: 'robot', name: '扫地机器人', operator: 'none', scenes: INDOOR, floors: [...HARD, 'carpet', 'wood'], dirt: ['dust', 'grit', 'paper', 'cigarette', 'metal', 'leaves'],
     body: '商用扫地机器人', parts: '前方边刷把垃圾扫向中间，底部吸口把垃圾吸进尘盒', work: '边刷把垃圾往中间拢，底部吸口随即吸走，地面不扬尘' },
   { id: 'robot_dust', group: 'robot', name: '尘推机器人', operator: 'none', scenes: INDOOR, floors: ['marble', 'terrazzo', 'tile', 'pvc', 'wood', 'epoxy'], dirt: ['dust', 'grit', 'footprints'],
     body: '商用尘推机器人', parts: '底部宽幅尘推布贴着地面推尘', work: '底部宽幅尘推布贴地推过，浮灰和细砂被推走带走' },
   { id: 'robot_combo', group: 'robot', name: '洗扫一体机器人', operator: 'none', scenes: INDOOR, floors: HARD, dirt: ['dust', 'grit', 'paper', 'footprints', 'drink', 'oil', 'water', 'tire', 'metal'],
-    body: '商用洗扫一体机器人', parts: '前方边刷和吸口先扫走碎屑，底部刷盘再加水洗地，机尾吸水扒吸干', work: '先扫走碎屑，紧接着刷洗地面，机尾吸水扒把水吸干，一趟完成' },
+    body: '商用洗扫一体机器人', parts: '前方边刷和吸口先扫走碎屑，底部刷盘再刷洗地面，刷过的地面立刻干燥', work: '先扫走碎屑，紧接着刷洗地面，一趟过去，身后的地面干净、干燥' },
   { id: 'robot_outdoor', group: 'robot', name: '户外清扫机器人', operator: 'none', scenes: OUTDOOR, floors: ['asphalt', 'paver', 'concrete'], dirt: ['leaves', 'paper', 'cigarette', 'grit', 'dust'],
     body: '户外无人清扫车', parts: '两侧大边刷把路面垃圾扫向中间，底部吸盘吸进垃圾箱', work: '两侧边刷把路面垃圾拢向中间，底部吸盘随即吸走，身后路面干净' },
   { id: 'walk_scrubber', group: 'traditional', name: '手推式洗地机', operator: 'walk', scenes: INDOOR, floors: HARD, dirt: ['footprints', 'drink', 'oil', 'water', 'tire', 'dust'],
-    body: '手推式洗地机', parts: '底部刷盘加水刷洗，机尾吸水扒吸干污水', work: '操作员握着把手推着它直线前进，刷盘刷洗地面，机尾吸水扒随即吸干' },
+    body: '手推式洗地机', parts: '底部刷盘贴着地面刷洗，刷过的地面立刻干燥', work: '操作员握着把手推着它直线前进，刷过的地方污渍直接消失，身后的地面立刻干净、干燥' },
   { id: 'ride_scrubber', group: 'traditional', name: '驾驶式洗地机', operator: 'ride', scenes: INDOOR, floors: HARD, dirt: ['footprints', 'drink', 'oil', 'water', 'tire', 'dust', 'metal'],
-    body: '驾驶式洗地机', parts: '底部宽幅刷盘加水刷洗，机尾吸水扒吸干污水', work: '操作员坐在驾驶位开着它直线前进，宽幅刷盘刷洗地面，机尾吸水扒随即吸干' },
+    body: '驾驶式洗地机', parts: '底部宽幅刷盘贴着地面刷洗，刷过的地面立刻干燥', work: '操作员坐在驾驶位开着它直线前进，刷过的地方污渍直接消失，身后的地面立刻干净、干燥' },
   { id: 'walk_sweeper', group: 'traditional', name: '手推式扫地机', operator: 'walk', scenes: ALL_SCENES, floors: [...HARD, 'asphalt', 'paver'], dirt: ['dust', 'grit', 'paper', 'leaves', 'cigarette', 'metal'],
     body: '手推式扫地机', parts: '前方边刷把垃圾扫向中间，主刷把垃圾扫进垃圾斗', work: '操作员推着它前进，边刷把垃圾往中间拢，主刷扫进垃圾斗' },
   { id: 'ride_sweeper', group: 'traditional', name: '驾驶式扫地车', operator: 'ride', scenes: ALL_SCENES, floors: [...HARD, 'asphalt', 'paver'], dirt: ['dust', 'grit', 'paper', 'leaves', 'cigarette', 'metal'],
     body: '驾驶式扫地车', parts: '两侧边刷把垃圾扫向中间，主刷和吸风把垃圾送进垃圾箱', work: '操作员坐在驾驶位开着它前进，两侧边刷拢起垃圾，主刷扫进垃圾箱，不扬尘' },
-  { id: 'pressure_washer', group: 'traditional', name: '高压清洗机', operator: 'walk', scenes: ['factory', 'facilities', 'community', 'station'], floors: ['concrete', 'epoxy', 'paver', 'asphalt', 'anti_slip'], dirt: ['oil', 'tire', 'footprints', 'dust'],
+  { id: 'pressure_washer', group: 'traditional', name: '高压清洗机', operator: 'walk', wet: true, scenes: ['factory', 'facilities', 'community', 'station'], floors: ['concrete', 'epoxy', 'paver', 'asphalt', 'anti_slip'], dirt: ['oil', 'tire', 'footprints', 'dust'],
     body: '高压清洗机', parts: '主机连着高压水管，操作员手持喷枪', work: '操作员手持喷枪，扇形高压水柱贴着地面来回冲洗，冲过的地方露出本色' },
   { id: 'wet_dry_vac', group: 'traditional', name: '吸尘吸水机', operator: 'walk', scenes: INDOOR, floors: [...HARD, 'carpet'], dirt: ['water', 'dust', 'grit', 'drink'],
-    body: '桶式吸尘吸水机', parts: '桶身连着软管和地面吸嘴', work: '操作员推着地面吸嘴走过，积水和灰尘被吸进桶里，地面随即变干' }
+    body: '桶式吸尘吸水机', parts: '桶身连着软管和地面吸嘴', work: '操作员推着地面吸嘴走过，吸嘴经过的地方积水和灰尘直接被吸进桶里消失，身后的地面立刻干燥' }
 ]);
 
 const FLOORS = Object.freeze([
@@ -94,7 +94,7 @@ const POINTS = Object.freeze([
   { id: 'stain', name: '顽固污渍', caption: '顽固污渍 一遍洗净', devices: ['robot_scrubber', 'robot_combo', 'walk_scrubber', 'ride_scrubber', 'pressure_washer'], cleaning: true, place: 'venue',
     camera: '贴近地面的低机位近景，镜头离地约三十厘米，固定不动，机器的工作部件从画面一侧进入，压过污渍', action: '{work}。工作部件压过地上的污渍，污渍被刷洗带走，露出同一块地面的本色，没有残留的印子。' },
   { id: 'dry', name: '洗完即干', caption: '洗完即干 不留水渍', devices: ['robot_scrubber', 'robot_combo', 'walk_scrubber', 'ride_scrubber', 'wet_dry_vac'], cleaning: true, place: 'venue',
-    camera: '贴近机尾的低机位，镜头离地约四十厘米，在机尾后方同速跟随，看清吸水扒和它身后的地面', action: '{work}。吸水扒经过之后，地面马上是干的，没有水痕、没有水渍，只有很淡的湿润光泽很快消失。' },
+    camera: '贴近机尾的低机位，镜头离地约四十厘米，在机尾后方同速跟随，看清机尾和它身后的地面', action: '{work}。机尾经过之后，地面马上是干的，没有水痕、没有水渍。' },
   { id: 'oil', name: '强力去油污', caption: '油污 一洗就掉', devices: ['robot_scrubber', 'robot_combo', 'walk_scrubber', 'ride_scrubber', 'pressure_washer'], cleaning: true, place: 'venue', dirt: 'oil',
     camera: '斜前方中近景，成人膝盖高度，固定机位，油渍在画面中间，机器从画面一侧进入', action: '{work}。机器经过地上发暗的油渍，油渍被刷洗干净，露出地面原本的颜色，不留油印。' },
   { id: 'sweep', name: '扫吸一体 不扬尘', caption: '扫吸一体 不扬尘', devices: ['robot_sweeper', 'robot_combo', 'robot_outdoor', 'walk_sweeper', 'ride_sweeper', 'wet_dry_vac'], cleaning: true, place: 'venue',
@@ -106,7 +106,7 @@ const POINTS = Object.freeze([
   { id: 'obstacle', name: '自动避障', caption: '遇到障碍 自己绕开', devices: ['robot_scrubber', 'robot_sweeper', 'robot_dust', 'robot_combo', 'robot_outdoor'], cleaning: false, place: 'venue',
     camera: '机器斜后方的跟拍机位，成人腰部高度，同速跟随', action: '机器前进途中，前方通道上放着一辆空的购物推车（或一个黄色锥桶），机器在离障碍物约半米处减速，平稳地从旁边绕过，绕过后回到原来的路线继续清洁。' },
   { id: 'water', name: '自动上下水', caption: '自动上下水 不用人管', devices: ['robot_scrubber', 'robot_combo'], cleaning: false, place: 'other',
-    camera: '工作站正侧面的固定中景，成人胸口高度，能同时看到机器和靠墙的工作站', action: '机器自己倒回靠墙的自动工作站并对准停稳，工作站的管路接上机器，透明管里能看到清水灌进机器、污水被抽走，工作站指示灯亮起。全程没有人碰它。' },
+    camera: '工作站正侧面的固定中景，成人胸口高度，能同时看到机器和靠墙的工作站', action: '机器自己驶向靠墙的自动工作站，缓慢对准后停稳，工作站的管路接上机器，透明管里能看到清水灌进机器、污水被抽走，工作站指示灯亮起。全程没有人碰它。' },
   { id: 'charge', name: '自动回充', caption: '电量低 自己回去充电', devices: ['robot_scrubber', 'robot_sweeper', 'robot_dust', 'robot_combo', 'robot_outdoor'], cleaning: false, place: 'other',
     camera: '充电桩侧前方的固定中景，成人膝盖高度', action: '机器自己驶向靠墙的充电桩，缓慢调整方向对准，倒退贴上充电触点停稳，机身的指示灯变成充电中的颜色。全程没有人碰它。' },
   { id: 'lift', name: '自己乘电梯', caption: '自己坐电梯 跨楼层', devices: ['robot_scrubber', 'robot_sweeper', 'robot_dust', 'robot_combo'], cleaning: false, place: 'other',

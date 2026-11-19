@@ -29,10 +29,12 @@ const round = (n) => Math.ceil((n - 1e-9) * 100) / 100;
 function readText(url) {
   return new Promise((resolve, reject) => {
     const req = https.get(url, { timeout: PRICE_TIMEOUT_MS }, (res) => {
-      let body = '';
-      res.on('data', (chunk) => { body += chunk; if (Buffer.byteLength(body) > MAX_PRICE_BYTES) res.destroy(new Error('price_response_too_large')); });
+      // Keep the raw bytes and decode once: a Chinese character split between two network chunks
+      // used to turn into garbage, the price table no longer matched, and the quote failed now and then.
+      const chunks = []; let size = 0;
+      res.on('data', (chunk) => { chunks.push(chunk); size += chunk.length; if (size > MAX_PRICE_BYTES) res.destroy(new Error('price_response_too_large')); });
       res.on('error', reject);
-      res.on('end', () => { try { if (res.statusCode !== 200) throw new Error('price_unavailable'); resolve(body); } catch (e) { reject(e); } });
+      res.on('end', () => { try { if (res.statusCode !== 200) throw new Error('price_unavailable'); resolve(Buffer.concat(chunks).toString('utf8')); } catch (e) { reject(e); } });
     });
     req.on('error', reject); req.on('timeout', () => req.destroy(new Error('price_timeout')));
   });
@@ -330,4 +332,4 @@ function createCoverPriceReader({ fetchJson, fetch: fetchImpl, gatewayClient } =
     return pending;
   };
 }
-module.exports = { parseDirectVideoPrices, STORY_IMAGE_MODEL, storyImagePrice, validStoryPrices, createCoverPriceReader, parseCoverPrice, createPriceReader, parsePrices, validPrices, quotePlan, round, createBailianPriceReader, parseBailianPrices, parseDirectPrices, validBailianPrices, createReferencePriceReader };
+module.exports = { readText, parseDirectVideoPrices, STORY_IMAGE_MODEL, storyImagePrice, validStoryPrices, createCoverPriceReader, parseCoverPrice, createPriceReader, parsePrices, validPrices, quotePlan, round, createBailianPriceReader, parseBailianPrices, parseDirectPrices, validBailianPrices, createReferencePriceReader };

@@ -48,9 +48,12 @@ const base = { mode: 'product', durationSeconds: 30, deviceId: 'robot_scrubber',
         assert.ok(shot.seconds >= 2 && shot.seconds <= 15);
         assert.match(shot.prompt, /一镜到底/u);
         // A customer's video (2026-11-19): a driver on an unmanned robot, extra machines, a person merging into the machine.
-        if (device.operator === 'none') { assert.match(shot.prompt, /没有任何人/u); assert.match(shot.prompt, /没有方向盘/u); }
+        if (device.operator === 'none') { assert.match(shot.prompt, /没有任何人/u); assert.match(shot.prompt, /没有人坐上去、驾驶/u); assert.match(shot.prompt, /照片里没有的座椅、方向盘、把手不要加上去/u); }
         else { assert.match(shot.prompt, /不露脸/u); assert.match(shot.prompt, /不融在一起/u); }
         assert.match(shot.prompt, /不复制、不分身/u);
+        // A pressure washer wets the floor with clean water; every other cleaning shot keeps it dry with no liquid.
+        if (shot.cleaning) assert.equal(/不凭空出现任何液体/u.test(shot.prompt), !device.wet, `${device.id}/${shot.pointId} liquid rule`);
+        assert.doesNotMatch(shot.prompt, /倒回/u);
       }
     }
   }
@@ -125,7 +128,24 @@ assert.equal(validPrices(prices()), true);
   assert.equal(quote.maximumCny, 12.32); assert.equal(quote.videoAudio, true);
 }
 
+// The official price page arrives in network chunks; a Chinese character split between two chunks
+// must not turn into garbage (it made quotes fail now and then, 2026-11-19).
+async function priceChunks() {
+  const https = require('node:https'), { EventEmitter } = require('node:events'), original = https.get;
+  const page = Buffer.from(directDoc, 'utf8'), cut = page.indexOf(Buffer.from('视频生成')) + 1;
+  assert.ok(cut > 0, 'the test page must contain a Chinese character to split');
+  https.get = (url, options, callback) => {
+    const response = new EventEmitter(); response.statusCode = 200; response.destroy = () => {};
+    const request = new EventEmitter(); request.destroy = () => {};
+    setImmediate(() => { callback(response); response.emit('data', page.subarray(0, cut)); response.emit('data', page.subarray(cut)); response.emit('end'); });
+    return request;
+  };
+  try { assert.equal((await require('./product-video-pricing.cjs').readText('https://example.invalid/')), directDoc); }
+  finally { https.get = original; }
+  assert.equal(parseDirectPrices(directDoc, ttsDoc).rates['720p'].audio, 0.6);
+}
 async function run() {
+  await priceChunks();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoxi-real-shoot-'));
   const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
   const clip = Buffer.alloc(2048); clip.write('ftyp', 4, 'ascii');
