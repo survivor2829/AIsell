@@ -3,7 +3,7 @@ const { createProductVideoService } = require("./product-video-service.cjs");
 const { cleanMessage, fail } = require("./digital-human-provider.cjs");
 
 const CHANNELS = Object.freeze(Object.fromEntries(
-  ["capabilities", "import-image", "import-facts", "create", "list", "get", "start", "retry-shot", "refresh", "media", "export", "export-source"]
+  ["capabilities", "import-image", "import-facts", "create", "list", "get", "start", "retry-shot", "refresh", "media", "shot-media", "export", "export-source"]
     .map((name) => [name, `product-video:${name}`])
 ));
 const ID = /^pv_[a-f0-9-]{36}$/u;
@@ -35,6 +35,10 @@ function registerProductVideoIpc(options = {}) {
     "retry-shot": (payload) => service.retryShot(idOf(payload)),
     refresh: (payload) => service.refresh(idOf(payload)),
     media: (payload) => service.media(idOf(payload)),
+    "shot-media": (payload) => {
+      if (!Number.isInteger(payload.index) || payload.index < 0 || payload.index > 20) throw fail("product_video_invalid_input", "请刷新页面后重试。");
+      return service.shotMedia(idOf(payload), payload.index);
+    },
     export: async (payload) => {
       const id = idOf(payload), window = getMainWindow();
       const settings = { title: "导出产品视频", defaultPath: path.join(options.defaultExportDir || "", `AI短视频获客-${id}.mp4`),
@@ -58,7 +62,7 @@ function registerProductVideoIpc(options = {}) {
           throw fail("product_video_untrusted_sender", "请在应用主窗口操作。");
         }
         if (["start", "retry-shot"].includes(name)) await options.requireTrustedClick(event, payload, name);
-        if (!["create", "import-image", "import-facts"].includes(name) && Object.keys(payload).some((key) => !["id", "clickToken"].includes(key))) {
+        if (!["create", "import-image", "import-facts"].includes(name) && Object.keys(payload).some((key) => !["id", "clickToken", ...(name === "shot-media" ? ["index"] : [])].includes(key))) {
           throw fail("product_video_invalid_input", "请刷新页面后重试。");
         }
         return { ok: true, data: await handler(payload) };

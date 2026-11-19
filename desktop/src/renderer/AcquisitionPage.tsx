@@ -131,7 +131,7 @@ export function AcquisitionPage() {
 
   return <div className="acq">
     {(error || notice) && <div className={`social-feedback ${error ? "is-error" : ""}`} role={error ? "alert" : "status"}>{!error && <Check size={16} />}{error || notice}</div>}
-    {/* Design C (2026-11-18): progress and tasks on the left, the people on the right. */}
+    {/* Top and bottom (2026-11-18): the search bar, then the numbers and the words, then the people across the page. */}
     <div className="acq-board"><div className="acq-side">
     {runningRun && <div className={`acq-live ${runningRun.status === "needs_user" ? "is-wait" : ""}`} role="status">
       <span className="acq-live-dot" aria-hidden="true" />
@@ -142,10 +142,10 @@ export function AcquisitionPage() {
     </div>}
 
     <div className="acq-grid">
-      <section className="acq-card" aria-labelledby="acq-form">
+      <section className="acq-card acq-form-card" aria-labelledby="acq-form">
         <div className="acq-sec"><h2 id="acq-form">{form.id ? "修改这个任务" : "找想买的客户"}</h2>{editing && <button type="button" className="social-text-button" onClick={() => { setEditing(false); setForm(emptyTask(form.accountId, form.platform)); }}>取消修改</button>}</div>
-        <label className="acq-step"><b><i>1</i>你卖什么？</b><textarea rows={2} value={form.keywords} placeholder={"写客户会搜的词，一行一个，例如：\n洗地机"} onChange={(event) => setForm({ ...form, keywords: event.target.value })} /></label>
-        <div className="acq-step"><b><i>2</i>去哪里找、用哪个账号？</b>
+        <label className="acq-step is-what"><b><i>1</i>你卖什么？</b><textarea rows={2} value={form.keywords} placeholder={"写客户会搜的词，一行一个，例如：\n洗地机"} onChange={(event) => setForm({ ...form, keywords: event.target.value })} /></label>
+        <div className="acq-step is-where"><b><i>2</i>去哪里找、用哪个账号？</b>
         <div className="acq-platforms" role="radiogroup" aria-label="平台">
           {PLATFORMS.map(([key, name]) => <button type="button" role="radio" key={key} aria-checked={form.platform === key} className={form.platform === key ? "is-on" : ""} onClick={() => setForm({ ...form, platform: key, accountId: "" })}><PlatformIcon platform={key} size={26} /><span><b>{name}</b></span></button>)}
 
@@ -176,9 +176,9 @@ export function AcquisitionPage() {
         <p className="acq-hint is-help"><CircleHelp size={17} />只看不发。平台要验证时 Chrome 会跳到前面，点完自动继续。</p>
       </section>
 
-      <section className="acq-card" aria-labelledby="acq-tasks">
+      <section className="acq-card acq-tasks-card" aria-labelledby="acq-tasks">
         <div className="acq-sec"><h2 id="acq-tasks">找过的词</h2><button type="button" className="social-text-button" onClick={() => { setEditing(false); setForm(emptyTask(form.accountId, form.platform)); }}><Plus size={14} />新建</button></div>
-        {(state?.tasks.length || 0) === 0 ? <p className="social-empty">还没有。在左边写上你卖什么，点「开始找客户」。</p> : <ul className="acq-tasks">
+        {(state?.tasks.length || 0) === 0 ? <p className="social-empty">还没有。在上面写上你卖什么，点「开始找客户」。</p> : <ul className="acq-tasks">
           {state!.tasks.map((task) => { const last = runFor(task); const running = state!.running && last?.id === state!.running;
             return <li key={task.id}>
               <PlatformIcon platform={task.platform} size={30} />
@@ -194,7 +194,7 @@ export function AcquisitionPage() {
       </section>
     </div>
 
-    {(anyActionPlatform || todayRows.length > 0 || queued > 0 || unknown.length > 0) && <section className="acq-card" aria-labelledby="acq-today">
+    {(anyActionPlatform || todayRows.length > 0 || queued > 0 || unknown.length > 0) && <section className="acq-card acq-today-card" aria-labelledby="acq-today">
       <div className="acq-sec"><h2 id="acq-today"><em>今天</em>点赞关注与上限</h2>
         <span>{queued ? `还有 ${queued} 个排队` : "没有排队的动作"}</span>
         <div className="acq-filters">

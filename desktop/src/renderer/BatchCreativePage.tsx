@@ -6,17 +6,13 @@ import "./BatchCreativePage.css";
 import { AdLawHint, BatchCreativeBrief, BatchTopicChoices, emptyCreativeBrief, expressionText } from "./BatchCreativeBrief";
 import { BatchSoundSettings } from "./BatchSoundSettings";
 import { VideoDownloadButton } from "./VideoPresentation";
-import { BatchMaterialBoard } from "./BatchMaterialBoard";
+import { BatchMaterialBoard } from "./BatchMaterialBoard";
 import { FileDropZone, hasDraggedFiles } from "./FileDropZone";
 import { CARRIED_ASSETS_WAIT, carriedAssetsAutosave, createDraftQueue, createPendingDraftSlot, discardPendingDraft, isDeterministicDraftError, restoreNotice, restorePendingDraft, retryHold, waitForDraftWrites } from "./batch-draft-queue";
 import { type RecoveryVoice, approvedVoiceIds as approvedIn } from "./batch-voice-recovery";
 import { LayoutTemplate, Clapperboard, ArrowLeft, ArrowRight, Plus } from "lucide-react";
-import { CreationSteps } from './CreationGuide';
+import { MixCount, MixPlayer, MixProgress, MixSteps, type MixRow } from "./MixWidgets";
 import { ExampleBanner } from './VideoExamples';
-import creativeThinking from "./assets/creative-thinking.webp";
-import creativeThinkingStill from "./assets/creative-thinking-still.webp";
-import creativeMaking from "./assets/creative-making.webp";
-import creativeMakingStill from "./assets/creative-making-still.webp";
 
 type VoiceItem = RecoveryVoice & { displayName: string; provider?: string; digitalHumanDefault?: boolean; productApproved?: boolean; autoSelectPriority?: number };
 
@@ -495,14 +491,14 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
     { step: 3, label: "制作与成片", enabled: Boolean(batch?.script_confirmation || shownCandidates.length || batch?.archived) },
   ];
   const showResults = !visualFlow || flowStep === 3;
+  const making = Boolean(batch?.script_confirmation) && (running || paused || submitting || (pendingJobs && !batch?.archived && !["completed", "completed_with_errors", "failed", "cancelled"].includes(batch?.status || "")));
+  const mixStep = flowStep === 0 ? 0 : flowStep < 3 ? 1 : making ? 2 : 3;
   const activity = batch?.activity;
   const ended = !running && !submitting && Boolean(batch && (["completed", "completed_with_errors", "failed", "cancelled"].includes(batch.status) || ["failed", "cancelled"].includes(batch.task_status || "")));
   const legacyPercent = activity?.total ? Math.round(((activity.completed || 0) / activity.total) * 100) : null;
   const progressPercent = submitting ? 1 : typeof activity?.overall_percent === "number"
     ? Math.max(0, Math.min(100, Math.round(activity.overall_percent))) : legacyPercent;
   const makingPhase = activity?.phase === "production" || activity?.phase === "finalizing" || activity?.phase === "complete";
-  const activityArt = makingPhase ? creativeMaking : creativeThinking;
-  const activityStill = makingPhase ? creativeMakingStill : creativeThinkingStill;
   const heartbeatAge = activity?.heartbeat_at ? Math.max(0, Math.floor((now - Date.parse(activity.heartbeat_at)) / 1000)) : null;
   const providerWaiting = Boolean(activity?.provider_waiting);
   const providerElapsed = activity?.provider_started_at
@@ -520,7 +516,7 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
     {restoring && <p className="batch-hint" role="status">正在恢复上次编辑；可以继续切换页面。</p>}
     {slowResources && <p className="batch-hint" role="status">资料还在读取，不影响继续操作。</p>}
     {resourceFailures.length > 0 && <div className="batch-hint" role="status">{resourceFailures.map(([name, message]) => <p key={name}>{name}：{message}</p>)}</div>}
-    {visualFlow && <CreationSteps labels={flowSteps.map(item => item.label)} current={Math.max(0, flowSteps.findIndex(item => item.step === (flowStep === 1 ? 2 : flowStep)))} disabled={flowSteps.map(item => !item.enabled || submitting)} onChange={index => setFlowView(flowSteps[index].step)} />}
+    {visualFlow && <MixSteps labels={["放素材", "挑文案", "等成片", "看成片"]} current={mixStep} enabled={[flowSteps[0].enabled, flowSteps[1].enabled, flowSteps[2].enabled, flowSteps[2].enabled].map(value => value && !submitting)} onChange={index => setFlowView([0, 2, 3, 3][index])} />}
     <details className="batch-workspace-tools"><summary>当前任务</summary><div className="batch-toolbar"><label>选择任务<select aria-label="当前批次" value={batch?.batch_id || ""} disabled={busy || saving || restoring} onChange={(e) => { const id = e.target.value; if (id) void run(async () => { await draftQueue.flush(); const owner = ++draftOwner.current; const next = await callBatch<Batch>("get", { batch_id: id }); if (mounted.current && owner === draftOwner.current) load(next); }); }}><option value="">新任务</option>{batch?.archived && <option value={batch.batch_id}>{batchLabel(batch)} · 已归档</option>}{batches.map((b) => <option value={b.batch_id} key={b.batch_id}>{batchLabel(b)} · {batchStatus[b.status] || b.status} · {b.completed_count || 0}/{b.target_count || "—"}</option>)}</select></label>{moreBatches && <button disabled={busy || saving} onClick={() => void run(() => refreshBatches(batches.length))}>加载更早记录</button>}
       {batch && !batch.archived && <button disabled={locked || batch.status === "outcome_unknown"} title="仅从批次列表移除，保留本地素材和成片" onClick={() => void run(async () => {
         // An edit still waiting for its save lands before the archive, never after it: a
@@ -538,9 +534,11 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
     {batch?.archived && <p className="batch-notice" role="status">这是已归档的批次，可查看记录、预览与导出已有成片。</p>}
     {submitting && !batch && <section className="batch-progress" role="status">正在提交素材并启动任务…</section>}
     {batch && (!visualFlow || running || paused || submitting || failedState) && <section className={`batch-progress${failedState ? " is-attention" : ""}`}>
-      <div className="batch-progress-illustration" aria-hidden="true"><img className="batch-progress-motion" src={ended ? activityStill : activityArt} alt="" /><img className="batch-progress-still" src={activityStill} alt="" /></div>
+      <MixProgress percent={ended ? (completed ? 100 : progressPercent) : progressPercent} phase={submitting ? "analysis" : activity?.phase} finished={ended && batch.status === "completed"} stopped={!running && !submitting && !ended}
+        title={ended ? (batch.status === "completed" ? "本次制作已完成" : "本次任务已结束") : submitting ? "正在提交任务" : activity?.phase_label || (running ? "正在处理" : batchStatus[batch.status] || "处理中")}
+        lines={[scriptFlow && !batch.script_confirmation ? `已有 ${options.length} 份文案` : `已做好 ${completed} / ${batch.target_count || "待定"} 条`]}
+        rows={batch.script_confirmation ? shownCandidates.map((c, index): MixRow => ({ key: c.candidate_id, label: `第 ${index + 1} 条`, state: c.status === "completed" ? "done" : ["failed", "skipped"].includes(c.status) ? "failed" : running && activity?.item_index === index + 1 && makingPhase ? "now" : "wait" })) : []} />
       <div className="batch-progress-content">
-        <div className="batch-progress-heading"><div><strong>{ended ? (batch.status === "completed" ? "本次制作已完成" : "本次任务已结束") : submitting ? "正在提交任务" : activity?.phase_label || (running ? "正在处理" : batchStatus[batch.status] || "处理中")}</strong><span>{scriptFlow && !batch.script_confirmation ? `已有 ${options.length} 份文案` : `已完成 ${completed} / ${batch.target_count || "待定"} 条`}</span></div>{!ended && progressPercent !== null && <b>{progressPercent}%</b>}</div>
         {ended && <p className="batch-progress-message" role="status">{completed ? "已完成的作品可以查看和导出。" : "本次没有产出成片。"}请先查看下方原因，再决定是否调整素材和文案；软件不会自动重试。</p>}
         {!ended && (submitting || activity) && <div className="batch-live-progress">
           <p className="batch-progress-message" role="status" aria-live="polite" aria-atomic="true">{submitting ? "正在保存素材并启动任务…" : activity?.message}</p>
@@ -565,9 +563,10 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
         <button type="button" data-batch-action="voice-resolve" className="batch-primary" disabled={busy || submitting || Boolean(recoveryHeld)} onClick={() => void recoverVoice()}>确认风险，仅重试未完成配音</button>
       </div>}
       {(paused || (batch.status === "outcome_unknown" && !running)) && !batch.archived && <div className="batch-abandon">
-        <strong>这条视频卡住了？可以放弃它，直接新建一条</strong>
-        <label><input type="checkbox" checked={abandonConfirmed} onChange={(event) => setAbandonConfirmed(event.target.checked)} />确认放弃这条视频（已做好的成片会保留，不会重新提交，也不会重复扣费）</label>
-        <button type="button" data-batch-action="abandon" className="batch-primary" disabled={busy || submitting || !abandonConfirmed} onClick={() => void abandonBatch()}>放弃这条，新建视频</button>
+        <span className="batch-abandon-icon" aria-hidden="true">!</span>
+        <div><strong>这条视频卡住了？</strong><span>{abandonConfirmed ? "确定放弃吗？已做好的成片会保留，不会重新提交，也不会重复扣费。" : "可以直接放弃，换一条新的接着做。"}</span></div>
+        {abandonConfirmed ? <><button type="button" onClick={() => setAbandonConfirmed(false)}>先不放弃</button><button type="button" data-batch-action="abandon" className="batch-primary" disabled={busy || submitting} onClick={() => void abandonBatch()}>确定放弃，新建视频</button></>
+          : <button type="button" className="batch-primary" disabled={busy || submitting} onClick={() => setAbandonConfirmed(true)}>放弃这条，新建视频</button>}
       </div>}
       {batch.task_id && (running || paused) && batch.status !== "outcome_unknown" && <>{resumeHeld && <p className="batch-hint" role="status">{resumeHeld}</p>}<button disabled={busy || Boolean(resumeHeld)} title={resumeHeld || undefined} onClick={() => void run(async () => {
         const action = paused ? "resume" : "pause";
@@ -651,7 +650,7 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
         <footer><small>预计 {Math.round((option.estimated_duration_ms || option.duration_ms || 0) / 1000)} 秒 · 第 {option.revision} 版</small><button disabled={locked} onClick={() => setEditing(option)}>修改正文</button></footer>
       </article>)}</div>}
       {(!visualFlow || flowStep === 2) && <>
-      {modern && chosen.length === 1 && <label className="batch-direction-count">这个方向做几条<input aria-label="这个方向做几条" type="number" min={1} max={300} value={selectedCounts[chosen[0].candidate_id]} disabled={locked || !!batch?.script_confirmation || dirty} onChange={(event) => setSelectedCounts({ [chosen[0].candidate_id]: event.target.value })} />条</label>}
+      {modern && chosen.length === 1 && <div className="batch-direction-count"><strong>做几条？</strong><MixCount value={selectedCounts[chosen[0].candidate_id] || ""} disabled={locked || !!batch?.script_confirmation || dirty} onChange={(value) => setSelectedCounts({ [chosen[0].candidate_id]: value })} /></div>}
       <p className="batch-hint" aria-label="制作设置摘要">声音：{voiceSummary} · 配乐：{musicSummary} · 字幕：主题常驻</p>
       <details className="batch-advanced"><summary>更多设置</summary><BatchSoundSettings settings={settings} locked={locked || !!batch?.script_confirmation} onChange={changeSoundSettings} refreshToken={catalog} /><label>品牌<select value={settings.brand_profile_id || ""} disabled={locked || !!batch?.script_confirmation} onChange={(event) => changeSoundSettings({ ...settings, brand_profile_id: event.target.value || undefined })}><option value="">默认品牌</option>{brands.map((brand) => <option key={brand.brandProfileId} value={brand.brandProfileId}>{brand.name}</option>)}</select></label>
       {!visualFlow && <p className="batch-hint">先确认完整文案；制作时自动安排并检查镜头，再配音生成视频。</p>}
@@ -665,7 +664,8 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
     </section>}
     {showResults && batch && completed > 0 && <div className="batch-output-row"><p>{batch.export_ready ? `已自动保存 ${batch.exported_count} 条成片` : "已完成的作品可以保存到成片文件夹"}</p><button disabled={busy} onClick={() => void run(async () => { await callBatch("open-output", { batch_id: batch.batch_id }); setBatch(await callBatch<Batch>("get", { batch_id: batch.batch_id })); })}>打开成片文件夹</button>{batch.export_error && <p className="batch-notice" role="status">视频已制作完成，但保存遇到问题。点击上方按钮可重新保存，无需重新制作。</p>}</div>}
     {showResults && !!skippedJobs.length && <section className="batch-skipped" aria-label="未完成的作品"><h2>有 {skippedJobs.length} 条未能完成</h2><p>{ended ? "本次任务已结束，以下作品没有生成成片。" : "以下作品已跳过，不会阻塞其他作品。"}</p><ul>{skippedJobs.map((job) => <li key={job.production_index}><strong>第 {job.production_index} 条：{job.error || "当前素材未能支持这条作品。"}</strong><p>{/配音.*超过.*时长/.test(job.error || "") ? "下一步：缩短口播文案，或补充符合文案的可用画面，再新建视频。直接重试相同素材与文案仍可能失败。" : /没有得到符合|没有.*候选|素材未能支持/.test(job.error || "") ? "下一步：补充能展示该卖点的素材，或调整创作方向使其符合现有画面，再新建视频。" : "下一步：检查对应素材、文案及上面的错误信息；不清楚原因时可点击“反馈这个问题”，确认后再决定是否重试。"}</p></li>)}</ul><p>调整素材和文案不会自动开始制作；再次生成文案、配音或视频可能计费，请确认后操作。</p></section>}
-    {showResults && !!shownCandidates.length && <section className="batch-results"><header><div><h2>{batch?.approved || (batch?.target_count || 0) <= 3 ? "本批作品" : "样片与待制作方案"}</h2><p>已完成的作品可立即预览、调整和导出。</p></div>{batch?.status === "awaiting_confirmation" && <button className="batch-primary" data-batch-action="continue" disabled={locked || dirty} onClick={() => void start("continue")}>满意，继续整批（共 {batch.target_count} 条）</button>}</header>
+    {visualFlow && flowStep === 3 && completed > 0 && <MixPlayer videos={shownCandidates.filter(c => c.status === "completed" && c.generated_video_id)} onOpenFolder={batch ? () => void run(async () => { await callBatch("open-output", { batch_id: batch.batch_id }); setBatch(await callBatch<Batch>("get", { batch_id: batch.batch_id })); }) : undefined} />}
+    {showResults && !!shownCandidates.length && (!visualFlow || batch?.status === "awaiting_confirmation" || shownCandidates.some((c) => c.error && !c.generated_video_id && c.status !== "rendering")) && <section className="batch-results"><header><div><h2>{batch?.approved || (batch?.target_count || 0) <= 3 ? "本批作品" : "样片与待制作方案"}</h2><p>已完成的作品可立即预览、调整和导出。</p></div>{batch?.status === "awaiting_confirmation" && <button className="batch-primary" data-batch-action="continue" disabled={locked || dirty} onClick={() => void start("continue")}>满意，继续整批（共 {batch.target_count} 条）</button>}</header>
       <div className={`batch-result-grid${shownCandidates.length === 1 ? " is-single" : ""}`}>{shownCandidates.slice(0, visibleCandidates).map((c, index) => <article className="batch-result" key={c.candidate_id}>{c.generated_video_id ? <video controls controlsList="nodownload" preload={shownCandidates.length === 1 ? "metadata" : "none"} poster={shownCandidates.length === 1 ? undefined : videoUrl(c.generated_video_id, "thumbnail")} src={videoUrl(c.generated_video_id)} /> : <div className="batch-result-placeholder"><span>{String(index + 1).padStart(2, "0")}</span><p>{batchStatus[c.status] || "待制作"}</p></div>}<div className="batch-result-body"><h3>{c.title}</h3><p>{c.angle}</p><small>使用 {new Set((c.actual_shots || c.shots).map((s) => s.asset_id)).size} 个原素材 · {(c.actual_shots || c.shots).length} 个镜头 · {c.generated_video_id ? "成片" : "预计"} {((c.duration_ms || c.shots.reduce((n, s) => n + s.source_end_ms - s.source_start_ms, 0)) / 1000).toFixed(1)} 秒</small>{c.music_status === "none" && <p>本条未配乐</p>}{c.error && c.status !== "rendering" && <p className="batch-notice">{c.error}</p>}{shownCandidates.length === 1 && <p className="batch-result-copy">{c.narration}</p>}<details open={!visualFlow && !c.generated_video_id}><summary>{shownCandidates.length === 1 ? "查看镜头安排" : "完整口播与镜头安排"}</summary>{c.review_mode === "follow_script" && <p className="batch-hint">按文案生成，未做画面事实核对</p>}{shownCandidates.length !== 1 && <p>{c.narration}</p>}<AdLawHint text={c.narration} /><ol>{(c.actual_shots || c.shots).map((s) => <li key={s.segment_id}>{s.description || materialLabel(batch, s.asset_id)}（{(s.source_start_ms / 1000).toFixed(1)}–{(s.source_end_ms / 1000).toFixed(1)} 秒）</li>)}</ol></details>{!scriptFlow && <button disabled={locked} onClick={() => setEditing(c)}>调整这一条</button>}{c.generated_video_id && <VideoDownloadButton generatedId={c.generated_video_id} />}</div></article>)}</div>{shownCandidates.length > visibleCandidates && <button onClick={() => setVisibleCandidates(visibleCandidates + 12)}>显示更多作品</button>}
     </section>}
     {visualFlow && flowStep === 3 && !shownCandidates.length && <section className="batch-flow-empty"><Clapperboard size={44} strokeWidth={1.3} /><h2>{batch?.archived ? "这个批次还没有成片" : running ? "视频正在制作中" : "暂时没有成片"}</h2><p>{batch?.archived ? "点击上方“新建视频”开始新的创作。" : ended ? "请按上方未完成原因调整素材或文案，再点击“新建视频”。" : "制作完成后，就可以在这里播放和保存。"}</p></section>}

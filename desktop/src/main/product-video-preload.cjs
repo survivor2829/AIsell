@@ -12,9 +12,19 @@ function createProductVideoApi(ipcRenderer) {
     list: () => invoke("list"),
     get: (id) => invoke("get", { id }),
     start: (id) => invoke("start", { id, clickToken: startClick() }),
+    // 「生成视频」 in one click: the click token is taken now, before the plan is saved, so the
+    // start that follows is still bound to this click. A failed start returns the saved task too.
+    createAndStart: async (payload) => {
+      const clickToken = startClick();
+      const created = await invoke("create", payload);
+      if (!created?.ok) return created;
+      const started = await invoke("start", { id: created.data.id, clickToken });
+      return started?.ok ? started : { ...started, task: created.data };
+    },
     retryShot: (id) => invoke("retry-shot", { id, clickToken: retryClick() }),
     refresh: (id) => invoke("refresh", { id }),
     media: (id) => invoke("media", { id }),
+    shotMedia: (id, index) => invoke("shot-media", { id, index }),
     export: (id) => invoke("export", { id }),
     exportSource: (id) => invoke("export-source", { id })
   };

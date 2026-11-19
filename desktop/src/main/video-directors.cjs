@@ -1,17 +1,23 @@
 const { VERSION: DIRECTOR_VERSION, productDirection } = require('./skills/cleaning-video-director/rules.cjs');
 const { DIRECT_MODEL } = require('./bailian-video-provider.cjs');
 
+// The nine scenes of the scene material library (server/maintenance/materials.py), in its order;
+// existing ids are kept so earlier tasks still read. 「仓储」 is now part of 工厂仓储, and the neutral
+// product space is only the fallback when nothing is chosen or supported.
 const SCENES = Object.freeze([
-  { id: "office", name: "办公楼", description: "真实办公楼大堂或走廊，商业摄影光线" },
+  { id: "community", name: "小区", description: "真实小区道路与出入口，居民活动自然，背景不喧宾夺主" },
   { id: "market", name: "商超", description: "商超货架之间的真实通道，不出现可识别商标" },
-  { id: "warehouse", name: "仓储", description: "小型仓储货架通道，周转箱和立柱体现尺度" },
-  { id: "hotel", name: "酒店", description: "酒店公共走廊，无住客及店名" },
-  { id: "studio", name: "产品展示空间", description: "简洁中性的产品展示空间，产品按真实体量摆放" },
-  { id: "community", name: "小区外围", description: "真实小区道路与出入口，居民活动自然，背景不喧宾夺主" },
-  { id: "school", name: "学校", description: "真实学校公共区域，避开未成年人面部和校名标识" },
   { id: "hospital", name: "医院", description: "真实医院公共区域，避开患者、医护身份和院方标识" },
-  { id: "factory", name: "厂区", description: "真实厂区通道，留出符合设备体量的作业空间" }
+  { id: "school", name: "学校", description: "真实学校公共区域，避开未成年人面部和校名标识" },
+  { id: "hotel", name: "酒店", description: "酒店公共走廊，无住客及店名" },
+  { id: "office", name: "商写", description: "真实写字楼大堂或走廊，商业摄影光线" },
+  { id: "station", name: "场站", description: "真实车站、地铁站或客运站的公共大厅与通道，避开可识别站名和乘客面部" },
+  { id: "factory", name: "工厂仓储", description: "真实厂区通道或仓储货架通道，周转箱和立柱体现尺度，留出符合设备体量的作业空间" },
+  { id: "facilities", name: "公共配套", description: "真实地下车库、食堂或公共卫生间外的通道，避开人物面部和可识别标识" }
 ]);
+const FALLBACK_SCENE = Object.freeze({ id: "studio", name: "产品展示空间", description: "简洁中性的产品展示空间，产品按真实体量摆放" });
+// Ids used before the nine library scenes, still accepted from older callers.
+const RETIRED_SCENES = Object.freeze({ warehouse: "factory" });
 const SURFACES = Object.freeze([
   { id: "marble", name: "大理石" }, { id: "terrazzo", name: "水磨石" },
   { id: "tile", name: "瓷砖" }, { id: "concrete", name: "水泥地" },
@@ -38,7 +44,7 @@ function selected(rows, id, field) {
 }
 
 const FACT_LIMIT = 12000;
-const SCENE_WORDS = { office: /办公|写字楼|大堂/u, market: /商超|超市|卖场|零售/u, warehouse: /仓储|仓库/u, hotel: /酒店|宾馆/u, school: /学校|校园/u, hospital: /医院|医疗/u, community: /小区|社区|户外/u, factory: /工厂|厂区|车间/u };
+const SCENE_WORDS = { office: /办公|写字楼|商写|大堂/u, market: /商超|超市|卖场|零售/u, hotel: /酒店|宾馆/u, school: /学校|校园/u, hospital: /医院|医疗/u, community: /小区|社区|户外/u, factory: /工厂|厂区|车间|仓储|仓库/u, station: /场站|车站|地铁|高铁|机场|客运/u, facilities: /车库|停车场|食堂|茶水间|卫生间/u };
 const SURFACE_WORDS = { tile: /瓷砖|地砖/u, epoxy: /环氧/u, marble: /大理石/u, terrazzo: /水磨石/u, concrete: /水泥|混凝土/u, asphalt: /沥青/u };
 const DIRT_WORDS = { dust: /灰尘|积灰|粉尘|尘土|推尘|吸尘|除尘/u, grit: /砂砾|沙砾|砂粒|沙粒|细砂|细沙/u, footprints: /脚印|鞋印|泥灰|泥水/u, paper: /纸屑|碎纸/u, water: /积水|水渍|吸水/u, leaves: /落叶/u };
 function bounded(value, limit, name) {
@@ -57,9 +63,11 @@ function planVideo(input) {
   const denied = words => restrictions.some(line => /不支持|不适用|不能|不可|禁止|不具备|无法|不是/u.test(line) && words?.test(line));
   const cleaningProduct = /清洁机器人|清扫机器人|扫地机器人|洗地机|扫地机|清扫机|清扫车|扫地车|扫路机|洗扫车|清洁设备|扫洗|吸尘器|清洁宽度|洗地|推尘|扫吸/iu.test(affirmative + productName);
   const supportedScenes = SCENES.filter((row) => SCENE_WORDS[row.id]?.test(affirmative) && !denied(SCENE_WORDS[row.id]));
-  const requested = Array.isArray(input.sceneIds) && input.sceneIds.length ? input.sceneIds : input.sceneId ? [input.sceneId] : [];
-  if (requested.length > 3 || requested.some((id) => !SCENES.some((row) => row.id === id))) throw Object.assign(new Error('最多选择三个有效场景。'), { code: 'product_video_invalid_option' });
-  const scenes = requested.length ? [...new Set(requested)].map((id) => selected(SCENES, id, '场景')) : supportedScenes.length ? supportedScenes.slice(0, 3) : [selected(SCENES, 'studio', '场景')];
+  const asked = Array.isArray(input.sceneIds) && input.sceneIds.length ? input.sceneIds : input.sceneId ? [input.sceneId] : [];
+  const requested = [...new Set(asked.map((id) => Object.hasOwn(RETIRED_SCENES, id) ? RETIRED_SCENES[id] : id).filter(Boolean))];
+  const choice = (id) => id === FALLBACK_SCENE.id ? FALLBACK_SCENE : selected(SCENES, id, '场景');
+  if (requested.length > 3 || requested.some((id) => id !== FALLBACK_SCENE.id && !SCENES.some((row) => row.id === id))) throw Object.assign(new Error('最多选择三个有效场景。'), { code: 'product_video_invalid_option' });
+  const scenes = requested.length ? [...new Set(requested)].map(choice) : supportedScenes.length ? supportedScenes.slice(0, 3) : [FALLBACK_SCENE];
   const supportedSurfaces = SURFACES.filter(row => SURFACE_WORDS[row.id]?.test(affirmative) && !denied(SURFACE_WORDS[row.id]));
   const supportedSoils = DIRT.filter(row => DIRT_WORDS[row.id]?.test(affirmative) && !denied(DIRT_WORDS[row.id]));
   const surfaces = input.surfaceId ? [selected(SURFACES, input.surfaceId, '地面材质')] : supportedSurfaces;
@@ -84,8 +92,8 @@ function planVideo(input) {
   let start = 0;
   const shots = durations.map((seconds, index) => {
     const scene = scenes[index % scenes.length], cleaning = evidence && allowedScene(scene);
-    const surface = (scene.id === 'warehouse' ? surfaces.find((s) => s.id === 'epoxy') : surfaces.find((s) => s.id === 'tile')) || surfaces[0];
-    const soil = soils.find((s) => s.id === ({ office: 'footprints', market: 'paper', warehouse: 'dust' }[scene.id])) || soils[index % Math.max(soils.length, 1)];
+    const surface = (scene.id === 'factory' ? surfaces.find((s) => s.id === 'epoxy') : surfaces.find((s) => s.id === 'tile')) || surfaces[0];
+    const soil = soils.find((s) => s.id === ({ office: 'footprints', market: 'paper', factory: 'dust' }[scene.id])) || soils[index % Math.max(soils.length, 1)];
     const last = index === durations.length - 1;
     const narration = cleaning ? `${scene.name}的${soil.name}，看它走过后的地面。` : '从这个角度，看看产品的外形与细节。';
     const ending = last ? `${productName}。发来现场情况，一起看看。` : '';
