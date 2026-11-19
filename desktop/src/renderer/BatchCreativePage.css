@@ -342,3 +342,126 @@
 .batch-abandon label{display:flex;gap:10px;align-items:flex-start;font-size:15px;line-height:1.6;color:#4b3a2c;cursor:pointer}
 .batch-abandon input{width:18px;height:18px;margin-top:3px;flex:none}
 .batch-abandon button{justify-self:start}
+
+/* 线索视频混剪 · 方案A (2026-11-18): cards in the same tint as the role background, big steps,
+   the making ring with four stages, 「做几条」 chips, one-at-a-time player. */
+.is-visual-flow { --mix-accent: var(--brand-red); --mix-surface: var(--workspace-role-surface, #faebef); --mix-card: color-mix(in srgb, var(--mix-surface) 35%, white); --mix-line: color-mix(in srgb, var(--mix-accent) 18%, transparent); --mix-soft: color-mix(in srgb, var(--mix-accent) 9%, white); }
+.is-visual-flow .batch-visual-start, .is-visual-flow .batch-script-section, .is-visual-flow .batch-progress, .is-visual-flow .batch-flow-empty, .is-visual-flow .batch-results { background: var(--mix-card); border: 1.5px solid var(--mix-line); border-radius: 22px; box-shadow: 0 6px 24px color-mix(in srgb, var(--mix-accent) 9%, transparent); padding: 22px 24px; }
+.is-visual-flow .batch-brief-rail { border-left-color: var(--mix-line); }
+.is-visual-flow .batch-step-action { border-top-color: var(--mix-line); }
+.is-visual-flow .batch-page-header h1 { font-size: 28px; }
+.mix-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 0 0 18px; }
+.batch-page .mix-steps button { display: flex; align-items: center; gap: 12px; height: 64px; padding: 0 16px; border-radius: 18px; border: 1.5px solid var(--mix-line); background: color-mix(in srgb, var(--mix-surface) 30%, white); font-size: 19px; font-weight: 900; color: #9ca3af; }
+.mix-step-icon { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center; flex: none; background: var(--mix-soft); color: var(--mix-accent); }
+.batch-page .mix-steps button.is-done { color: #1f2937; }
+.mix-steps .is-done .mix-step-icon, .mix-steps .is-on .mix-step-icon { background: var(--mix-accent); color: #fff; }
+.batch-page .mix-steps button.is-on { border: 2.5px solid var(--mix-accent); background: color-mix(in srgb, var(--mix-accent) 12%, white); color: #1f2937; }
+.batch-page .mix-steps button:disabled { opacity: 1; cursor: default; }
+.is-visual-flow .batch-progress { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.is-visual-flow .batch-progress.is-attention { background: var(--mix-card); }
+.mix-progress { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 26px; align-items: center; }
+.mix-ring { position: relative; width: 220px; height: 220px; }
+.mix-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.mix-ring circle { fill: none; stroke-width: 18; }
+.mix-ring-track { stroke: color-mix(in srgb, var(--mix-accent, var(--brand-red)) 14%, white); }
+.mix-ring-value { stroke: var(--mix-accent, var(--brand-red)); stroke-linecap: round; transition: stroke-dasharray .6s; }
+html[data-beat="1"] .mix-ring-value.is-waiting { opacity: .5; }
+.mix-ring > div { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: 2px; }
+.mix-ring b { font-size: 48px; line-height: 1.1; color: var(--mix-accent, var(--brand-red)); font-variant-numeric: tabular-nums; }
+.mix-ring span { font-size: 15px; color: #4b5563; }
+.mix-progress-side { display: grid; gap: 14px; min-width: 0; }
+.mix-progress-title { font-size: 22px; }
+.mix-stages { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.mix-stages > div { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-radius: 16px; font-size: 17px; font-weight: 800; background: color-mix(in srgb, var(--mix-accent, var(--brand-red)) 7%, white); color: #9ca3af; }
+.mix-stages > div > span { width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center; flex: none; background: #fff; color: var(--mix-accent, var(--brand-red)); }
+.mix-stages em { margin-left: auto; font-style: normal; font-size: 15px; }
+.mix-stages .is-done, .mix-stages .is-now { color: #1f2937; background: color-mix(in srgb, var(--mix-accent, var(--brand-red)) 16%, white); }
+.mix-stages .is-done > span, .mix-stages .is-now > span { background: var(--mix-accent, var(--brand-red)); color: #fff; }
+.mix-stages .is-now em { color: var(--mix-accent, var(--brand-red)); }
+.mix-rows { display: grid; gap: 9px; }
+.mix-rows > div { display: grid; grid-template-columns: 64px minmax(0, 1fr) 64px; gap: 10px; align-items: center; font-size: 16px; font-weight: 800; }
+.mix-rows em { font-style: normal; text-align: right; color: #9ca3af; }
+.mix-rows .is-done em { color: #16a34a; } .mix-rows .is-now em { color: var(--mix-accent, var(--brand-red)); } .mix-rows .is-failed em { color: #c2410c; }
+.mix-rows i { height: 13px; border-radius: 999px; background: color-mix(in srgb, var(--mix-accent, var(--brand-red)) 12%, white); overflow: hidden; }
+.mix-rows i b { display: block; height: 100%; width: 0; border-radius: 999px; background: var(--mix-accent, var(--brand-red)); }
+.mix-rows .is-done i b { width: 100%; } .mix-rows .is-now i b { width: 50%; } html[data-beat="1"] .mix-rows .is-now i b { opacity: .55; } .mix-rows .is-failed i b { width: 100%; background: #f5c48f; }
+.is-visual-flow .batch-abandon { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 14px; padding: 16px 18px; border-radius: 18px; background: #fff7ed; border: 1.5px solid #f5c48f; }
+.batch-abandon-icon { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; flex: none; background: #f08a00; color: #fff; font-size: 24px; font-weight: 900; }
+.batch-abandon > div { display: grid; gap: 3px; flex: 1; min-width: 200px; }
+.batch-abandon > div strong { font-size: 18px; color: #1f2937; } .batch-abandon > div span { font-size: 14px; color: #6b7280; }
+.batch-page .batch-abandon button { height: 48px; padding: 0 20px; border-radius: 14px; font-size: 17px; font-weight: 800; }
+.batch-page .batch-direction-count { display: grid; gap: 10px; margin: 16px 0 6px; }
+.batch-direction-count > strong { font-size: 19px; }
+.mix-count { display: flex; flex-wrap: wrap; gap: 12px; }
+.batch-page .mix-count button, .mix-count label { flex: 1 1 110px; height: 60px; border-radius: 16px; border: 1.5px solid color-mix(in srgb, var(--mix-accent, var(--brand-red)) 25%, transparent); background: #fff; font-size: 20px; font-weight: 900; color: #1f2937; }
+.batch-page .mix-count button.is-on { border: 2.5px solid var(--mix-accent, var(--brand-red)); background: color-mix(in srgb, var(--mix-accent, var(--brand-red)) 12%, white); color: var(--mix-accent, var(--brand-red)); }
+.mix-count label { display: flex; align-items: center; justify-content: center; gap: 6px; border-style: dashed; color: var(--mix-accent, var(--brand-red)); font-size: 17px; }
+.mix-count label.is-on { border: 2.5px solid var(--mix-accent, var(--brand-red)); background: color-mix(in srgb, var(--mix-accent, var(--brand-red)) 12%, white); }
+.batch-page .mix-count input { width: 64px; height: 40px; text-align: center; font-size: 19px; font-weight: 900; padding: 0 4px; }
+.mix-player { display: grid; grid-template-columns: minmax(240px, 340px) minmax(0, 1fr); gap: 26px; align-items: start; margin: 18px 0; padding: 22px 24px; background: var(--mix-card, #fff); border: 1.5px solid var(--mix-line, #eee); border-radius: 22px; box-shadow: 0 6px 24px color-mix(in srgb, var(--mix-accent, var(--brand-red)) 9%, transparent); }
+.mix-player > video { width: 100%; aspect-ratio: 9 / 16; border-radius: 20px; background: #111; box-shadow: 0 12px 30px rgba(0,0,0,.18); }
+.mix-player-side { display: grid; gap: 14px; min-width: 0; }
+.mix-player-nav { display: flex; align-items: center; gap: 14px; font-size: 22px; }
+.batch-page .mix-player-nav button { width: 54px; height: 54px; padding: 0; border-radius: 50%; display: grid; place-items: center; color: var(--mix-accent, var(--brand-red)); border: 1.5px solid var(--mix-line, #ddd); }
+.mix-player-dots { display: flex; gap: 6px; flex-wrap: wrap; }
+.batch-page .mix-player-dots button { width: 11px; height: 11px; padding: 0; border: 0; border-radius: 999px; background: color-mix(in srgb, var(--mix-accent, var(--brand-red)) 20%, white); }
+.batch-page .mix-player-dots button.is-on { width: 28px; background: var(--mix-accent, var(--brand-red)); }
+.mix-player-side h3 { font-size: 20px; margin: 0; }
+.mix-player-copy { margin: 0; font-size: 17px; line-height: 1.75; color: #374151; max-height: 190px; overflow: auto; white-space: pre-wrap; }
+.mix-player-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.batch-page .mix-player-actions button { height: 48px; padding: 0 20px; border-radius: 14px; font-size: 17px; font-weight: 800; }
+.mix-player-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 10px; }
+.batch-page .mix-player-strip button { position: relative; padding: 0; aspect-ratio: 9 / 16; border-radius: 12px; overflow: hidden; border: 2px solid transparent; }
+.batch-page .mix-player-strip button.is-on { border: 3px solid var(--mix-accent, var(--brand-red)); }
+.mix-player-strip img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.mix-player-strip span { position: absolute; left: 5px; bottom: 5px; padding: 1px 7px; border-radius: 999px; background: rgba(0,0,0,.6); color: #fff; font-size: 12px; font-weight: 800; }
+@media (max-width: 900px) { .mix-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); } .mix-progress, .mix-player { grid-template-columns: 1fr; justify-items: center; } }
+.is-visual-flow .batch-progress { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.is-visual-flow .batch-progress > :not(button) { flex: 1 1 100%; }
+.is-visual-flow .batch-progress-track { display: none; }
+.is-visual-flow .batch-progress > button { height: 46px; padding: 0 20px; border-radius: 14px; font-size: 16px; font-weight: 800; }
+.is-visual-flow .batch-step-action .batch-primary, .is-visual-flow .batch-script-confirm .batch-primary { height: 60px; padding: 0 30px; border-radius: 16px; font-size: 20px; font-weight: 900; box-shadow: 0 8px 18px color-mix(in srgb, var(--mix-accent) 26%, transparent); }
+.is-visual-flow .batch-script-confirm > div > p:first-child { font-size: 18px; font-weight: 800; }
+.batch-page .mix-player-actions > :first-child button, .batch-page .mix-player-actions > button:first-child { background: var(--mix-accent, var(--brand-red)); color: #fff; border-color: transparent; }
+
+/* Round 3 (2026-11-18, user: 少留白、字加大加粗、去掉非必要小字): the brief rail fills the height of the
+   materials, labels and fields are big and bold, and the finished-video card has no empty half. */
+.is-visual-flow .batch-start-layout { align-items: stretch; }
+.is-visual-flow .batch-brief-rail { display: flex; flex-direction: column; gap: 16px; }
+.is-visual-flow .batch-brief-rail .batch-creative-brief { flex: 1; display: flex; flex-direction: column; gap: 22px; }
+.is-visual-flow .batch-brief-rail .batch-creative-brief label > span:first-child { display: flex; align-items: center; gap: 8px; font-size: 22px; font-weight: 900; color: #1f2937; }
+.is-visual-flow .batch-brief-rail .batch-field-note { padding: 2px 10px; border-radius: 999px; background: color-mix(in srgb, var(--mix-accent) 12%, white); color: var(--mix-accent); font-size: 14px; font-weight: 800; margin: 0; }
+.is-visual-flow .batch-brief-rail input:not([type=checkbox]):not([type=radio]) { height: 56px; font-size: 18px; font-weight: 700; border-radius: 14px; padding: 0 16px; }
+.is-visual-flow .batch-brief-rail .batch-brief-field { flex: 1; display: flex; flex-direction: column; gap: 12px; }
+.is-visual-flow .batch-brief-rail .batch-brief-field > label:first-child { flex: 1; }
+.is-visual-flow .batch-brief-rail textarea { flex: 1; min-height: 260px; font-size: 18px; font-weight: 600; line-height: 1.8; border-radius: 14px; padding: 14px 16px; }
+.is-visual-flow .batch-brief-rail .batch-provided-script span { font-size: 17px; font-weight: 800; color: #374151; }
+.is-visual-flow .batch-brief-rail .batch-provided-script input { width: 20px; height: 20px; }
+.is-visual-flow .batch-brief-rail .batch-brief-optional summary { font-size: 17px; font-weight: 800; }
+.is-visual-flow .batch-minimum-duration { font-size: 18px; font-weight: 900; }
+.is-visual-flow .batch-minimum-duration input { height: 52px; font-size: 18px; font-weight: 800; }
+.is-visual-flow .batch-brief-rail > .batch-hint { font-size: 15px; font-weight: 700; }
+.is-visual-flow .batch-material-board header h2 { font-size: 22px; font-weight: 900; }
+.is-visual-flow .batch-material-board header span { font-size: 16px; font-weight: 700; }
+.is-visual-flow .batch-material-board footer button { font-size: 16px; font-weight: 800; }
+.is-visual-flow .batch-material-name { font-size: 15px; font-weight: 700; }
+.batch-page.is-visual-flow .batch-step-action > span { font-size: 17px; font-weight: 800; color: #374151; }
+.is-visual-flow .batch-collection-picker summary { font-size: 16px; font-weight: 800; }
+/* Finished videos: the video sets the height, the words fill the side, nothing left empty. */
+.mix-player { grid-template-columns: minmax(260px, 360px) minmax(0, 1fr); align-items: stretch; }
+.mix-player-side { align-content: start; gap: 18px; }
+.mix-player-nav { font-size: 26px; font-weight: 900; }
+.mix-player-side h3 { font-size: 28px; font-weight: 900; }
+.mix-player-copy { font-size: 20px; font-weight: 700; line-height: 1.8; max-height: none; color: #1f2937; padding: 18px 20px; border-radius: 18px; background: #fff; border: 1.5px solid var(--mix-line, #eee); }
+.batch-page .mix-player-actions button { height: 58px; padding: 0 26px; font-size: 19px; border-radius: 16px; }
+.mix-player-strip { grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); }
+.mix-player-more { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.mix-player-more > div { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-radius: 16px; background: color-mix(in srgb, var(--mix-accent, var(--brand-red)) 8%, white); font-size: 17px; font-weight: 900; color: #374151; }
+.mix-player-more > div > span { width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center; background: #fff; color: var(--mix-accent, var(--brand-red)); flex: none; }
+.mix-player { grid-template-columns: minmax(240px, 300px) minmax(0, 1fr); }
+.mix-player-more { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+.mix-player-more > div { flex-direction: column; justify-content: center; gap: 10px; min-height: 130px; font-size: 19px; text-align: center; }
+.mix-player-more > div > span { width: 52px; height: 52px; border-radius: 16px; }
+.is-visual-flow .batch-progress-message { font-size: 17px; font-weight: 800; color: #1f2937; }
+.is-visual-flow .batch-progress-meta { font-size: 15px; font-weight: 700; }
+.is-visual-flow .batch-output-row:not(:has(.batch-notice)) { display: none; }

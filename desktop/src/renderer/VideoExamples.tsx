@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, createElement } from 'react';
-import { ChevronDown, ChevronUp, PlayCircle, X, Upload, Sparkles, Film } from 'lucide-react';
+import { ArrowRight, ChevronDown, ChevronUp, PlayCircle, X, Upload, Sparkles, Film, Image as ImageIcon, Video } from 'lucide-react';
 import type { TutorialTopic } from './tutorials-types';
 import { SpeedVideo } from './SpeedVideo';
 import { isWindowShown, onWindowShownChange } from './window-shown';
@@ -56,6 +56,12 @@ function ExamplePlayer({ example, onClose }: { example: VideoExample; onClose: (
 }
 
 // Three steps laid out across the banner, so the right side carries the flow instead of blank space.
+// 成片示例 as 「一张图 → 一条视频」 (user choice B, 2026-11-18): what goes in on the left, the finished video on
+// the right, one big arrow between them, and one line beside them instead of three described steps.
+const COMPARE: Partial<Record<VideoExample['topic'], { source?: string; from: string; via: string; to: string; hook: [string, string] }>> = {
+  'product-video': { source: 'cc1-pro-source.jpg', from: '你只要给一张图', via: 'AI 帮你拍', to: '现场效果视频', hook: ['没条件拍？', '一张图就够了'] },
+  'ai-editing': { from: '几段视频、图片', via: 'AI 帮你剪', to: '获客短视频', hook: ['素材放进来，', '剪成能获客的视频'] }
+};
 const BANNER_TEXT: Record<VideoExample['topic'], { result: string; steps: { title: string; detail: string }[] }> = {
   'ai-editing': {
     result: '一次做出多条讲清卖点的获客短视频，导出后可发抖音、快手、视频号。',
@@ -143,6 +149,25 @@ export function ExampleBanner({ topic }: { topic: VideoExample['topic'] }) {
   if (collapsed) return <section className="example-banner is-collapsed" aria-label={`${example.module}${label}`}>
     <span><PlayCircle size={17} aria-hidden="true" />{wide ? `${example.module}用起来是什么样？` : `${example.module}做出来是什么样？`}</span>
     <button type="button" onClick={toggle}>{`看${label}`}<ChevronDown size={16} aria-hidden="true" /></button>
+  </section>;
+  const compare = !wide ? COMPARE[topic] : undefined;
+  if (compare) return <section className="example-banner is-compare" aria-label={`${example.module}${label}`}>
+    <figure className="example-compare-from">{compare.source ? <img src={asset(compare.source)} alt="" />
+      : <span className="example-compare-pile" aria-hidden="true"><i><Video size={40} /></i><i><ImageIcon size={40} /></i><i><Video size={40} /></i></span>}
+      <figcaption>① {compare.from}</figcaption></figure>
+    <div className="example-compare-arrow" aria-hidden="true"><ArrowRight size={64} strokeWidth={3} /><b>{compare.via}</b></div>
+    <div className="example-banner-player">
+      {failed ? <div className="example-banner-error" role="alert"><p>示例暂时无法播放</p><button type="button" onClick={() => { setFailed(false); setStarted(false); }}>重试</button></div>
+        : started ? <video ref={video} src={asset(`${example.file}.mp4`)} poster={asset(`${example.file}.jpg`)} controls autoPlay playsInline preload="metadata" onError={() => setFailed(true)} />
+        : <button type="button" className="example-banner-poster" aria-label={`播放${example.module}${label}`} onClick={() => setStarted(true)}><img src={asset(`${example.file}.jpg`)} alt="" /><span aria-hidden="true"><PlayCircle size={60} /></span></button>}
+      {!started && <span className="example-compare-tag">② {compare.to}</span>}
+    </div>
+    <div className="example-compare-side">
+      <p>{compare.hook[0]}<br />{compare.hook[1]}</p>
+      <button type="button" className="example-compare-play" onClick={() => setStarted(true)} disabled={started}><PlayCircle size={22} />播放示例</button>
+      <button type="button" className="example-banner-tutorial" onClick={() => openTutorial(example)}>看操作教程</button>
+      <button type="button" className="example-banner-collapse" onClick={toggle}>收起<ChevronUp size={16} aria-hidden="true" /></button>
+    </div>
   </section>;
   return <section className={`example-banner${wide ? ' is-wide' : ''}${isBusinessDemo(example) ? ' is-1610' : ''}`} aria-label={`${example.module}${label}`}>
     <div className="example-banner-player">

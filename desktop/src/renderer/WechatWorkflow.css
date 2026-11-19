@@ -301,7 +301,7 @@
 .reply-scope .workflow-recipient-search { margin-top: 14px; }
 .reply-scope-toggle { display: flex; width: 100%; margin: 18px 0 0; padding-top: 16px; border-top: 1px solid var(--workflow-line); font-size: 14px; }
 @media (max-width: 760px) { .auto-reply-page .workflow-reply-summary { grid-template-columns: 1fr; } .reply-scope-head { flex-direction: column; } }
-
+
 
 /* 精准触达 task summary, design A (2026-11-18): ring + big number tiles + reason chips + solid buttons. */
 .touch-sum{display:grid;grid-template-columns:168px 1fr;gap:24px;align-items:center;margin:16px 0 6px}
@@ -355,3 +355,27 @@
 .workflow-page.is-touch .workflow-row-actions .text-button { font-size: 15px; padding: 8px 12px; border-radius: 10px; }
 .workflow-page.is-touch .workflow-running-line { font-size: 15px; }
 .workflow-page.is-touch .workflow-task-meta { font-size: 14px; }
+
+/* 精准触达配色融合 (2026-11-18): the summary follows the role color (小诚 purple) instead of red, green, orange and blue;
+   each number keeps its own icon, and cards take the tint of the page background. */
+.workflow-page.is-touch { --touch-accent: var(--brand-red, #e60000); --touch-card: color-mix(in srgb, var(--workspace-role-surface, #fff5f6) 35%, white); --touch-line: color-mix(in srgb, var(--touch-accent) 16%, transparent); }
+.touch-sum-track{stroke:color-mix(in srgb, var(--brand-red, #e60000) 14%, white)}
+.touch-sum-done{stroke:var(--brand-red, #e60000)}
+.touch-sum-ring b{color:var(--brand-red-dark, var(--brand-red, #1f2937))}
+.touch-sum-tile.is-green,.touch-sum-tile.is-orange,.touch-sum-tile.is-gray,.touch-sum-tile.is-blue{color:#1f2937}
+.touch-sum-tile.is-green{background:color-mix(in srgb, var(--brand-red, #e60000) 20%, white)}
+.touch-sum-tile.is-orange{background:color-mix(in srgb, var(--brand-red, #e60000) 13%, white)}
+.touch-sum-tile.is-gray,.touch-sum-tile.is-blue{background:color-mix(in srgb, var(--brand-red, #e60000) 9%, white);box-shadow:inset 0 0 0 1.5px color-mix(in srgb, var(--brand-red, #e60000) 14%, transparent)}
+.touch-sum-tile.is-green i,.touch-sum-tile.is-orange i,.touch-sum-tile.is-blue i{background:var(--brand-red, #e60000)}
+.touch-sum-tile.is-gray i{background:color-mix(in srgb, var(--brand-red, #e60000) 45%, #6b7280)}
+.touch-sum-tile span{color:#4b5563}
+.touch-sum-chip.is-orange,.touch-sum-chip.is-red,.touch-sum-chip.is-purple,.touch-sum-chip.is-blue,.touch-sum-chip.is-gray{background:color-mix(in srgb, var(--brand-red, #e60000) 9%, white);color:var(--brand-red-dark, var(--brand-red, #e60000))}
+.touch-sum-actions{border-top-color:var(--touch-line, #eceef2)}
+.touch-sum-button{background:color-mix(in srgb, var(--workspace-role-surface, #fff) 40%, white);box-shadow:inset 0 0 0 1.5px color-mix(in srgb, var(--brand-red, #e60000) 30%, transparent);color:var(--brand-red-dark, var(--brand-red, #1f2937))}
+.touch-sum-button.is-primary{background:var(--brand-red, #e60000);color:#fff;box-shadow:0 8px 18px color-mix(in srgb, var(--brand-red, #e60000) 26%, transparent)}
+.touch-sum-button.is-soft{background:color-mix(in srgb, var(--brand-red, #e60000) 12%, white);color:var(--brand-red-dark, var(--brand-red, #a15c00))}
+.touch-sum-mode{background:color-mix(in srgb, var(--brand-red, #e60000) 9%, white);color:var(--brand-red-dark, var(--brand-red, #4b5563))}
+.touch-sum-list{background:color-mix(in srgb, var(--workspace-role-surface, #fafafb) 30%, white)}
+.workflow-needs-you .workflow-list-head h2 { color: var(--brand-red-dark, var(--brand-red, #a15c00)); }
+.workflow-page.is-touch .workflow-task-row, .workflow-needs-you .workflow-task-row { background: var(--touch-card, #fff); border: 1.5px solid var(--touch-line, #fde3bd); box-shadow: 0 6px 24px color-mix(in srgb, var(--brand-red, #e60000) 8%, transparent); }
+.workflow-page.is-touch .workflow-empty { background: var(--touch-card); border: 1.5px solid var(--touch-line); border-radius: 18px; }

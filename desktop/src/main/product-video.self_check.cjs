@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createProductVideoService } = require('./product-video-service.cjs');
-const { planVideo } = require('./video-directors.cjs');
+const { planVideo, SCENES } = require('./video-directors.cjs');
 const { parseCoverPrice, parsePrices, createPriceReader, parseBailianPrices, parseDirectPrices, validBailianPrices, validPrices, quotePlan } = require('./product-video-pricing.cjs');
 // AI covers are quoted from the gpt-image-2.5-ext sunburst 1K price; anything else is refused.
 {
@@ -155,9 +155,15 @@ async function run() {
     const restricted = planVideo({...input,productName:'干式扫地车',facts:'扫地车适用于小区户外沥青路面清扫落叶。不适用于室内，不能吸水。',sceneIds:['office'],surfaceId:'asphalt'});
     assert.equal(restricted.evidenceStatus,'appearance_only','scene selection cannot override a documented indoor-use restriction');
     assert.equal(planVideo({...input,facts:'扫地机适用于仓储环氧地坪灰尘清扫，不能吸水。',sceneIds:['warehouse'],surfaceId:'epoxy',dirtId:'water'}).evidenceStatus,'appearance_only');
+    // The nine scenes of the material library; the retired 仓储 id still plans, as 工厂仓储.
+    assert.deepEqual(SCENES.map((s)=>s.name),['小区','商超','医院','学校','酒店','商写','场站','工厂仓储','公共配套']);
+    assert.deepEqual(planVideo({...input,sceneIds:['warehouse','factory']}).sceneIds,['factory']);
+    assert.deepEqual(planVideo({...input,sceneIds:['station','facilities']}).sceneIds,['station','facilities']);
+    assert.equal(planVideo({...input,facts:'陶瓷咖啡杯'}).scene,'产品展示空间');
+    assert.deepEqual(planVideo({...input,facts:'洗地机适用于小区和医院',sceneIds:['studio']}).sceneIds,['studio'],'an explicit neutral space stays neutral');
     const colored = planVideo({...input,facts:'洗地机适用于办公楼灰色瓷砖和仓储绿色环氧地坪，清洁细小砂砾。'});
     assert.ok(colored.shots.find(shot=>shot.sceneId==='office').prompt.includes('灰色瓷砖'));
-    assert.ok(colored.shots.find(shot=>shot.sceneId==='warehouse').prompt.includes('绿色环氧地坪'));
+    assert.ok(colored.shots.find(shot=>shot.sceneId==='factory').prompt.includes('绿色环氧地坪'));
     for (const durationSeconds of [30,45,60]) assert.equal(planVideo({...input,durationSeconds}).shots.reduce((sum,shot)=>sum+shot.seconds,0),durationSeconds);
     const textPath = path.join(root, '资料.txt'); fs.writeFileSync(textPath, '参数说明'.repeat(250));
     assert.equal(service.importFacts(textPath).text.length, 1000);
@@ -176,7 +182,8 @@ async function run() {
     assert.equal(task.quote.budgetCny, task.quote.maximumCny, 'the customer need not supply a budget');
     await service.start(task.id);
     const finished = await until(service, task.id, (t)=>t.status==='completed');
-    assert.equal(finished.completedShots,3); assert.equal(finished.quote.pendingCny,10.15,'official usage is not a bill; keep Wan, audio and ASR reserves');
+    assert.equal(finished.completedShots,3); assert.deepEqual(finished.shotsReady,[true,true,true]);
+    assert.match((await service.shotMedia(task.id,0)).dataUrl,/^data:video\/mp4;base64,/u); await assert.rejects(service.shotMedia(task.id,5),(e)=>e.code==='product_video_not_ready'); assert.equal(finished.quote.pendingCny,10.15,'official usage is not a bill; keep Wan, audio and ASR reserves');
     const videos = posts.filter((p)=>p.route===VIDEO_ROUTE);
     assert.deepEqual(videos.map((p)=>p.body.parameters.duration),[10,10,10]); assert.ok(videos.every((p)=>p.body.model==='wan3.0-video' && p.body.parameters.resolution==='480P' && p.body.parameters.audio===false && p.body.parameters.prompt_extend===false));
     assert.ok(videos.every(p=>p.body.input.media[0].type==='reference_image' && p.body.input.media[0].url===`data:image/png;base64,${image.toString('base64')}`));

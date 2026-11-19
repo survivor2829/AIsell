@@ -4,7 +4,7 @@ type Billing = { balance: number; blocked: boolean; unblocked: boolean } | null;
 type BillingApi = { billing?: () => Promise<Billing> };
 
 const REFRESH_MS = 60_000;
-const formatWan = (points: number) => `${(points / 10000).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} 万`;
+export const formatWan = (points: number) => `${(points / 10000).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} 万`;
 
 // 顶栏算力余额：只显示主进程从网关读到的数，读不到时不显示。
 export default function BillingBadge({ enabled }: { enabled: boolean }) {

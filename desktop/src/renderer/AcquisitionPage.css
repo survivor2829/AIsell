@@ -145,3 +145,57 @@ html[data-beat="1"] .acq-live.is-wait .acq-live-dot { box-shadow: 0 0 0 4px rgba
 .acq-leads > li > .acq-lead-main { flex: 1 1 0; }
 .acq-leads > li > .acq-lead-actions { flex-basis: 100%; display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 8px; padding-left: 96px; }
 .acq-lead-head small { margin-left: 4px; }
+
+/* 关键词获客 · 上下布局 (2026-11-18): the search bar across the top, the numbers, words and today's actions
+   in one row, then the people three to a row. Colors follow the role (小睿 gold) instead of red on gold. */
+.acq { --acq-accent: var(--agent-accent-strong, #c40000); --acq-tint: var(--agent-accent, #e60000); --brand-red: var(--acq-accent); --red: var(--acq-accent);
+  --rose: color-mix(in srgb, var(--acq-tint) 22%, white); --acq-card: color-mix(in srgb, var(--workspace-role-surface, #fff5f6) 35%, white); --acq-soft: color-mix(in srgb, var(--acq-tint) 12%, white); }
+.acq-card { background: var(--acq-card); border: 1.5px solid color-mix(in srgb, var(--acq-tint) 20%, transparent); box-shadow: 0 6px 24px color-mix(in srgb, var(--acq-tint) 9%, transparent); border-radius: 22px; }
+.acq .acq-board { grid-template-columns: minmax(0, 1fr); }
+.acq .acq-side { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); align-items: stretch; gap: 18px; }
+.acq .acq-grid { display: contents; }
+.acq-form-card { grid-column: 1 / -1; order: 0; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) auto; grid-template-areas: "head head head" "what where go" "more more more" "hint hint hint"; column-gap: 20px; align-items: start; }
+.acq-form-card > .acq-sec { grid-area: head; }
+.acq-form-card > .is-what { grid-area: what; }
+.acq-form-card > .is-where { grid-area: where; }
+.acq-form-card > .acq-more { grid-area: more; }
+.acq-form-card > .acq-actions { grid-area: go; align-self: end; flex-direction: column; align-items: stretch; }
+.acq-form-card > .acq-hint { grid-area: hint; }
+.acq-form-card .acq-step textarea { min-height: 112px; }
+.acq .acq-go { height: 60px; padding: 0 32px; font-size: 20px; border-radius: 16px; background: var(--acq-accent); border-color: var(--acq-accent); color: #fff; box-shadow: 0 8px 18px color-mix(in srgb, var(--acq-tint) 30%, transparent); }
+.acq-live { order: 1; background: var(--acq-card); border: 1.5px solid color-mix(in srgb, var(--acq-tint) 22%, transparent); }
+.acq-live.is-wait { background: #fffaf0; }
+.acq-live ul li, .acq-live ul li:nth-child(2), .acq-live ul li:nth-child(3) { background: var(--acq-soft); color: var(--acq-accent); }
+.acq-live ul li:nth-child(2) { background: color-mix(in srgb, var(--acq-tint) 18%, white); }
+.acq-live ul li:last-child b { color: var(--acq-accent); }
+.acq-tasks-card { order: 2; align-content: start; }
+.acq-today-card { order: 3; align-content: start; }
+.acq-platforms button.is-on { border-color: var(--acq-accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--acq-tint) 14%, transparent); }
+.acq-step > b i { background: var(--acq-accent); }
+.acq-stop { border-color: color-mix(in srgb, var(--acq-tint) 40%, white); color: var(--acq-accent); }
+.acq-mini { background: #fff; }
+.acq-mini.is-go { border-color: color-mix(in srgb, var(--acq-tint) 45%, white); color: var(--acq-accent); }
+.acq-sec h2 em, .acq-chip { background: var(--acq-soft); color: var(--acq-accent); }
+.acq-seg { background: var(--acq-soft); }
+.acq-bulk { background: var(--acq-soft); }
+.acq-intents button { background: #fff; border: 1.5px solid color-mix(in srgb, var(--acq-tint) 22%, transparent); color: #374151; }
+.acq-intents button.is-tone-0, .acq-intents button.is-tone-1, .acq-intents button.is-tone-2, .acq-intents button.is-tone-3 { background: var(--acq-soft); color: var(--acq-accent); border-color: transparent; }
+.acq-intents button.is-tone-1 { background: color-mix(in srgb, var(--acq-tint) 18%, white); }
+.acq-intents button.is-tone-2 { background: color-mix(in srgb, var(--acq-tint) 8%, white); }
+.acq-intents button.is-on { background: var(--acq-accent); color: #fff; }
+.acq-tasks li, .acq-today li { background: #fff; border-color: color-mix(in srgb, var(--acq-tint) 14%, transparent); }
+/* The people: three to a row, scrolling down for dozens. */
+.acq .acq-leads { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+.acq .acq-leads > li { flex-direction: row; flex-wrap: wrap; align-content: start; gap: 10px 12px; background: #fff; border: 1.5px solid color-mix(in srgb, var(--acq-tint) 14%, transparent); }
+.acq .acq-leads > li.is-contacted { background: #f7fcf9; border-color: #dcefe3; }
+.acq .acq-leads > li > .acq-lead-main { flex: 1 1 0; min-width: 0; }
+.acq .acq-leads > li > .acq-lead-actions { padding-left: 0; gap: 6px; }
+.acq .acq-lead-actions .acq-mini { flex: 1 1 auto; justify-content: center; padding: 8px 10px; }
+.acq .acq-lead-actions .acq-mini.is-go { background: var(--acq-accent); border-color: var(--acq-accent); color: #fff; }
+.acq .acq-lead-head { gap: 6px; }
+.acq .acq-lead-head small { flex-basis: 100%; margin-left: 0; }
+.acq .acq-lead-main p { font-size: 17px; font-weight: 800; }
+.acq .acq-lead-src { white-space: normal; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
+@media (max-width: 1000px) { .acq-form-card { grid-template-columns: 1fr; grid-template-areas: "head" "what" "where" "go" "more" "hint"; } }
+.acq .acq-lead-actions { flex-wrap: nowrap; gap: 5px; }
+.acq .acq-lead-actions .acq-mini { flex: 1 1 0; min-width: 0; padding: 8px 4px; gap: 3px; white-space: nowrap; font-size: 14px; }

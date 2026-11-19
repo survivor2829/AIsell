@@ -37,7 +37,7 @@ const READS = new Set([
   "moments-campaign:status", "moments-campaign:stop", "phone-matrix:batchStatus", "phone-matrix:batchStop",
   "phone-matrix:openFolder", "phone-matrix:status", "product-detail-ai-settings:status", "product-detail:history",
   "product-detail:restart", "product-detail:start", "product-detail:status", "product-detail:stop",
-  "product-video:capabilities", "product-video:get", "product-video:list", "product-video:media", "social-accounts:status",
+  "product-video:capabilities", "product-video:get", "product-video:list", "product-video:media", "product-video:shot-media", "social-accounts:status",
   "social-acquisition:cancelQueued", "social-acquisition:status", "social-acquisition:stop", "social-nurture:status",
   "social-nurture:stop", "social-publish:cancel", "social-publish:status", "touch-task:close-floating", "touch-task:pause",
   "touch-task:show-main", "touch-task:status", "touch-task:stop", "wechat-workflow:cancel-task", "wechat-workflow:get-task",

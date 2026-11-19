@@ -75,7 +75,7 @@ function createProductVideoService(options = {}) {
       statusLabel: task.plan.pipelineVersion === 4 && task.status === 'locking_frames' ? '核对产品原图与制作方案' : LABELS[task.status] || '需要处理', createdAt: task.createdAt, updatedAt: task.updatedAt,
       durationSeconds: task.durationSeconds, sceneId: task.sceneId, sceneIds: task.sceneIds || task.plan.sceneIds || [], surfaceId: task.surfaceId, dirtId: task.dirtId, goalId: task.goalId,
       productName: task.productName || '', facts: task.facts, expression: task.expression, imageId: task.imageId, budgetCny: task.budgetCny, quote: quote(task),
-      plan: task.plan, currentShot: task.currentShot, completedShots: task.shots.filter((shot) => shot.file).length,
+      plan: task.plan, currentShot: task.currentShot, completedShots: task.shots.filter((shot) => shot.file).length, shotsReady: task.shots.map((shot) => Boolean(shot.file)),
       preparation: task.plan.pipelineVersion >= 3 ? { referenceMode: task.plan.pipelineVersion === 4 ? 'original_product_image' : 'scene_first_frames',
         inputsLocked: Boolean(task.frameManifest), framesReady: task.shots.filter((shot) => shot.frameFile).length, framesLocked: task.plan.pipelineVersion !== 4 && Boolean(task.frameManifest),
         ruleCheck: task.frameManifest?.ruleCheck || 'pending', visualReview: 'not_performed', audioReady: Boolean(task.audio), music: publicMusic(task.audio?.music) } : undefined,
@@ -556,6 +556,15 @@ function createProductVideoService(options = {}) {
     if (fs.statSync(source).size > 70 * 1024 * 1024) throw fail('product_video_preview_too_large', '成片较大，请直接导出观看。');
     return { dataUrl: `data:video/mp4;base64,${fs.readFileSync(source).toString('base64')}` };
   }
+  // One finished shot, so the page can show what has been filmed while the rest is still being made.
+  // Read without blocking the main process; a 480p shot of 10–12 seconds is a few MB.
+  async function shotPreview(id, index) {
+    const task = read(id), shot = Number.isInteger(index) ? task.shots[index] : null;
+    if (!shot?.file) throw fail('product_video_not_ready', '这个镜头还没拍好。');
+    const source = contained(root, shot.file);
+    if ((await fsp.stat(source)).size > 40 * 1024 * 1024) throw fail('product_video_preview_too_large', '镜头较大，请等成片后导出观看。');
+    return { dataUrl: `data:video/mp4;base64,${(await fsp.readFile(source)).toString('base64')}` };
+  }
   async function exportVideo(id, destination, sourceOnly = false) {
     const task = read(id), relative = sourceOnly ? task.sourceFile : task.finalFile;
     if (!relative || !sourceOnly && task.status !== 'completed') throw fail('product_video_not_ready', '所选视频尚未就绪。');
@@ -592,6 +601,6 @@ function createProductVideoService(options = {}) {
   }
   async function close() { closed = true; prepareForUpdate(); await Promise.allSettled([...active.values()]); }
   queueMicrotask(resumeAfterUpdate);
-  return { capabilities, importImage, importFacts, create, list, get: (id) => publicTask(read(id)), start, retryShot, refresh, media: preview, exportVideo, exportSource: (id, destination) => exportVideo(id, destination, true), isBusy, prepareForUpdate, resumeAfterUpdate, close };
+  return { capabilities, importImage, importFacts, create, list, get: (id) => publicTask(read(id)), start, retryShot, refresh, media: preview, shotMedia: shotPreview, exportVideo, exportSource: (id, destination) => exportVideo(id, destination, true), isBusy, prepareForUpdate, resumeAfterUpdate, close };
 }
 module.exports = { createProductVideoService };
