@@ -168,7 +168,13 @@ function createPhoneMatrix({ dataDir, onChange = () => {}, adbPath = findAdb(), 
   return {
     adbPath, snapshot, update, forget, poll,
     start() { if (!timer) { void poll(); timer = setTimer(() => void poll(), POLL_MS); timer?.unref?.(); } },
-    stop() { clearTimer(timer); timer = null; }
+    stop() { clearTimer(timer); timer = null; },
+    // On closing: adb leaves its server running after the app exits (seen 2026-11-19). End it, unless
+    // 来喜 is open: it shares the same server.
+    async endServer() {
+      if (!adbPath || await Promise.resolve(isLaixiRunning()).catch(() => true)) return false;
+      await adb(["kill-server"], 5000).catch(() => {}); return true;
+    }
   };
 }
 

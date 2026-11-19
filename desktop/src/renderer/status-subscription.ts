@@ -1,3 +1,5 @@
+import { isWindowActive } from "./power-saving";
+
 type StatusSource<T> = {
   status: () => Promise<T>;
   onUpdate?: (callback: (result: T) => void) => () => void;
@@ -31,7 +33,12 @@ export function subscribeToStatus<T>(
     applyResult(result);
   });
   void refresh();
-  const timer = window.setInterval(() => void refresh(), intervalMs);
+  // 省电: while the window is not in use, poll a quarter as often; pushed updates still arrive at once.
+  let skipped = 0;
+  const timer = window.setInterval(() => {
+    if (!isWindowActive() && ++skipped % 4 !== 0) return;
+    void refresh();
+  }, intervalMs);
   return () => {
     active = false;
     unsubscribe?.();

@@ -1,4 +1,5 @@
 import { ArrowRight, Eye, EyeOff } from "lucide-react";
+import { lowPowerDevice, useWindowActive } from "./power-saving";
 import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type MouseEvent } from "react";
 import "./LoginScreen.css";
 import { AGENT_ROLE_IDENTITIES, AGENT_ROLE_ORDER, ROLE_CATALOG, characterAsset, type AgentRoleKey } from "./role-appearance";
@@ -145,12 +146,16 @@ function nextRole(): AgentRoleKey {
 // played once, so CPU or memory size is no reason to skip it (a 4-thread display PC played none);
 // a clip that cannot play falls back to the still figure instead.
 function prefersStill() {
-  return Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
+  return lowPowerDevice;
 }
 
+// 省电 (2026-11-19): the greeting types only while the window is in use; otherwise, and on a
+// low-power computer, the first line simply stands.
 function useTyping(lines: string[]) {
   const [text, setText] = useState("");
+  const active = useWindowActive();
   useEffect(() => {
+    if (!active || lowPowerDevice) { setText(lines[0] || ""); return; }
     let line = 0, index = 0, pause = 0;
     setText("");
     const timer = window.setInterval(() => {
@@ -160,7 +165,7 @@ function useTyping(lines: string[]) {
       line += 1; index = 0; pause = 28;
     }, 70);
     return () => window.clearInterval(timer);
-  }, [lines]);
+  }, [lines, active]);
   return text;
 }
 

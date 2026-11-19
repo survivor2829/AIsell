@@ -204,3 +204,23 @@ assert.notEqual(legacy.mode, "sectioned_wechat_id_visual", "the 4.2 path is used
 }
 
 console.log("WeChat 4.2 search popup self-check passed");
+
+// Field 2026-11-19 (9 computers): a name whose row could not be read (emoji, symbols, a green
+// highlight) was opened with Enter, and WeChat opened 搜一搜 instead of the contact. Now the first
+// local row above the network rows is clicked by mouse; the chat title is still checked after.
+{
+  const { firstLocalRowFallback } = require("./wechat_search_result_resolver.cjs");
+  const unread = observe([line("联 系 人", 92, 83, 140, 95), line("何 气 牛 财", 136, 118, 200, 131), line("搜 一 搜 何 气 生 财", 92, 179, 230, 191)]);
+  const picked = firstLocalRowFallback(unread, byName("✳💰何气生财"), { status: "not_found", rule_id: "search-r015" });
+  assert.equal(picked?.mode, "name_first_local_row"); assert.ok(picked.candidate.y > 95 && picked.candidate.y < 179, "the contact row, never 搜一搜");
+  // Only network rows: nothing is clicked.
+  const networkOnly = observe([line("搜 一 搜 何 气 生 财", 92, 118, 230, 131), line("搜 索 网 络 结 果", 92, 150, 200, 163)]);
+  assert.equal(firstLocalRowFallback(networkOnly, byName("何气生财"), { status: "not_found", rule_id: "search-r015" }), null);
+  // Only a group: nothing is clicked.
+  const groupFirst = observe([line("群 聊", 92, 83, 116, 95), line("何 气 生 财 的 群", 136, 118, 220, 131)]);
+  assert.equal(firstLocalRowFallback(groupFirst, byName("何气生财"), { status: "not_found", rule_id: "search-r015" }), null);
+  // WeChat-ID searches and other rules never take this path.
+  assert.equal(firstLocalRowFallback(unread, byId("wakeup2829"), { status: "not_found", rule_id: "search-r015" }), null);
+  assert.equal(firstLocalRowFallback(unread, byName("何气生财"), { status: "unverified", rule_id: "search-r021" }), null);
+  console.log("first local row instead of Enter: contact row clicked, network-only and group-only refused");
+}

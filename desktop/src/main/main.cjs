@@ -381,6 +381,7 @@ function createWindow() {
     void socialPublishRegistration?.dispose().catch(() => undefined);
     // Phone screens hold adb processes on the phones; closing the window ends them.
     phoneMatrixRegistration?.screens.stopAll();
+    void phoneMatrixRegistration?.matrix.endServer?.().catch(() => undefined);
     void socialAccountsRegistration?.dispose().catch(() => undefined);
     autoReplyController?.pause("app_closed");
     touchTaskController?.pause("应用窗口已关闭，任务已暂停");

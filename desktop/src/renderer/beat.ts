@@ -4,7 +4,7 @@
 // third of the graphics card (user report 2026-11-16). Two repaints a second keep the cue alive for as
 // long as the work lasts at almost no cost. It rests while the window is hidden and never runs when
 // Windows' "turn off animations" setting is on.
-import { isWindowShown, onWindowShownChange } from "./window-shown";
+import { isWindowActive, onWindowActiveChange } from "./power-saving";
 
 const root = document.documentElement;
 const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)");
@@ -17,14 +17,15 @@ function stop() {
 }
 
 function sync() {
-  if (!isWindowShown() || reduced?.matches) { stop(); return; }
+  // Rests while the window is not in use (another program has the focus), not only when hidden.
+  if (!isWindowActive() || reduced?.matches) { stop(); return; }
   if (timer) return;
   timer = window.setInterval(() => { root.dataset.beat = root.dataset.beat === "1" ? "0" : "1"; }, 1000);
 }
 
 root.dataset.beat = "0";
 sync();
-onWindowShownChange(sync);
+onWindowActiveChange(sync);
 reduced?.addEventListener?.("change", sync);
 
 /** The shared beat, for components that step something themselves (小玺's three dots). */

@@ -440,10 +440,13 @@ function registerWechatWorkflowIpc(options) {
       { label: "先隐藏小玺（重新打开软件会再出来）", click: hideSprite }
     ]).popup({ window: floatingWindow });
   });
-  // The pet watches the pointer anywhere on screen; only changes are sent, ten times a second at most.
+  // The pet watches the pointer anywhere on screen; only changes are sent, four times a second at most.
+  // 省电 (2026-11-19): on a computer with four cores or fewer, or 8 GB memory or less, it does not follow the pointer.
   let spriteCursorTimer = null, spriteCursorLast = "";
+  const lowPowerComputer = (require("node:os").cpus()?.length || 8) <= 4 || require("node:os").totalmem() <= 8.5 * 1024 ** 3;
   function startSpriteCursor() {
     clearInterval(spriteCursorTimer);
+    if (lowPowerComputer) return;
     spriteCursorTimer = setInterval(() => {
       if (!floatingWindow || floatingWindow.isDestroyed() || !floatingWindow.isVisible?.() || !screen.getCursorScreenPoint) return;
       const point = screen.getCursorScreenPoint(), key = `${point.x},${point.y}`;
@@ -451,7 +454,7 @@ function registerWechatWorkflowIpc(options) {
       spriteCursorLast = key;
       const [x, y] = floatingWindow.getPosition();
       floatingWindow.webContents.send("wechat-workflow:sprite-cursor", { x: point.x - x, y: point.y - y });
-    }, 100);
+    }, 250);
     spriteCursorTimer.unref?.();
   }
   // Walking moves the window a little at a time. It never walks during a WeChat task or a contact sync.
