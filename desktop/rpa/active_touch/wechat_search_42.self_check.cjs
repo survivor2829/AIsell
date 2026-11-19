@@ -224,3 +224,17 @@ console.log("WeChat 4.2 search popup self-check passed");
   assert.equal(firstLocalRowFallback(unread, byName("何气生财"), { status: "unverified", rule_id: "search-r021" }), null);
   console.log("first local row instead of Enter: contact row clicked, network-only and group-only refused");
 }
+// Review 2026-11-19: the "🔍 <query>" echo row is never clicked; after an unconfirmed WeChat ID no namesake is guessed;
+// names lose only emoji, keeping ①、™ as written.
+{
+  const { firstLocalRowFallback } = require("./wechat_search_result_resolver.cjs");
+  const echoOnly = observe([line("Q 何 气 生 财", 66, 118, 200, 131), line("搜 索 网 络 结 果", 92, 150, 200, 163)]);
+  assert.equal(firstLocalRowFallback(echoOnly, byName("何气生财"), { status: "not_found", rule_id: "search-r015" }), null, "the echo row opens 搜一搜");
+  const contactAndEcho = observe([line("何 气 牛 财", 136, 100, 200, 113), line("Q 何 气 生 财", 66, 140, 200, 153)]);
+  assert.equal(firstLocalRowFallback(contactAndEcho, byName("何气生财"), { status: "not_found", rule_id: "search-r015" })?.candidate.y, 107);
+  assert.equal(firstLocalRowFallback(contactAndEcho, byName("何气生财"), { status: "not_found", rule_id: "search-r015" }, "wechat_id_unverified"), null,
+    "after an unconfirmed WeChat ID only an exactly read name may be clicked");
+  const { searchableName } = require("./state_machine.cjs");
+  assert.deepEqual(["✳💰何气生财", "李🌸小花", "王总①", "张三™", "🌸🌸"].map(searchableName), ["何气生财", "李小花", "王总①", "张三™", "🌸🌸"]);
+  console.log("echo row, namesake guard and name cleaning passed");
+}

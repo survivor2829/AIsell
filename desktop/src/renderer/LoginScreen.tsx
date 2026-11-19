@@ -146,7 +146,7 @@ function nextRole(): AgentRoleKey {
 // played once, so CPU or memory size is no reason to skip it (a 4-thread display PC played none);
 // a clip that cannot play falls back to the still figure instead.
 function prefersStill() {
-  return lowPowerDevice;
+  return Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
 }
 
 // 省电 (2026-11-19): the greeting types only while the window is in use; otherwise, and on a

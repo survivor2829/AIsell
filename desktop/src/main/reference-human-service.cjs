@@ -716,13 +716,23 @@ function createReferenceHumanService(options = {}) {
     if (!fs.existsSync(directory)) return [];
     const seen = new Set(), due = [];
     for (const name of fs.readdirSync(directory)) {
-      const id = name.replace(/.json$/u, '');
+      const id = name.replace(/\.json$/u, '');
       if (!name.endsWith('.json') || !TASK_ID.test(id)) continue;
       seen.add(id);
       let stat; try { stat = fs.statSync(file(`tasks/${name}`)); } catch { continue; }
       let entry = scanCache.get(id);
       if (!entry || entry.mtimeMs !== stat.mtimeMs || entry.size !== stat.size) {
-        let task; try { task = read(id); } catch { continue; }
+        let task;
+        try { task = read(id); }
+        catch (error) {
+          // A damaged record is still reported once, as records() does.
+          const damaged = error instanceof SyntaxError || error?.code === 'reference_record_invalid';
+          if (damaged && !unreadable.has(`tasks/${id}`)) {
+            unreadable.add(`tasks/${id}`);
+            try { diagnostics().event('digital_human', 'record_unreadable', { record_kind: 'tasks', error_code: error instanceof SyntaxError ? 'json_invalid' : String(error?.code || 'read_failed') }, { level: 'error', code: 'reference_record_unreadable' }); } catch { /* Reporting never ends the timer. */ }
+          }
+          continue;
+        }
         entry = { mtimeMs: stat.mtimeMs, size: stat.size, due: RUNNING.has(task.status) || task.status === 'completed' && ['planned', 'submitted'].includes(task.autoCoverState) };
         scanCache.set(id, entry);
       }

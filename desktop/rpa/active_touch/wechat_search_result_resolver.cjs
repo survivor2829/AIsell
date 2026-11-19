@@ -653,9 +653,13 @@ function firstLocalContactRow(observation, identity) {
   if (!popup || !(dpi > 0) || observation.captureSource !== "popup" || observation.ocrOk !== true) return null;
   const column = (left) => (Number(left) - popup.left) / (dpi / 96);
   const all = [...(observation.visualCandidates || []), ...(observation.webSearchCandidates || [])].filter((line) => hasValidBounds(line) && isInside(line, popup));
-  // Everything from the first network row or other section (群聊、聊天记录、公众号…) down is not a contact.
-  const bottom = Math.min(Number(popup.bottom), ...all.filter((line) => isNetworkRowText(line.text) || isOtherSearchSection(line.text)).map((line) => Number(line.top)));
-  const rows = all.filter((line) => column(line.left) > 60 && Number(line.bottom) <= bottom
+  // The "🔍 <query>" suggestion row opens 搜一搜 too: like the 4.2 sectioned popup, it ends the local rows.
+  const queryText = normalized(identity?.query || "");
+  const isQueryEcho = (value) => { const text = normalized(value); return queryText.length >= 2 && (text === queryText || text.replace(/^(?:[^\p{L}\p{N}]{1,2}|[0oq])/iu, "") === queryText); };
+  // Everything from the first network row, query echo or other section (群聊、聊天记录、公众号…) down is not a contact.
+  const bottom = Math.min(Number(popup.bottom), ...all.filter((line) => isNetworkRowText(line.text) || isOtherSearchSection(line.text)
+    || (column(line.left) <= 70 && isQueryEcho(line.text))).map((line) => Number(line.top)));
+  const rows = all.filter((line) => column(line.left) > 60 && Number(line.bottom) <= bottom && !isQueryEcho(line.text)
     && !isLocalContactSection(line.text) && !isUnsafeVisualText(line.text) && !isNetworkRowText(line.text)
     && wechatIdLabelValue(line) === null)
     .sort((a, b) => Number(a.top) - Number(b.top));
@@ -673,8 +677,8 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
     diagnostics: { ...(result.diagnostics || {}), prior_rule_id: result.rule_id } } : result;
 }
 // The driver's last resort for a name search whose rows could not be read (the place where Enter used to be).
-function firstLocalRowFallback(observation, identity, resolution) {
-  if (resolution?.status === "selected" || !["name", "name_fallback"].includes(String(identity.queryType || ""))
+function firstLocalRowFallback(observation, identity, resolution, fallbackReason = "") {
+  if (resolution?.status === "selected" || fallbackReason === "wechat_id_unverified" || !["name", "name_fallback"].includes(String(identity.queryType || ""))
     || !FIRST_ROW_RULES.has(String(resolution?.rule_id || ""))) return null;
   const first = firstLocalContactRow(observation, identity);
   return first ? { status: "selected", mode: "name_first_local_row", candidate: first, diagnostics: { ...(resolution.diagnostics || {}), prior_rule_id: resolution.rule_id } } : null;

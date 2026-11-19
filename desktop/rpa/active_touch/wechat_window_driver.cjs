@@ -2691,7 +2691,8 @@ function buildSearchEvidence(observed, resolution, query, context) {
       query_present: Boolean(String(query || "").trim()),
       expected_name_present: Boolean(String(context.searchIdentity.expectedName || "").trim()),
       network_lookup_isolated: resolution.status === "selected" || !["search-r008", "search-r009", "search-r010", "search-r011", "search-r012"].includes(String(resolution.rule_id || "")),
-      identity_match: resolution.status === "selected" && !resolution.mode?.startsWith("unique_local_wechat_id_"),
+      identity_match: resolution.status === "selected" && !resolution.mode?.startsWith("unique_local_wechat_id_") && resolution.mode !== "name_first_local_row",
+      guessed_row: resolution.mode === "name_first_local_row",
       local_candidate_unique: resolution.mode?.startsWith("unique_local_wechat_id_") === true
     },
     ocr_observation: searchObservationEvidence(observation, { query, queryType: context.searchQueryType })
@@ -2758,7 +2759,7 @@ function openWechatSearchResult(query, context = {}) {
     if (!observed?.ok) return observed || { ok: false, reason: "wechat_operation_failed" };
     const identity = { query, expectedName: context.searchIdentity.expectedName, queryType: context.searchQueryType };
       const strict = resolveWechatSearchResultObservation(observed.searchResultObservation, identity);
-      const resolution = firstLocalRowFallback(observed.searchResultObservation, identity, strict) || strict;
+      const resolution = firstLocalRowFallback(observed.searchResultObservation, identity, strict, String(context.searchFallbackReason || "")) || strict;
     const searchEvidence = buildSearchEvidence(observed, resolution, query, context);
     const capture = detachedSearchCapture(observed, resolution, context.captureSearchFailure === true);
     if (resolution.status !== "selected") {
@@ -2807,7 +2808,7 @@ function openWechatSearchResultAsync(query, context = {}) {
       if (!observed?.ok) return observed || { ok: false, reason: "wechat_operation_failed" };
       const identity = { query, expectedName: context.searchIdentity.expectedName, queryType: context.searchQueryType };
       const strict = resolveWechatSearchResultObservation(observed.searchResultObservation, identity);
-      const resolution = firstLocalRowFallback(observed.searchResultObservation, identity, strict) || strict;
+      const resolution = firstLocalRowFallback(observed.searchResultObservation, identity, strict, String(context.searchFallbackReason || "")) || strict;
       const searchEvidence = buildSearchEvidence(observed, resolution, query, context);
       const capture = detachedSearchCapture(observed, resolution, context.captureSearchFailure === true);
       if (resolution.status !== "selected") {

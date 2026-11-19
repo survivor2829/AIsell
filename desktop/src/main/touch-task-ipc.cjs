@@ -120,6 +120,7 @@ function resultReason(result, fallback) {
     exact_search_result_not_found: "未找到该联系人的精确公开微信号搜索结果，已隔离并跳过当前联系人",
     wechat_id_name_conflict: "微信号命中但候选展示名与联系人不一致，已阻断发送",
     wechat_id_no_result: "微信号搜索无结果，已降级为名字搜索",
+    wechat_id_unverified: "微信号搜索结果无法确认，已改用名字搜索",
     wechat_id_invalid_placeholder: "联系人微信号是无效占位值，已降级为名字搜索",
     wechat_search_network_lookup_misclick: "误点网络查找入口，资料弹窗已关闭，当前联系人已隔离且本任务内禁止重试",
     wechat_search_result_landing_unverified: "点击后无法核验落点界面，已暂停且不会自动重试",

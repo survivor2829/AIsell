@@ -21,7 +21,10 @@ window.addEventListener("focus", () => { focused = true; notify(); });
 window.addEventListener("blur", () => { focused = false; notify(); });
 onWindowShownChange(notify);
 
-export const isWindowActive = () => isWindowShown() && focused;
+// The floating windows (小玺, progress) are shown without taking the focus and let clicks through:
+// for them being shown is being in use, or the pet's "working" dots would freeze for a whole task.
+const floatingWindow = new URLSearchParams(location.search).has("floating");
+export const isWindowActive = () => isWindowShown() && (floatingWindow || focused);
 export function onWindowActiveChange(listener: () => void) {
   listeners.add(listener);
   return () => { listeners.delete(listener); };

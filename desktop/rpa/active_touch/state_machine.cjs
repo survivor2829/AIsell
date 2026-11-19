@@ -150,9 +150,10 @@ const SEARCH_FALLBACK_RULES = Object.freeze({ noResult: "search-r017", invalidPl
 // contact search and sent the search to 搜一搜 on customer computers (2026-11-19). Search by the
 // words of the name; the opened chat is still checked against the full name.
 function searchableName(value) {
-  const text = String(value || "").normalize("NFKC");
-  const words = text.replace(/[\p{Extended_Pictographic}\p{So}\p{Sk}\uFE0F\u200D\u20E3]/gu, " ").replace(/\s+/gu, " ").trim();
-  return [...words.replace(/\s/gu, "")].length >= 2 ? words : text.trim();
+  const text = String(value || "").trim();
+  // Emoji and decorative symbols only; ①、™、full-width letters stay as written, since WeChat does not fold them.
+  const stripped = text.replace(/(?![\u00A9\u00AE\u2122])(?:[\p{Extended_Pictographic}\uFE0F\u200D\u20E3]|[\u2600-\u27BF\u2B00-\u2BFF])/gu, "").replace(/\s+/gu, " ").trim();
+  return stripped !== text && [...stripped.replace(/\s/gu, "")].length >= 2 ? stripped : text;
 }
 function customerSearchPlan(customer) {
   const wechatId = String(customer?.wechatId || "").trim();
