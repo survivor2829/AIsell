@@ -35,7 +35,7 @@ const DEVICES = Object.freeze([
     body: '手推式扫地机', parts: '前方边刷把垃圾扫向中间，主刷把垃圾扫进垃圾斗', work: '操作员推着它前进，边刷把垃圾往中间拢，主刷扫进垃圾斗' },
   { id: 'ride_sweeper', group: 'traditional', name: '驾驶式扫地车', operator: 'ride', scenes: ALL_SCENES, floors: [...HARD, 'asphalt', 'paver'], dirt: ['dust', 'grit', 'paper', 'leaves', 'cigarette', 'metal'],
     body: '驾驶式扫地车', parts: '两侧边刷把垃圾扫向中间，主刷和吸风把垃圾送进垃圾箱', work: '操作员坐在驾驶位开着它前进，两侧边刷拢起垃圾，主刷扫进垃圾箱，不扬尘' },
-  { id: 'pressure_washer', group: 'traditional', name: '高压清洗机', operator: 'walk', scenes: ['factory', 'facilities', 'community', 'station'], floors: ['concrete', 'epoxy', 'paver', 'asphalt', 'anti_slip'], dirt: ['oil', 'tire', 'footprints', 'dust'],
+  { id: 'pressure_washer', group: 'traditional', name: '高压清洗机', operator: 'walk', wet: true, scenes: ['factory', 'facilities', 'community', 'station'], floors: ['concrete', 'epoxy', 'paver', 'asphalt', 'anti_slip'], dirt: ['oil', 'tire', 'footprints', 'dust'],
     body: '高压清洗机', parts: '主机连着高压水管，操作员手持喷枪', work: '操作员手持喷枪，扇形高压水柱贴着地面来回冲洗，冲过的地方露出本色' },
   { id: 'wet_dry_vac', group: 'traditional', name: '吸尘吸水机', operator: 'walk', scenes: INDOOR, floors: [...HARD, 'carpet'], dirt: ['water', 'dust', 'grit', 'drink'],
     body: '桶式吸尘吸水机', parts: '桶身连着软管和地面吸嘴', work: '操作员推着地面吸嘴走过，吸嘴经过的地方积水和灰尘直接被吸进桶里消失，身后的地面立刻干燥' }
@@ -106,7 +106,7 @@ const POINTS = Object.freeze([
   { id: 'obstacle', name: '自动避障', caption: '遇到障碍 自己绕开', devices: ['robot_scrubber', 'robot_sweeper', 'robot_dust', 'robot_combo', 'robot_outdoor'], cleaning: false, place: 'venue',
     camera: '机器斜后方的跟拍机位，成人腰部高度，同速跟随', action: '机器前进途中，前方通道上放着一辆空的购物推车（或一个黄色锥桶），机器在离障碍物约半米处减速，平稳地从旁边绕过，绕过后回到原来的路线继续清洁。' },
   { id: 'water', name: '自动上下水', caption: '自动上下水 不用人管', devices: ['robot_scrubber', 'robot_combo'], cleaning: false, place: 'other',
-    camera: '工作站正侧面的固定中景，成人胸口高度，能同时看到机器和靠墙的工作站', action: '机器自己倒回靠墙的自动工作站并对准停稳，工作站的管路接上机器，透明管里能看到清水灌进机器、污水被抽走，工作站指示灯亮起。全程没有人碰它。' },
+    camera: '工作站正侧面的固定中景，成人胸口高度，能同时看到机器和靠墙的工作站', action: '机器自己驶向靠墙的自动工作站，缓慢对准后停稳，工作站的管路接上机器，透明管里能看到清水灌进机器、污水被抽走，工作站指示灯亮起。全程没有人碰它。' },
   { id: 'charge', name: '自动回充', caption: '电量低 自己回去充电', devices: ['robot_scrubber', 'robot_sweeper', 'robot_dust', 'robot_combo', 'robot_outdoor'], cleaning: false, place: 'other',
     camera: '充电桩侧前方的固定中景，成人膝盖高度', action: '机器自己驶向靠墙的充电桩，缓慢调整方向对准，倒退贴上充电触点停稳，机身的指示灯变成充电中的颜色。全程没有人碰它。' },
   { id: 'lift', name: '自己乘电梯', caption: '自己坐电梯 跨楼层', devices: ['robot_scrubber', 'robot_sweeper', 'robot_dust', 'robot_combo'], cleaning: false, place: 'other',

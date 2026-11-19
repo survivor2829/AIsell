@@ -51,6 +51,9 @@ const base = { mode: 'product', durationSeconds: 30, deviceId: 'robot_scrubber',
         if (device.operator === 'none') { assert.match(shot.prompt, /没有任何人/u); assert.match(shot.prompt, /没有人坐上去、驾驶/u); assert.match(shot.prompt, /照片里没有的座椅、方向盘、把手不要加上去/u); }
         else { assert.match(shot.prompt, /不露脸/u); assert.match(shot.prompt, /不融在一起/u); }
         assert.match(shot.prompt, /不复制、不分身/u);
+        // A pressure washer wets the floor with clean water; every other cleaning shot keeps it dry with no liquid.
+        if (shot.cleaning) assert.equal(/不凭空出现任何液体/u.test(shot.prompt), !device.wet, `${device.id}/${shot.pointId} liquid rule`);
+        assert.doesNotMatch(shot.prompt, /倒回/u);
       }
     }
   }
@@ -130,6 +133,7 @@ assert.equal(validPrices(prices()), true);
 async function priceChunks() {
   const https = require('node:https'), { EventEmitter } = require('node:events'), original = https.get;
   const page = Buffer.from(directDoc, 'utf8'), cut = page.indexOf(Buffer.from('视频生成')) + 1;
+  assert.ok(cut > 0, 'the test page must contain a Chinese character to split');
   https.get = (url, options, callback) => {
     const response = new EventEmitter(); response.statusCode = 200; response.destroy = () => {};
     const request = new EventEmitter(); request.destroy = () => {};
