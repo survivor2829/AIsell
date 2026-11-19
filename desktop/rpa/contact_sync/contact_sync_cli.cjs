@@ -1437,7 +1437,8 @@ function main(argv) {
     activeTouchDir: valueAfter(args, "--active-touch-dir") || undefined,
     keyToolPath: valueAfter(args, "--key-tool") || undefined,
     dumpToolPath: valueAfter(args, "--dump-tool") || undefined,
-    timeoutMs: Number(valueAfter(args, "--timeout") || 90) * 1000,
+    // After WeChat restarts the person has five minutes to scan and log in (users, 2026-11-19: two minutes was too short).
+    timeoutMs: Number(valueAfter(args, "--timeout") || 300) * 1000,
     restartWechat: args.includes("--restart-wechat")
   };
   if (command === "sync") return sync(options.dataDir, options);

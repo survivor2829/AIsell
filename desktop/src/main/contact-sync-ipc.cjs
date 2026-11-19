@@ -295,7 +295,7 @@ function registerContactSyncIpc({ dataDir, activeTouchDir, coordinator, withProg
   runWithProgress = withProgress;
   ipcMain.handle("contact-sync:status", () => runContactSync(["status"]));
   ipcMain.handle("contact-sync:sync", () => runContactSync(["sync"]));
-  ipcMain.handle("contact-sync:capture", () => runContactSync(["capture", "--restart-wechat", "--timeout", "120"]));
+  ipcMain.handle("contact-sync:capture", () => runContactSync(["capture", "--restart-wechat", "--timeout", "300"]));
   ipcMain.handle("contact-sync:choose-wechat-exe", () => chooseWechatPath("wechatExePath"));
   ipcMain.handle("contact-sync:choose-wechat-root", () => chooseWechatPath("wechatRoot"));
   ipcMain.handle("contact-sync:auto-detect-paths", async () => {
