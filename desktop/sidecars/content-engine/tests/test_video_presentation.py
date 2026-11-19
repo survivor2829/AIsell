@@ -9,7 +9,7 @@ from unittest import mock
 from content_engine.creative_domain import CreativeDomain
 from content_engine.creative_render import HybridCreativeRenderer, FFmpegCreativeRenderer
 from content_engine.apimart_cover import APIMartOutcomeUnknown
-from content_engine.narration_alignment import reference_caption_cues
+from content_engine.narration_alignment import CAPTION_LINE_WIDTH, _line_width, reference_caption_cues, spoken_key
 from content_engine.video_presentation import presentation, validate_headlines
 from content_engine.errors import ContentEngineError
 from content_engine.database import Database
@@ -97,7 +97,8 @@ class VideoPresentationTests(unittest.TestCase):
                   "captions": [{"text": text, "start_ms": 0, "end_ms": 1600,
                                 "alignment": {"source": "asr_words", "words": words}}]}
         cues = HybridCreativeRenderer._public_props(recipe, {})['captions']
-        self.assertEqual(len(cues), 1)
+        # One line per page (2026-11-19): the large presentation style fits 10 wide.
+        self.assertEqual(['清洁机器人现场培训', '需要结合实际场景'], [cue['text'] for cue in cues])
         self.assertEqual(text, ''.join(cue['text'] for cue in cues))
         self.assertEqual([(w['text'], w['start_ms'], w['end_ms']) for w in words],
                          [(w['text'], w['startMs'], w['endMs']) for cue in cues for w in cue['words']])
@@ -121,7 +122,8 @@ class VideoPresentationTests(unittest.TestCase):
         text = '我们已经办了4期了，这次第5期，课程新增了机器人二开定制化服务；'
         pages = reference_caption_cues([{'text': text, 'start_ms': 100, 'end_ms': 6500}],
                                        sentence_pages=True)
-        self.assertEqual(len(pages), 2)
+        self.assertGreaterEqual(len(pages), 2)
+        self.assertTrue(all(_line_width(page['text']) <= CAPTION_LINE_WIDTH for page in pages))
         self.assertEqual(text, ''.join(page['text'] for page in pages))
         self.assertEqual((100, 6500), (pages[0]['start_ms'], pages[-1]['end_ms']))
         self.assertTrue(all(page['timing_source'] == 'audio_measured_proportional' and 'words' not in page for page in pages))
@@ -136,13 +138,16 @@ class VideoPresentationTests(unittest.TestCase):
         caption = {"text": text, "start_ms": 0, "end_ms": len(text) * 180,
                    "alignment": {"source": "asr_words", "words": words}}
         pages = reference_caption_cues([caption], sentence_pages=True)
-        self.assertEqual(parts, [p["text"] for p in pages])
+        # One line per page: clauses stay whole where they fit, longer ones become even pages.
+        self.assertEqual(text, "".join(p["text"] for p in pages))
+        self.assertIn("一个项目跟了半年，临到成交，", [p["text"] for p in pages])
+        self.assertTrue(all(_line_width(p["text"]) <= CAPTION_LINE_WIDTH and len(spoken_key(p["text"])) > 3 for p in pages))
         self.assertEqual(words, [w for p in pages for w in p["words"]])
         self.assertEqual([p["start_ms"] for p in pages[1:]], [p["end_ms"] for p in pages[:-1]])
         internal_short_clause = "这个项目已经经过多次现场沟通并且马上就要进入合同签订阶段，好，我们还需要继续跟进客户的现场需求以及采购计划才能完成交付，"
         no_flash = reference_caption_cues([{"text": internal_short_clause, "start_ms": 0, "end_ms": 9000}], sentence_pages=True)
         self.assertEqual(internal_short_clause, "".join(p["text"] for p in no_flash))
-        self.assertTrue(all(len(p["text"]) > 3 for p in no_flash))
+        self.assertTrue(all(len(spoken_key(p["text"])) > 3 and _line_width(p["text"]) <= CAPTION_LINE_WIDTH for p in no_flash))
 
 
     def test_sentence_pages_split_at_full_stop_not_comma(self):
@@ -164,7 +169,7 @@ class VideoPresentationTests(unittest.TestCase):
             pages = reference_caption_cues([{'text': text, 'start_ms': 0, 'end_ms': len(words) * 500,
                                             'alignment': alignment}], sentence_pages=True)
             self.assertEqual(text, ''.join(page['text'] for page in pages))
-            self.assertTrue(all(3 < len(page['text']) <= 42 for page in pages))
+            self.assertTrue(all(3 < len(page['text']) and _line_width(page['text']) <= CAPTION_LINE_WIDTH for page in pages))
             if alignment:
                 self.assertEqual(words, [word for page in pages for word in page['words']])
             else:

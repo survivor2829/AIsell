@@ -11,6 +11,11 @@ const { planVideo, SCENES, SURFACES, DIRT, GOALS, FACT_LIMIT } = require('./vide
 const { createPriceReader, validPrices, quotePlan, round } = require('./product-video-pricing.cjs');
 const mediaTools = require('./product-video-media.cjs');
 const story = require('./story-video-director.cjs');
+const real = require('./real-shoot-director.cjs');
+const sceneCatalog = require('./scene-video-catalog.cjs');
+const { estimateTask, recordTiming, readTimings } = require('./product-video-eta.cjs');
+// Shots of one video made at the same time (each is its own Wan3 task); more wait for a free slot.
+const SHOT_SLOTS = 3, IMAGE_SLOTS = 4;
 const ASR_RETRY_ERRORS = new Set(['product_video_asr_failed', 'product_video_caption_timing_missing', 'product_video_caption_words_missing',
   'product_video_caption_words_mismatch', 'product_video_caption_words_invalid', 'product_video_caption_out_of_bounds', 'product_video_caption_overlap', 'product_video_caption_too_long']);
 const { upscaleTo1080Size } = require('./video-upscale.cjs');
@@ -21,7 +26,8 @@ const LABELS = { draft: '方案已保存', uploading: '上传产品图', prepari
 // 剧情版 image steps, in the order they are made after the 定妆照 is confirmed.
 const storyImageKeys = (segments) => ['scene', 'floor', 'person_a', 'person_b',
   ...Array.from({ length: segments }, (_, s) => Array.from({ length: story.SHOTS_PER_SEGMENT }, (_, k) => `frame_${s}_${k}`)).flat()];
-const IMAGE_LABEL = { sheet: '定妆照', scene: '场景图', floor: '地面对照图', person_a: '人物', person_b: '人物' };
+const IMAGE_LABEL = { sheet: '定妆照', scene: '场景图', floor: '地面对照图', person_a: '人物', person_b: '人物', plate: '场景图' };
+const shotPipeline = (task) => task.plan.pipelineVersion >= 5;
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const publicMusic = (music) => music ? { status: music.status === 'ready' ? 'ready' : 'unavailable',
   source: cleanMessage(music.source || ''), message: cleanMessage(music.message || ''),
@@ -76,14 +82,34 @@ function createProductVideoService(options = {}) {
       ledger: allOperations(task).filter((op) => op.reserveCny).map((op) => ({ stage: op.name, reserveCny: op.reserveCny,
         actualCny: op.actualCny ?? null, actualUsd: op.actualUsd ?? null, credits: op.credits ?? null, status: op.rejected ? 'rejected' : Number.isFinite(op.actualCny) ? 'supplier_receipt' : 'pending_bill', submittedAt: op.submittedAt })) };
   }
+  // How far along a 剧情版 or 无人实拍 task is, for the page ring and the desk pet.
+  function progressOf(task) {
+    if (task.status === 'completed') return 100;
+    const total = Math.max(1, task.plan.shots.length), done = task.shots.filter((shot) => shot.file).length;
+    const finishing = ['assembling', 'transcribing', 'packaging', 'enhancing'].includes(task.status) ? 1 : 0;
+    if (task.plan.pipelineVersion === 6) return Math.min(97, Math.round((task.images?.plate?.file ? 10 : 0) + done / total * 80 + finishing * 5));
+    if (task.plan.pipelineVersion === 5) {
+      const pictures = Object.keys(task.images || {}).filter((key) => !key.startsWith('grid_') && task.images[key].file).length;
+      return Math.min(97, Math.round(pictures / Math.max(1, task.plan.imageCount) * 45 + (task.story ? 5 : 0) + done / total * 42 + finishing * 5));
+    }
+    return Math.round(done / total * 88 + finishing * 4);
+  }
   function publicTask(task) {
+    const eta = estimateTask(task, readTimings(root), { shotSlots: SHOT_SLOTS, imageSlots: IMAGE_SLOTS });
+    const shotsDone = task.shots.filter((shot) => shot.file).length;
     return { id: task.id, mode: task.mode, version: task.version, status: task.status,
-      statusLabel: task.plan.pipelineVersion === 5 && task.status === 'imaging' ? (task.story ? '画场景、人物和分镜' : '出定妆照') : task.plan.pipelineVersion === 5 && task.status === 'uploading' ? '准备产品图'
-        : task.plan.pipelineVersion === 5 && ['submitting', 'generating'].includes(task.status) ? `拍第 ${task.currentShot + 1} 段视频`
+      statusLabel: task.plan.pipelineVersion === 6 && task.status === 'imaging' ? '画拍摄场地'
+        : task.plan.pipelineVersion === 6 && ['submitting', 'generating'].includes(task.status) ? `拍镜头（${shotsDone}/${task.shots.length} 好了）`
+        : task.plan.pipelineVersion === 6 && task.status === 'assembling' ? '拼接镜头' : task.plan.pipelineVersion === 6 && task.status === 'packaging' ? '加字幕'
+        : task.plan.pipelineVersion === 5 && task.status === 'imaging' ? (task.story ? '画场景、人物和分镜' : '出定妆照') : task.plan.pipelineVersion === 5 && task.status === 'uploading' ? '准备产品图'
+        : task.plan.pipelineVersion === 5 && ['submitting', 'generating'].includes(task.status) ? `拍视频（${shotsDone}/${task.shots.length} 段好了）`
         : task.plan.pipelineVersion === 4 && task.status === 'locking_frames' ? '核对产品原图与制作方案' : LABELS[task.status] || '需要处理', createdAt: task.createdAt, updatedAt: task.updatedAt,
       durationSeconds: task.durationSeconds, sceneId: task.sceneId, sceneIds: task.sceneIds || task.plan.sceneIds || [], surfaceId: task.surfaceId, dirtId: task.dirtId, goalId: task.goalId,
       productName: task.productName || '', facts: task.facts, expression: task.expression, imageId: task.imageId, budgetCny: task.budgetCny, quote: quote(task),
-      plan: task.plan, currentShot: task.currentShot, completedShots: task.shots.filter((shot) => shot.file).length, shotsReady: task.shots.map((shot) => Boolean(shot.file)),
+      plan: task.plan, currentShot: task.currentShot, completedShots: shotsDone, shotsReady: task.shots.map((shot) => Boolean(shot.file)),
+      shotsRunning: task.shots.map((shot) => Boolean(shot.providerTaskId && !shot.file)),
+      progress: progressOf(task), etaSeconds: eta, estimatedFinishAt: eta === null ? null : new Date(Date.now() + eta * 1000).toISOString(),
+      ...(task.plan.pipelineVersion === 6 ? { realPipeline: true, imagesReady: { plate: Boolean(task.images?.plate?.file) } } : {}),
       preparation: task.plan.pipelineVersion >= 3 ? { referenceMode: task.plan.pipelineVersion === 4 ? 'original_product_image' : 'scene_first_frames',
         inputsLocked: Boolean(task.frameManifest), framesReady: task.shots.filter((shot) => shot.frameFile).length, framesLocked: task.plan.pipelineVersion !== 4 && Boolean(task.frameManifest),
         ruleCheck: task.frameManifest?.ruleCheck || 'pending', visualReview: 'not_performed', audioReady: Boolean(task.audio), music: publicMusic(task.audio?.music) } : undefined,
@@ -139,11 +165,18 @@ function createProductVideoService(options = {}) {
   }
   async function create(input) {
     return admit(async () => {
-      if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['mode','durationSeconds','sceneId','sceneIds','surfaceId','dirtId','goalId','expression','facts','imageId','productName','budgetCny','style'].includes(key))) throw fail('product_video_invalid_input', '请重新填写视频需求。');
-      if (input.style !== undefined && input.style !== 'story') throw fail('product_video_invalid_input', '请重新填写视频需求。');
+      if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['mode','durationSeconds','sceneId','sceneIds','surfaceId','dirtId','goalId','expression','facts','imageId','productName','budgetCny','style',
+        'deviceId','floorId','dirtIds','pointIds','extraImageIds'].includes(key))) throw fail('product_video_invalid_input', '请重新填写视频需求。');
+      if (input.style !== undefined && !['story', 'real'].includes(input.style)) throw fail('product_video_invalid_input', '请重新填写视频需求。');
+      const storyStyle = input.style === 'story', realStyle = input.style === 'real';
+      if (!realStyle && ['deviceId', 'floorId', 'dirtIds', 'pointIds', 'extraImageIds'].some((key) => input[key] !== undefined)) throw fail('product_video_invalid_input', '请重新填写视频需求。');
       asset(input.imageId);
-      const storyStyle = input.style === 'story';
-      const plan = { ...(storyStyle ? story.planStoryVideo(input) : planVideo(input)), retryPolicy: 'one_failed_video' }, automaticBudget = input.budgetCny === undefined;
+      if (realStyle) {
+        const extra = input.extraImageIds ?? [];
+        if (!Array.isArray(extra) || extra.length > real.MAX_PRODUCT_IMAGES - 1 || new Set([input.imageId, ...extra]).size !== extra.length + 1) throw fail('product_video_invalid_input', `产品图最多${real.MAX_PRODUCT_IMAGES}张，且不能重复。`);
+        extra.forEach((id) => asset(id));
+      }
+      const plan = { ...(realStyle ? real.planRealShoot(input) : storyStyle ? story.planStoryVideo(input) : planVideo(input)), retryPolicy: 'one_failed_video' }, automaticBudget = input.budgetCny === undefined;
       let budgetCny = automaticBudget ? 0 : Number(input.budgetCny);
       if (!automaticBudget && (!Number.isFinite(budgetCny) || budgetCny <= 0 || budgetCny > 10000)) throw fail('product_video_budget_invalid', '本次制作额度无效，请联系管理员。');
       let prices; try { prices = await readPrices(plan); } catch { /* Drafting remains usable offline. */ }
@@ -151,7 +184,8 @@ function createProductVideoService(options = {}) {
       hold();
       const id = `pv_${randomUUID()}`, createdAt = new Date().toISOString();
       const task = { ...input, productName: String(input.productName || '').trim(), facts: String(input.facts || '').trim(), expression: String(input.expression || '').trim(),
-        id, createdAt, updatedAt: createdAt, version: 3, audioVoicePolicy: storyStyle ? 'model_dialogue' : 'workbench', presentationPolicy: storyStyle ? 'dialogue' : 'reference_narration', ...(storyStyle ? { images: {}, sheetRedos: 0 } : {}), status: 'draft', budgetCny, budgetPolicy: automaticBudget ? 'quoted_production' : 'explicit', prices, plan, sceneIds: plan.sceneIds, currentShot: 0, shots: plan.shots.map(() => ({})), operations: {}, archivedOperations: [], autoRetryFailedVideo: true, videoRetryCount: 0 };
+        id, createdAt, updatedAt: createdAt, version: 3, audioVoicePolicy: realStyle ? 'model_ambient' : storyStyle ? 'model_dialogue' : 'workbench', presentationPolicy: realStyle ? 'planned_captions' : storyStyle ? 'dialogue' : 'reference_narration',
+        ...(storyStyle ? { images: {}, sheetRedos: 0 } : realStyle ? { images: {}, extraImageIds: input.extraImageIds || [] } : {}), status: 'draft', budgetCny, budgetPolicy: automaticBudget ? 'quoted_production' : 'explicit', prices, plan, sceneIds: plan.sceneIds, currentShot: 0, shots: plan.shots.map(() => ({})), operations: {}, archivedOperations: [], autoRetryFailedVideo: true, videoRetryCount: 0 };
       save(task); return publicTask(task);
     });
   }
@@ -161,14 +195,27 @@ function createProductVideoService(options = {}) {
       && state.capabilities?.volcengine_asr && typeof options.writeStory === 'function' && validPrices(prices));
     return { ready, message: ready ? '' : '写故事、出图、视频或报价暂未就绪，未提交任何付费生成；稍后再试。' };
   }
+  // 无人实拍: the same Wan3 sound video and picture prices as the 剧情版, but no story writer and no speech recognition.
+  async function realReadiness(state) {
+    let prices; try { prices = await readPrices({ pipelineVersion: 6 }); } catch { prices = null; }
+    const ready = Boolean(state?.ready && state.capabilities?.apimart && state.capabilities?.bailian && state.capabilities?.bailian_video && validPrices(prices));
+    return { ready, message: ready ? '' : '出图、视频或报价暂未就绪，未提交任何付费生成；稍后再试。' };
+  }
+  // Typical step times on this computer, so the page can say how long a new video will take before it starts.
+  function timing() {
+    const timings = readTimings(root), r = require('./product-video-eta.cjs').rates(timings);
+    return { image: Math.round(r.image), story: Math.round(r.story), finish: Math.round(r.finish), video15: Math.round(r.video(15)), video6: Math.round(r.video(6)), shotSlots: SHOT_SLOTS, imageSlots: IMAGE_SLOTS };
+  }
   async function capabilities(plan = { pipelineVersion: 4 }) {
     let prices; try { prices = await readPrices(plan); } catch { prices = { ready: false, message: '报价暂不可用，仍可先保存视频方案。' }; }
     const choices = { scenes: SCENES, surfaces: SURFACES, dirt: DIRT, goals: GOALS, prices, videoPricePerSecondUsd: prices.estimatedVideoUsdPerSecond ?? null,
-      videoPricePerSecondCny: prices.videoCnyPerSecond ?? null };
-    if (!options.gatewayClient?.isEnabled?.()) return { ...choices, ready: false, message: '生成服务暂不可用，仍可先保存方案。', story: { ready: false, message: '生成服务暂不可用。' } };
+      videoPricePerSecondCny: prices.videoCnyPerSecond ?? null, catalog: sceneCatalog.choices(), timing: timing() };
+    if (!options.gatewayClient?.isEnabled?.()) return { ...choices, ready: false, message: '生成服务暂不可用，仍可先保存方案。', story: { ready: false, message: '生成服务暂不可用。' }, real: { ready: false, message: '生成服务暂不可用。' } };
     const state = await options.gatewayClient.initialize({ verify: true });
     if (plan.pipelineVersion === 5) { const ready = await storyReadiness(state); return { ...choices, ...ready, story: ready }; }
+    if (plan.pipelineVersion === 6) { const ready = await realReadiness(state); return { ...choices, ...ready, real: ready }; }
     choices.story = await storyReadiness(state);
+    choices.real = await realReadiness(state);
     const official = plan.pipelineVersion >= 3;
     const videoReady = official ? state.capabilities?.bailian && state.capabilities?.bailian_video : state.capabilities?.apimart_video;
     const audioReady = !official || typeof options.prepareAudio === 'function';
@@ -188,6 +235,13 @@ function createProductVideoService(options = {}) {
   }
   function futureReserve(task, exclude, proposedReserve = 0) {
     if (!validPrices(task.prices)) throw fail('product_video_price_unavailable', '报价已失效，请刷新核价后继续。');
+    if (task.plan.pipelineVersion === 6) {
+      if (!task.prices.storyPipeline) throw fail('product_video_price_unavailable', '报价与无人实拍不匹配，未提交付费请求。');
+      let total = 0;
+      if (!task.images?.plate?.file && !task.operations.img_plate && exclude !== 'img_plate') total += round(task.prices.imageUsd * task.prices.fxCnyPerUsd);
+      task.plan.shots.forEach((shot, index) => { if (!task.shots[index].file && !task.operations[`shot_${index}`] && exclude !== `shot_${index}`) total += videoReserve(task, shot); });
+      return total;
+    }
     if (task.plan.pipelineVersion === 5) {
       if (!task.prices.storyPipeline) throw fail('product_video_price_unavailable', '报价与剧情版不匹配，未提交付费请求。');
       const image = round(task.prices.imageUsd * task.prices.fxCnyPerUsd); let total = 0;
@@ -286,6 +340,14 @@ function createProductVideoService(options = {}) {
   }
   function checkPlan(task) {
     if (task.plan.pipelineVersion < 3) return;
+    if (task.plan.pipelineVersion === 6) {
+      if (task.plan.videoModel !== wan.DIRECT_MODEL || task.plan.videoAudio !== true || task.plan.sourceResolution !== '480p' || !sceneCatalog.DURATIONS.includes(task.durationSeconds)
+        || !task.plan.platePrompt || task.plan.shots.reduce((sum, shot) => sum + shot.seconds, 0) !== task.durationSeconds
+        || task.plan.shots.some((shot) => !shot.prompt || [...shot.prompt].length > real.PROMPT_LIMIT || shot.seconds < 2 || shot.seconds > 15)
+        || task.plan.productImages !== 1 + (task.extraImageIds || []).length)
+        throw fail('product_video_plan_invalid', '无人实拍方案与模型、时长不一致，请重新生成。');
+      return;
+    }
     if (task.plan.pipelineVersion === 5) {
       if (task.plan.videoModel !== wan.DIRECT_MODEL || task.plan.videoAudio !== true || task.plan.sourceResolution !== '480p' || !story.STORY_SECONDS.includes(task.durationSeconds)
         || task.plan.shots.length !== task.plan.segments || task.plan.shots.reduce((sum, shot) => sum + shot.seconds, 0) !== task.durationSeconds)
@@ -365,6 +427,7 @@ function createProductVideoService(options = {}) {
     save(task);
   }
   function storyImageSpec(task, key) {
+    if (key === 'plate' && task.plan.pipelineVersion === 6) return { prompt: task.plan.platePrompt, refs: [], size: '9:16' };
     const st = task.story;
     if (key === 'sheet') return { prompt: story.sheetPrompt(task.plan.productName), refs: ['product'], size: '1:1' };
     if (!st) throw fail('product_video_story_missing', '故事还没写好，未提交出图。');
@@ -396,7 +459,71 @@ function createProductVideoService(options = {}) {
     const bytes = fs.readFileSync(contained(root, temporary)), mime = imageMime(bytes);
     const relative = `${task.id}/img-${key}${{ 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp' }[mime]}`;
     fs.renameSync(contained(root, temporary), contained(root, relative));
-    Object.assign(image, { file: relative, url, sha256: digest(bytes) }); save(task); return true;
+    Object.assign(image, { file: relative, url, sha256: digest(bytes) }); save(task);
+    recordTiming(root, 'image', (Date.now() - Date.parse(task.operations[`img_${key}`]?.submittedAt)) / 1000);
+    return true;
+  }
+  // Pictures a few at a time: check those ordered, then order the next ones whose reference pictures
+  // are ready. True once every one is saved.
+  async function advanceImages(task, keys) {
+    for (const key of keys) if (task.images[key]?.taskId && !task.images[key].file) await storyImage(task, key);
+    let running = keys.filter((key) => task.images[key]?.taskId && !task.images[key].file).length;
+    for (const key of keys) {
+      if (running >= IMAGE_SLOTS) break;
+      if (task.images[key]?.file || task.images[key]?.taskId) continue;
+      if (storyImageSpec(task, key).refs.some((ref) => ref !== 'product' && !task.images[ref]?.file)) continue;
+      try { await storyImage(task, key); running += 1; }
+      catch (error) {
+        // The service is busy: wait for the pictures already ordered and try this one again later.
+        if (error.status !== 429 || !running) throw error;
+        releaseRejected(task, `img_${key}`); delete task.images[key]; save(task); break;
+      }
+    }
+    return keys.every((key) => task.images[key]?.file);
+  }
+  // A request the service turned away for being busy bought nothing: keep its record and allow it again.
+  function releaseRejected(task, name) {
+    const op = task.operations[name];
+    if (op?.rejected) { (task.archivedOperations ||= []).push(op); delete task.operations[name]; }
+  }
+  // One shot's Wan3 task: check it and save the clip once it is ready.
+  async function pollShot(task, index) {
+    const shot = task.shots[index], name = `shot_${index}`;
+    const result = await provider.request(wan.pollRequest(shot.providerTaskId).route);
+    const node = wan.normalizePoll(result);
+    task.operations[name].supplierStatus = node.status; task.operations[name].usage = result.usage || null; save(task);
+    if (node.status === 'failed') { task.currentShot = index; throw fail('product_video_video_failed', `第 ${index + 1} 个镜头没有拍成：${cleanMessage(node.error || '请重试。')}`, { shotIndex: index }); }
+    if (node.status !== 'completed') return false;
+    const relative = `${task.id}/shot-${index}.mp4`;
+    await provider.download(node.videoUrl, contained(root, relative));
+    const bytes = fs.readFileSync(contained(root, relative));
+    if (bytes.length < 1024 || bytes.toString('ascii', 4, 8) !== 'ftyp') { task.currentShot = index; throw fail('product_video_download_invalid', '结果不是有效视频，云端任务已保留。', { shotIndex: index }); }
+    shot.file = relative; save(task);
+    recordTiming(root, 'video', { out: task.plan.shots[index].seconds, seconds: (Date.now() - Date.parse(shot.submittedAt || task.operations[name].submittedAt)) / 1000 });
+    return true;
+  }
+  // 剧情版 and 无人实拍: every shot is its own Wan3 task, so up to SHOT_SLOTS are made at once
+  // instead of one after another. Each keeps its own receipt; a failed one is redone by itself.
+  async function advanceShots(task, requestFor) {
+    for (const [index, shot] of task.shots.entries()) if (shot.providerTaskId && !shot.file) await pollShot(task, index);
+    let running = task.shots.filter((shot) => shot.providerTaskId && !shot.file).length;
+    for (const [index, shot] of task.shots.entries()) {
+      if (running >= SHOT_SLOTS) break;
+      if (shot.file || shot.providerTaskId) continue;
+      task.currentShot = index;
+      const request = await requestFor(index);
+      let response;
+      try { response = await operation(task, `shot_${index}`, request.route, request.body, videoReserve(task, task.plan.shots[index]), request.headers); }
+      catch (error) {
+        if (error.status !== 429 || !running) throw error;
+        releaseRejected(task, `shot_${index}`); save(task); break;
+      }
+      shot.providerTaskId = wan.taskIdOf(response); shot.submittedAt = new Date().toISOString(); save(task); running += 1;
+    }
+    if (task.shots.every((shot) => shot.file)) {
+      task.currentShot = task.shots.length - 1; task.finishStartedAt = new Date().toISOString(); task.status = 'assembling'; save(task); return true;
+    }
+    task.status = 'generating'; save(task); return false;
   }
   // A small JPEG of a picture, named after its content: a redone picture never reuses the old copy,
   // and the page and the background job share one conversion.
@@ -428,9 +555,7 @@ function createProductVideoService(options = {}) {
     const segments = task.plan.segments;
     if (task.status === 'uploading') { await upload(task); task.status = 'imaging'; save(task); }
     if (task.status === 'imaging') {
-      const queue = task.story ? storyImageKeys(segments) : ['sheet'];
-      const key = queue.find((name) => !task.images[name]?.file);
-      if (key) { await storyImage(task, key); return; }
+      if (!await advanceImages(task, task.story ? storyImageKeys(segments) : ['sheet'])) return;
       task.status = task.story ? 'composing' : 'awaiting_sheet'; save(task); return;
     }
     if (task.status === 'writing_story') {
@@ -450,6 +575,7 @@ function createProductVideoService(options = {}) {
         task.storyAttempts.push(String(error.message || '').replace(/，没有继续花钱，请重试。$/u, '')); save(task); return;
       }
       task.storyAttempts = [];
+      recordTiming(root, 'story', (Date.now() - Date.parse(task.operations[name]?.submittedAt)) / 1000);
       // Every prompt is built once now, so a bad story stops before the first paid picture.
       storyImageKeys(segments).forEach((key) => storyImageSpec(task, key));
       task.plan.shots.forEach((_, index) => story.videoPrompt(task.story, index));
@@ -465,18 +591,13 @@ function createProductVideoService(options = {}) {
       }
       task.currentShot = Math.max(0, task.shots.findIndex((shot) => !shot.file)); task.status = task.shots.every((shot) => shot.file) ? 'assembling' : 'submitting'; save(task);
     }
-    if (task.status === 'submitting') {
-      const index = task.currentShot;
-      const images = [];
-      for (const key of ['sheet', 'scene', 'floor', `grid_${index}`, 'person_a', 'person_b']) images.push(await storyReference(task, key));
-      const request = wan.storyVideoRequest({ images, prompt: story.videoPrompt(task.story, index), seconds: task.plan.shots[index].seconds });
-      const response = await operation(task, `shot_${index}`, request.route, request.body, videoReserve(task, task.plan.shots[index]), request.headers);
-      task.shots[index].providerTaskId = wan.taskIdOf(response); task.status = 'generating'; save(task);
-    }
-    if (task.status === 'generating') {
-      if (!await poll(task, 'video')) return;
-      const next = task.shots.findIndex((shot) => !shot.file);
-      task.currentShot = next < 0 ? task.shots.length - 1 : next; task.status = next < 0 ? 'assembling' : 'submitting'; save(task); return;
+    if (['submitting', 'generating'].includes(task.status)) {
+      const done = await advanceShots(task, async (index) => {
+        const images = [];
+        for (const key of ['sheet', 'scene', 'floor', `grid_${index}`, 'person_a', 'person_b']) images.push(await storyReference(task, key));
+        return wan.storyVideoRequest({ images, prompt: story.videoPrompt(task.story, index), seconds: task.plan.shots[index].seconds });
+      });
+      if (!done) return;
     }
     if (task.status === 'assembling') {
       const relative = `${task.id}/source-480p.mp4`;
@@ -503,9 +624,48 @@ function createProductVideoService(options = {}) {
         fs.writeFileSync(contained(root, `${task.id}/final.srt`), task.captions.srt, 'utf8'); task.subtitleFile = `${task.id}/final.srt`;
       } else await (options.enhanceVideo || upscaleTo1080Size)({ source: contained(root, task.sourceFile), destination: contained(root, relative), ffmpegPath });
       task.finalFile = relative; task.status = 'completed'; save(task);
+      recordTiming(root, 'finish', (Date.now() - Date.parse(task.finishStartedAt)) / 1000);
+    }
+  }
+  // A product photo as a JPEG of at most 1600 px, made once per photo and sent inline to the video model.
+  async function productReference(task, imageId) {
+    const source = asset(imageId), relative = `${task.id}/product-${source.sha256.slice(0, 16)}.jpg`, full = contained(root, relative);
+    if (!fs.existsSync(full)) await media.referenceJpeg({ source: source.path, destination: full, ffmpegPath });
+    return `data:image/jpeg;base64,${fs.readFileSync(full).toString('base64')}`;
+  }
+  // 无人实拍 (pipeline 6): one empty scene picture, then every shot from the product photos (and that
+  // picture for shots in the venue) with the machine's own sound, then one subtitle line per shot.
+  async function advanceReal(task) {
+    ensureRunning();
+    if (task.status === 'imaging') {
+      if (!await advanceImages(task, ['plate'])) return;
+      task.status = 'submitting'; save(task);
+    }
+    if (['submitting', 'generating'].includes(task.status)) {
+      const done = await advanceShots(task, async (index) => {
+        const shot = task.plan.shots[index], images = [];
+        for (const id of [task.imageId, ...(task.extraImageIds || [])]) images.push(await productReference(task, id));
+        if (shot.place === 'venue') images.push(await storyReference(task, 'plate'));
+        return wan.storyVideoRequest({ images, prompt: shot.prompt, seconds: shot.seconds });
+      });
+      if (!done) return;
+    }
+    if (task.status === 'assembling') {
+      const relative = `${task.id}/source-480p.mp4`;
+      await media.normalizeAndAssemble({ shots: task.shots.map((shot, i) => ({ path: contained(root, shot.file), seconds: task.plan.shots[i].seconds })), destination: contained(root, relative), ffmpegPath });
+      task.sourceFile = relative; task.captions = media.buildPlannedCaptions({ cues: real.plannedCaptions(task.plan), durationSeconds: task.durationSeconds });
+      task.status = 'packaging'; save(task);
+    }
+    if (task.status === 'packaging') {
+      const relative = `${task.id}/final.mp4`;
+      await media.renderCaptioned({ source: contained(root, task.sourceFile), destination: contained(root, relative), captions: task.captions, ffmpegPath });
+      fs.writeFileSync(contained(root, `${task.id}/final.srt`), task.captions.srt, 'utf8'); task.subtitleFile = `${task.id}/final.srt`;
+      task.finalFile = relative; task.status = 'completed'; save(task);
+      recordTiming(root, 'finish', (Date.now() - Date.parse(task.finishStartedAt)) / 1000);
     }
   }
   async function advance(task) {
+    if (task.plan.pipelineVersion === 6) return advanceReal(task);
     if (task.plan.pipelineVersion === 5) return advanceStory(task);
     ensureRunning();
     const official = task.plan.pipelineVersion >= 3;
@@ -610,10 +770,12 @@ function createProductVideoService(options = {}) {
     task.error = cleanMessage(error.message || '制作需要处理。'); task.errorCode = error.code || 'product_video_step_failed';
     if (['product_video_native_audio_missing', 'product_video_shot_too_short'].includes(error.code)
       && Number.isInteger(error.shotIndex) && error.shotIndex >= 0 && error.shotIndex < task.shots.length) task.failedShotIndex = error.shotIndex;
+    // Pictures are made a few at a time: remember which one failed so only that one is redone.
+    if (error.code === 'product_video_image_failed' && typeof error.imageKey === 'string' && task.images?.[error.imageKey]) task.failedImageKey = error.imageKey;
     save(task);
   }
   async function recoverReceipt(task) {
-    const pendingImage = task.plan.pipelineVersion === 5 && task.resumeStatus === 'imaging' ? Object.keys(task.images || {}).find((key) => !task.images[key].file) : '';
+    const pendingImage = task.plan.pipelineVersion >= 5 && task.resumeStatus === 'imaging' ? Object.keys(task.images || {}).find((key) => !task.images[key].file) : '';
     const stageKey = { preparing_frames: `frame_${task.currentShot}`, submitting: `shot_${task.currentShot}`, transcribing: 'asr', uploading: 'upload_image', writing_story: 'story', imaging: pendingImage && `img_${pendingImage}` }[task.resumeStatus];
     const entry = task.operations[stageKey] || Object.values(task.operations).find((op) => !op.response && !op.rejected);
     if (!entry) return;
@@ -692,7 +854,8 @@ function createProductVideoService(options = {}) {
       checkPlan(task);
       const status = await capabilities(task.plan); if (!status.ready) throw fail('product_video_provider_unavailable', status.message);
       await verifyQuote(task); hold();
-      task.status = task.plan.pipelineVersion === 4 ? 'locking_frames' : 'uploading'; save(task); schedule(id); return publicTask(task);
+      task.status = task.plan.pipelineVersion === 4 ? 'locking_frames' : task.plan.pipelineVersion === 6 ? 'imaging' : 'uploading';
+      task.startedAt = new Date().toISOString(); save(task); schedule(id); return publicTask(task);
     });
   }
   async function retryShot(id) {
@@ -705,9 +868,10 @@ function createProductVideoService(options = {}) {
       }
       const index = task.currentShot;
       let name;
-      if (task.plan.pipelineVersion === 5 && task.errorCode === 'product_video_image_failed') {
-        const key = Object.keys(task.images || {}).find((k) => !task.images[k].file);
+      if (task.plan.pipelineVersion >= 5 && task.errorCode === 'product_video_image_failed') {
+        const key = task.failedImageKey && task.images?.[task.failedImageKey] && !task.images[task.failedImageKey].file ? task.failedImageKey : Object.keys(task.images || {}).find((k) => !task.images[k].file);
         if (key) { name = `img_${key}`; delete task.images[key]; }
+        delete task.failedImageKey;
         task.resumeStatus = 'imaging';
       } else if (task.plan.pipelineVersion === 5 && task.errorCode === 'product_video_story_invalid') {
         for (const key of Object.keys(task.operations).filter((k) => /^story(?:_\d+)?$/u.test(k))) { (task.archivedOperations ||= []).push(task.operations[key]); delete task.operations[key]; }
@@ -760,7 +924,7 @@ function createProductVideoService(options = {}) {
   // A picture made for a 剧情版 (定妆照、场景、人物、分镜), small enough for the page.
   async function storyImageMedia(id, key) {
     const task = read(id);
-    if (!/^(?:sheet|scene|floor|person_[ab]|grid_\d{1,2})$/u.test(String(key || '')) || !task.images?.[key]?.file) throw fail('product_video_not_ready', '这张图还没准备好。');
+    if (!/^(?:sheet|scene|floor|plate|person_[ab]|grid_\d{1,2})$/u.test(String(key || '')) || !task.images?.[key]?.file) throw fail('product_video_not_ready', '这张图还没准备好。');
     return { dataUrl: `data:image/jpeg;base64,${(await fsp.readFile(await storyJpeg(task, key))).toString('base64')}` };
   }
   function preview(id) {

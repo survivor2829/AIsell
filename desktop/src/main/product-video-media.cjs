@@ -101,15 +101,13 @@ async function extractAudio({ source, destination, ffmpegPath = 'ffmpeg' }) {
 
 const cleanText = (value) => String(value || '').normalize('NFC').replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim();
 const width = (text) => Array.from(text).reduce((sum, char) => sum + (char.codePointAt(0) <= 0x7f ? 0.5 : 1), 0);
+// One line only (user, 2026-11-19: two lines look cheap). 10 wide at 96 px fills the frame;
+// longer speech is cut into more cues by its word timings instead of wrapping.
+const LINE_WIDTH = 10;
 function wrap(text) {
-  const lines = []; let line = '';
-  for (const char of text) {
-    if (width(line + char) > 10) { lines.push(line.trim()); line = ''; }
-    line += char;
-  }
-  if (line.trim()) lines.push(line.trim());
-  if (lines.length > 2) throw mediaError('product_video_caption_too_long', '字幕过长，需要按实际词级时间分句。');
-  return lines;
+  const line = text.trim();
+  if (width(line) > LINE_WIDTH) throw mediaError('product_video_caption_too_long', '字幕过长，需要按实际词级时间分句。');
+  return [line];
 }
 function timing(node, scale) {
   const start = node?.start_time ?? node?.startTime ?? node?.start;
@@ -129,7 +127,7 @@ function spokenCharacters(text) {
   return result;
 }
 function timedParts(utterance, text, span, scale) {
-  if (width(text) <= 20) return [{ ...span, text }];
+  if (width(text) <= LINE_WIDTH) return [{ ...span, text }];
   if (!Array.isArray(utterance.words) || !utterance.words.length) {
     throw mediaError('product_video_caption_words_missing', '较长的对白缺少词级时间，原声已保留，请重新识别字幕。');
   }
@@ -151,11 +149,11 @@ function timedParts(utterance, text, span, scale) {
   const pieces = []; let current;
   tokens.forEach((token, index) => {
     const value = text.slice(index === 0 ? 0 : token.offset, tokens[index + 1]?.offset ?? text.length);
-    if (width(value) > 20) throw mediaError('product_video_caption_words_missing', '单个识别词过长，无法可靠分配字幕时间。');
-    if (current && width(current.text + value) > 20) { pieces.push(current); current = undefined; }
+    if (width(value.trim()) > LINE_WIDTH) throw mediaError('product_video_caption_words_missing', '单个识别词过长，无法可靠分配字幕时间。');
+    if (current && width((current.text + value).trim()) > LINE_WIDTH) { pieces.push(current); current = undefined; }
     if (!current) current = { start: token.start, end: token.end, text: value };
     else { current.text += value; current.end = token.end; }
-    if (/[，。！？；,.!?;]\s*$/u.test(current.text) && width(current.text) >= 7) { pieces.push(current); current = undefined; }
+    if (/[，。！？；,.!?;]\s*$/u.test(current.text) && width(current.text) >= 5) { pieces.push(current); current = undefined; }
   });
   if (current) pieces.push(current);
   return pieces.map((piece) => ({ ...piece, text: piece.text.trim() }));
@@ -195,7 +193,22 @@ function buildCaptions({ utterances, timeUnit = 'ms', durationSeconds } = {}) {
     }
   }
   if (!cues.length) throw mediaError('product_video_caption_timing_missing', '没有可用的带时间对白。');
-  const ass = `[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nWrapStyle: 2\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Spoken,Microsoft YaHei,96,&H00FFFFFF,&H00FFFFFF,&H00202020,&H00000000,-1,0,0,0,100,100,0,0,1,4,1,8,60,60,150,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`
+  return captionFiles(cues);
+}
+// Subtitles written from the plan (无人实拍: one selling point per shot), not from speech.
+function buildPlannedCaptions({ cues: planned, durationSeconds } = {}) {
+  if (!Array.isArray(planned) || !planned.length) throw mediaError('product_video_caption_missing', '没有可用的字幕。');
+  const cues = planned.map((cue) => {
+    const text = cleanText(cue.text);
+    if (!text || !Number.isFinite(cue.start) || !Number.isFinite(cue.end) || cue.end <= cue.start || cue.start < 0
+      || (Number.isFinite(durationSeconds) && cue.end > durationSeconds + 0.01)) throw mediaError('product_video_caption_timing_missing', '字幕时间无效。');
+    return { start: cue.start, end: cue.end, text, lines: wrap(text) };
+  }).sort((a, b) => a.start - b.start);
+  cues.forEach((cue, i) => { if (i && cues[i - 1].end > cue.start) throw mediaError('product_video_caption_overlap', '字幕时间重叠。'); });
+  return captionFiles(cues);
+}
+function captionFiles(cues) {
+  const ass =`[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nWrapStyle: 2\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Spoken,Microsoft YaHei,96,&H00FFFFFF,&H00FFFFFF,&H00202020,&H00000000,-1,0,0,0,100,100,0,0,1,4,1,8,60,60,150,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`
     + cues.map((cue) => `Dialogue: 0,${assClock(cue.start)},${assClock(cue.end)},Spoken,,0,0,0,,${cue.lines.map(escapeAss).join('\\N')}`).join('\n') + '\n';
   const srt = cues.map((cue, index) => `${index + 1}\n${srtClock(cue.start)} --> ${srtClock(cue.end)}\n${cue.lines.map(escapeSrt).join('\n')}\n`).join('\n');
   return { ass, srt, cues };
@@ -286,4 +299,4 @@ async function composeStoryboard({ frames, destination, ffmpegPath = 'ffmpeg' })
     return destination;
   });
 }
-module.exports = { referenceJpeg, composeStoryboard, normalizeAndAssemble, assemblePreparedVideo, extractAudio, buildCaptions, renderCaptioned, run, probe, videoEncoderArgs };
+module.exports = { referenceJpeg, composeStoryboard, normalizeAndAssemble, assemblePreparedVideo, extractAudio, buildCaptions, buildPlannedCaptions, renderCaptioned, run, probe, videoEncoderArgs, LINE_WIDTH };

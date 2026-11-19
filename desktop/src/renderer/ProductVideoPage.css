@@ -116,3 +116,28 @@ html[data-beat="1"] .sv-stages li.is-now>span{opacity:.6}
 .sv-parts figure.is-now img{outline:3px solid var(--pv-accent);outline-offset:-3px}
 .sv-parts figcaption{font-size:16px;font-weight:800;color:#374151}
 .sv-parts figure.is-done figcaption{color:#16a34a}
+
+/* 无人实拍 (2026-11-19): pick, don't type — device, scene, floor, dirt and selling points; a countdown while it is made. */
+.rs-mode{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px}
+.rs-mode button{display:grid;gap:3px;text-align:left;padding:14px 18px;border-radius:18px;background:#fff;border:1.5px solid var(--pv-line);font:inherit;cursor:pointer;color:#1f2937}
+.rs-mode b{font-size:20px;font-weight:900}.rs-mode small{font-size:14px;color:#6b7280;font-weight:700}
+.rs-mode button.is-on{border:3px solid var(--pv-accent);background:var(--pv-soft);padding:12.5px 16.5px}.rs-mode button.is-on b{color:var(--pv-accent)}
+.rs-groups{display:grid;gap:12px}.rs-groups>div>span{display:block;font-size:15px;font-weight:800;color:#6b7280;margin-bottom:8px}
+.rs-chips{display:flex;flex-wrap:wrap;gap:10px}
+.rs-chips button{min-height:48px;padding:0 18px;border-radius:14px;border:1.5px solid color-mix(in srgb,var(--pv-accent) 25%,transparent);background:#fff;font:inherit;font-size:17px;font-weight:800;color:#1f2937;cursor:pointer}
+.rs-chips button.is-on{border:2.5px solid var(--pv-accent);background:var(--pv-soft);color:var(--pv-accent);padding:0 17px}
+.rs-points{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px}
+.rs-points button{position:relative;display:grid;gap:4px;text-align:left;padding:12px 40px 12px 14px;border-radius:16px;background:#fff;border:1.5px solid var(--pv-line);font:inherit;cursor:pointer;color:#1f2937}
+.rs-points b{font-size:17px;font-weight:900}.rs-points small{font-size:13px;color:#6b7280;font-weight:700}
+.rs-points button.is-on{border:2.5px solid var(--pv-accent);background:var(--pv-soft);padding:11px 39px 11px 13px}
+.rs-photos{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.rs-photos figure{position:relative;margin:0;width:64px;height:64px;border-radius:12px;overflow:hidden;background:#fff;border:1.5px solid var(--pv-line)}
+.rs-photos img{width:100%;height:100%;object-fit:contain}
+.rs-photos figure button{position:absolute;right:3px;top:3px;width:22px;height:22px;border-radius:50%;border:0;background:rgba(0,0,0,.6);color:#fff;display:grid;place-items:center;padding:0;cursor:pointer}
+.rs-photo-add{display:inline-flex;align-items:center;gap:6px;height:64px;padding:0 12px;border-radius:12px;border:2px dashed color-mix(in srgb,var(--pv-accent) 35%,transparent);background:#fff;color:var(--pv-accent);font:inherit;font-size:14px;font-weight:800;cursor:pointer}
+.rs-go-eta{font-size:15px;font-weight:800;opacity:.85;margin-left:6px}
+.rs-side-info{display:grid;gap:8px;align-content:center}
+.rs-eta{display:flex;align-items:center;gap:8px;margin:0;font-size:18px;font-weight:800;color:#374151}.rs-eta b{font-size:30px;color:var(--pv-accent);font-variant-numeric:tabular-nums}
+.rs-eta.is-late{font-size:16px;color:#c2410c}
+.pv2-shot-wait small{font-size:13px;font-weight:800;opacity:.8}
+@media(max-width:640px){.rs-mode{grid-template-columns:1fr}}

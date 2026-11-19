@@ -208,7 +208,8 @@ function createPriceReader({ fetchJson, fetchText, fetch: fetchImpl, gatewayClie
   // No-argument callers include digital-human preview/cover pricing. Product
   // creation always supplies its saved plan, so keep their legacy image quote.
   return async function prices(plan = { pipelineVersion: 3 }) {
-    const story = plan.pipelineVersion === 5, direct = plan.pipelineVersion === 4, official = plan.pipelineVersion >= 3;
+    // 无人实拍 (6) uses the same Wan3 sound video and picture prices as the 剧情版.
+    const story = plan.pipelineVersion === 5 || plan.pipelineVersion === 6, direct = plan.pipelineVersion === 4, official = plan.pipelineVersion >= 3;
     const key = story ? 'story' : direct ? DIRECT_MODEL : official ? MODEL : 'legacy';
     if (validPrices(cache.get(key))) return cache.get(key);
     if (!pending.has(key)) pending.set(key, (story
@@ -245,6 +246,17 @@ function createPriceReader({ fetchJson, fetchText, fetch: fetchImpl, gatewayClie
   };
 }
 function quotePlan(plan, prices, budgetCny) {
+  if (plan.pipelineVersion === 6) {
+    if (!validStoryPrices(prices)) return { ready: false, budgetCny, estimatedCny: null, reservedCny: 0, actualCny: 0, pendingCny: 0, message: '报价暂不可用，方案已保留。' };
+    const seconds = plan.shots.reduce((sum, s) => sum + s.seconds, 0), videoCny = round(seconds * prices.videoCnyPerSecond);
+    const imageReserveCny = plan.imageCount * round(prices.imageUsd * prices.fxCnyPerUsd), imageEstimateCny = plan.imageCount * prices.estimatedImageUsd * prices.fxCnyPerUsd;
+    // One failed shot may be redone, and one failed scene picture.
+    const retryReserveCny = round(round(prices.imageUsd * prices.fxCnyPerUsd) + Math.max(0, ...plan.shots.map((shot) => shot.seconds)) * prices.videoCnyPerSecond);
+    return { ready: true, estimatedCny: round(videoCny + imageEstimateCny), maximumCny: round(videoCny + imageReserveCny + retryReserveCny), retryReserveCny,
+      reservedCny: 0, actualCny: 0, pendingCny: 0, budgetCny, videoCny, videoModel: prices.model, videoResolution: prices.resolution, videoAudio: true,
+      videoCnyPerSecond: prices.videoCnyPerSecond, source: prices.source, checkedAt: prices.checkedAt, fxCnyPerUsd: prices.fxCnyPerUsd,
+      note: '无人实拍：场景图美元价保守折算，视频按阿里北京区域 480P 有声人民币标价；字幕按卖点生成，不另收识别费。' };
+  }
   if (plan.pipelineVersion === 5) {
     if (!validStoryPrices(prices)) return { ready: false, budgetCny, estimatedCny: null, reservedCny: 0, actualCny: 0, pendingCny: 0, message: '报价暂不可用，方案已保留。' };
     const seconds = plan.shots.reduce((sum, s) => sum + s.seconds, 0), videoCny = round(seconds * prices.videoCnyPerSecond);

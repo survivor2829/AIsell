@@ -3,7 +3,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { normalizeAndAssemble, assemblePreparedVideo, extractAudio, buildCaptions, renderCaptioned, videoEncoderArgs } = require('./product-video-media.cjs');
+const { normalizeAndAssemble, assemblePreparedVideo, extractAudio, buildCaptions, buildPlannedCaptions, renderCaptioned, videoEncoderArgs } = require('./product-video-media.cjs');
 
 async function main() {
   assert.throws(() => buildCaptions({ utterances: [{ text: '计划台词不是字幕' }] }), { code: 'product_video_caption_timing_missing' });
@@ -13,7 +13,13 @@ async function main() {
   const captions = buildCaptions({ utterances: [{ text, start_time: 0, end_time: words.at(-1).end_time, words }] });
   assert.equal(captions.cues.map((cue) => cue.text).join(''), text);
   assert(captions.cues.length >= 2);
-  assert(captions.cues.every((cue) => cue.lines.length <= 2 && cue.lines.every((line) => Array.from(line).length <= 10)));
+  // One line per subtitle (2026-11-19): longer speech becomes more cues, never a second line.
+  assert(captions.cues.every((cue) => cue.lines.length === 1 && Array.from(cue.lines[0]).length <= 10));
+  assert(!captions.ass.includes('\\N'), 'no forced line break in the subtitle file');
+  const planned = buildPlannedCaptions({ cues: [{ text: '自动上下水 不用人管', start: 0.3, end: 5.8 }, { text: '贴边清洁 不留死角', start: 6.3, end: 11.8 }], durationSeconds: 12 });
+  assert.deepEqual(planned.cues.map((cue) => cue.lines), [['自动上下水 不用人管'], ['贴边清洁 不留死角']]);
+  assert.throws(() => buildPlannedCaptions({ cues: [{ text: '这一行字幕写得太长太长了', start: 0, end: 2 }] }), { code: 'product_video_caption_too_long' });
+  assert.throws(() => buildPlannedCaptions({ cues: [{ text: '一', start: 0, end: 3 }, { text: '二', start: 2, end: 4 }] }), { code: 'product_video_caption_overlap' });
   assert.equal(captions.cues[1].start * 1000 % 150, 0, 'split uses real word timing');
   const escaped = buildCaptions({ utterances: [{ text: '{\\pos(1,2)}字', start_time: 0, end_time: 1000 }] });
   assert(!escaped.ass.includes('{\\pos'));

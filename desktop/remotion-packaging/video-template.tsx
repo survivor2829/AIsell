@@ -387,27 +387,13 @@ const CaptionTrack: React.FC<{ captions: TimedWord[]; pack: StylePack; nowMs: nu
 
 const captionWidth = (text: string) => Array.from(text).reduce((sum, char) => sum + (/[^\x00-\xff]/u.test(char) ? 1 : 0.55), 0);
 
-// Linguistic word boundaries protect numbers, names and two-character words.
-// Long untimed fallback paragraphs remain a single caption; shrinking the
-// typography never implies that a guessed reading position is ASR evidence.
 export const referenceCaptionLines = (text: string, { maximumFontSize = 64, lineWidth = 14.6, availableWidth = 920 } = {}): { lines: string[]; fontSize: number } => {
   const clean = text.replace(/\s+/gu, " ").trim()
     .replace(/(\p{Script=Han}) +(?=\p{Script=Han})/gu, "$1");
   if (captionWidth(clean) <= lineWidth) return { lines: [clean], fontSize: maximumFontSize };
-  const segmenter = new Intl.Segmenter("zh-CN", { granularity: "word" });
-  const breaks = Array.from(segmenter.segment(clean)).slice(1).map((segment) => segment.index)
-    .filter((index) => !/^[，。！？、；：,.!?;:\uFFFC]/u.test(clean.slice(index))
-      && captionWidth(clean.slice(0, index)) >= 2 && captionWidth(clean.slice(index)) >= 2);
-  if (!breaks.length) return { lines: [clean], fontSize: Math.min(maximumFontSize, availableWidth / Math.max(1, captionWidth(clean))) };
-  const score = (index: number) => {
-    const left = captionWidth(clean.slice(0, index));
-    const right = captionWidth(clean.slice(index));
-    const punctuationBreak = /[，。！？、；：,.!?;:]\s*$/u.test(clean.slice(0, index));
-    return Math.max(left, right) * 3 + Math.abs(left - right) - (punctuationBreak ? 3 : 0);
-  };
-  const at = breaks.reduce((best, next) => score(next) < score(best) ? next : best);
-  const lines = [clean.slice(0, at).trim(), clean.slice(at).trim()];
-  return { lines, fontSize: Math.min(maximumFontSize, availableWidth / Math.max(...lines.map(captionWidth))) };
+  // One line only (user, 2026-11-19: two lines look cheap). The content engine pages speech to fit one
+  // line; a caption still wider is shown smaller on one line, never wrapped onto a second.
+  return { lines: [clean], fontSize: Math.min(maximumFontSize, availableWidth / Math.max(1, captionWidth(clean))) };
 };
 
 type NarrationEmoji = { id: string; keywords: string[]; dataUri: string };
@@ -456,7 +442,7 @@ const ReferenceCaptionTrack: React.FC<{ captions: TimedWord[]; nowMs: number; du
   );
 };
 
-// Each semantic page stays within two lines. Colour follows measured words;
+// Each semantic page stays on one line. Colour follows measured words;
 // phrase-only timing animates the page without inventing word timing.
 const BoldNarration: React.FC<{ captions: TimedWord[]; nowMs: number; frame: number; fps: number; styleId?: MotionManifest['captionStyleId'] }> = ({ captions, nowMs, frame, fps, styleId }) => {
   const index = findActiveCaptionIndex(captions, nowMs);

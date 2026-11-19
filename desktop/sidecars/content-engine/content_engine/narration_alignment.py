@@ -209,8 +209,81 @@ def sentence_shot_budgets(phrase, audio, segments, pause_ms):
     return result if cursor == len(segments) else None
 
 
+# One subtitle line only (user, 2026-11-19: two lines look cheap). 13 wide fits the 72 px
+# presentation style inside the frame; longer speech becomes more pages, never a second line.
+CAPTION_LINE_WIDTH = 13
+
+
 def _caption_width(text):
     return sum(0.55 if ord(char) < 128 else 1 for char in text if not char.isspace())
+
+
+_TRAILING_MARKS = re.compile(r"[，。！？；、,.!?;」”\"]+\s*$")
+
+
+def _line_width(text):
+    """Width that must fit the line: a closing punctuation mark may sit just past it."""
+    return _caption_width(_TRAILING_MARKS.sub("", text))
+
+
+def _marked_tokens(items, text_of=lambda item: item):
+    """Punctuation-only tokens stay with the token before them."""
+    tokens, owners = [], []
+    for item in items:
+        text = text_of(item)
+        if tokens and not spoken_key(text):
+            tokens[-1] += text
+            owners[-1].append(item)
+        else:
+            tokens.append(text)
+            owners.append([item])
+    return tokens, owners
+
+
+def _even_split(tokens, max_width):
+    """Group consecutive tokens into the fewest one-line pages, as even as possible.
+
+    Filling each line greedily leaves a dangling one- or two-character page and
+    cuts words late; balancing the pages keeps them alike in length. A single
+    token wider than the line stays a page of its own.
+    Returns the number of tokens in each page.
+    """
+    count = len(tokens)
+    if not count:
+        return []
+    widths = {}
+
+    def width(i, j):
+        if (i, j) not in widths:
+            widths[(i, j)] = _line_width("".join(tokens[i:j]))
+        return widths[(i, j)]
+
+    # best[j]: (largest page width, sizes) splitting tokens[:j] into the current number of pages.
+    best = {0: (0.0, [])}
+    for _ in range(count):
+        layer = {}
+        for j in range(1, count + 1):
+            choice = None
+            for i, (largest, sizes) in best.items():
+                if i < j and (j - i == 1 or width(i, j) <= max_width):
+                    candidate = max(largest, width(i, j))
+                    if choice is None or candidate < choice[0]:
+                        choice = (candidate, sizes + [j - i])
+            if choice is not None:
+                layer[j] = choice
+        best = layer
+        if count in layer:
+            return layer[count][1]
+    return [1] * count
+
+
+def _split_even(items, max_width, text_of=lambda item: item):
+    tokens, owners = _marked_tokens(items, text_of)
+    groups, at = [], 0
+    for size in _even_split(tokens, max_width):
+        groups.append([item for group in owners[at:at + size] for item in group])
+        at += size
+    return groups
 
 
 def _audio_proportional_caption_units(text, start_ms, end_ms, max_width):
@@ -218,18 +291,18 @@ def _audio_proportional_caption_units(text, start_ms, end_ms, max_width):
     clauses = re.findall(r"[^，。！？；,!?;]+[，。！？；,!?;]*", str(text or ""))
     chunks, current = [], ""
     for clause in clauses:
-        if current and _caption_width(current + clause) > max_width:
+        if _line_width(clause) > max_width:
+            # A short clause before a long one leads it rather than flashing alone.
+            if current and len(spoken_key(current)) <= 3:
+                clause, current = current + clause, ""
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend("".join(group) for group in _split_even(list(clause), max_width))
+            continue
+        if current and _line_width(current + clause) > max_width:
             chunks.append(current)
             current = ""
-        while _caption_width(clause) > max_width:
-            take, width = 0, 0.0
-            for index, char in enumerate(clause):
-                next_width = width + (0 if char.isspace() else 0.55 if ord(char) < 128 else 1)
-                if index and next_width > max_width:
-                    break
-                take, width = index + 1, next_width
-            chunks.append(clause[:take])
-            clause = clause[take:]
         current += clause
     if current:
         chunks.append(current)
@@ -256,9 +329,9 @@ def _proportional_caption_units(chunks, start_ms, end_ms):
     return units
 
 
-def _semantic_caption_parts(text, max_width=28):
+def _semantic_caption_parts(text, max_width=CAPTION_LINE_WIDTH):
     """Keep short sentences and quoted phrases intact; split long ones at clauses."""
-    if _caption_width(text) <= max_width:
+    if _line_width(text) <= max_width:
         return [text]
     clauses, start, quotes = [], 0, []
     pairs = {"「": "」", "“": "”", "『": "』", "‘": "’"}
@@ -280,81 +353,86 @@ def _semantic_caption_parts(text, max_width=28):
         clauses.append(text[start:])
     parts, current = [], ""
     for clause in clauses:
-        if current and _caption_width(current + clause) > max_width:
+        if current and _line_width(current + clause) > max_width:
             parts.append(current)
             current = ""
         current += clause
     if current:
-        if parts and len(spoken_key(current)) <= 3 and _caption_width(parts[-1] + current) <= max_width + 3:
+        if parts and len(spoken_key(current)) <= 3 and _line_width(parts[-1] + current) <= max_width:
             parts[-1] += current
         else:
             parts.append(current)
     balanced = []
     for part in parts:
-        if balanced and ((len(spoken_key(part)) <= 3 and _caption_width(balanced[-1] + part) <= 42)
-                         or len(spoken_key(balanced[-1])) <= 3):
+        if balanced and ((len(spoken_key(part)) <= 3 or len(spoken_key(balanced[-1])) <= 3)
+                         and _line_width(balanced[-1] + part) <= max_width):
             balanced[-1] += part
         else:
             balanced.append(part)
-    return balanced or [text]
+    # A short clause that did not fit the page before leads the next one instead of flashing alone.
+    joined = []
+    for part in balanced:
+        if joined and len(spoken_key(joined[-1])) <= 3 and not (len(joined) > 1 and _line_width(joined[-2] + joined[-1]) <= max_width):
+            joined[-1] += part
+        else:
+            joined.append(part)
+    return joined or [text]
 
 
-def _semantic_caption_pages(unit):
-    parts = _semantic_caption_parts(unit["text"])
-    if len(parts) == 1 and _caption_width(parts[0]) <= 42:
+def _semantic_caption_pages(unit, max_width=CAPTION_LINE_WIDTH):
+    parts = _semantic_caption_parts(unit["text"], max_width)
+    if len(parts) == 1 and _line_width(parts[0]) <= max_width:
         return [unit]
     words = unit.get("words") or []
     if not words:
         pages = _proportional_caption_units(parts, unit["start_ms"], unit["end_ms"]) or [unit]
         return [part for page in pages for part in (
-            _audio_proportional_caption_units(page["text"], page["start_ms"], page["end_ms"], 28)
-            if _caption_width(page["text"]) > 42 else [page])]
+            _audio_proportional_caption_units(page["text"], page["start_ms"], page["end_ms"], max_width)
+            if _line_width(page["text"]) > max_width else [page])]
     # A semantic cut must coincide with a real ASR word end; never split a token.
-    boundaries, oversized, position = set(), [], 0
+    boundaries, position = set(), 0
     for part in parts:
-        if _caption_width(part) > 42:
-            oversized.append((position, position + len(part)))
         position += len(part)
         boundaries.add(position)
-    pages, current, position, width = [], [], 0, 0
+
+    def page_of(group):
+        return {"text": "".join(item["text"] for item in group),
+                "start_ms": group[0]["start_ms"], "end_ms": group[-1]["end_ms"],
+                "timing_source": "asr_words", "words": group}
+    pages, current, position = [], [], 0
     for word in words:
-        word_width = _caption_width(word["text"])
-        # When punctuation supplies no usable boundary, retain real ASR tokens
-        # and their timestamps rather than rejecting a valid confirmed script.
-        if current and width + word_width > 28 and any(start <= position < end for start, end in oversized):
-            pages.append({"text": "".join(item["text"] for item in current),
-                          "start_ms": current[0]["start_ms"], "end_ms": current[-1]["end_ms"],
-                          "timing_source": "asr_words", "words": current})
-            current, width = [], 0
         current.append(word)
-        width += word_width
         position += len(word["text"])
-        if position in boundaries:
-            pages.append({"text": "".join(item["text"] for item in current),
-                          "start_ms": current[0]["start_ms"], "end_ms": current[-1]["end_ms"],
-                          "timing_source": "asr_words", "words": current})
-            current, width = [], 0
+        if position not in boundaries:
+            continue
+        if _line_width("".join(item["text"] for item in current)) <= max_width:
+            pages.append(page_of(current))
+        else:
+            # When punctuation supplies no usable boundary, cut at real ASR word
+            # ends into even one-line pages rather than rejecting a valid script.
+            pages.extend(page_of(group) for group in _split_even(current, max_width, lambda item: item["text"]))
+        current = []
     if current:
         return [unit]  # Inconsistent text must not lose the final words.
     balanced = []
     for page in pages:
         if (balanced and len(spoken_key(page["text"])) <= 3
-                and _caption_width(balanced[-1]["text"] + page["text"]) <= 42):
+                and _line_width(balanced[-1]["text"] + page["text"]) <= max_width):
             balanced[-1]["text"] += page["text"]
             balanced[-1]["words"].extend(page["words"])
             balanced[-1]["end_ms"] = page["end_ms"]
         else:
             balanced.append(page)
     pages = [part for page in balanced for part in (
-        _audio_proportional_caption_units(page["text"], page["start_ms"], page["end_ms"], 28)
-        if _caption_width(page["text"]) > 42 else [page])]
+        _audio_proportional_caption_units(page["text"], page["start_ms"], page["end_ms"], max_width)
+        if _line_width(page["text"]) > max_width else [page])]
     for previous, following in zip(pages, pages[1:]):
         if 0 <= following["start_ms"] - previous["end_ms"] <= 350:
             previous["end_ms"] = following["start_ms"]
     return pages
 
 
-def reference_caption_cues(captions, base=0, max_width=26, *, sentence_pages=False):
+def reference_caption_cues(captions, base=0, max_width=CAPTION_LINE_WIDTH, *, sentence_pages=False):
     """Keep short sentences whole and paginate long ones at semantic boundaries."""
     cues = []
     for caption in captions:
@@ -365,19 +443,22 @@ def reference_caption_cues(captions, base=0, max_width=26, *, sentence_pages=Fal
             alignment = align_narration(caption["text"], [caption], caption["end_ms"])
         words = alignment.get("words") or []
         if alignment.get("source") == "asr_words" and words:
-            groups, current, width = [], [], 0.0
+            clauses, current = [], []
             for word in words:
-                word_width = sum(0.55 if ord(char) < 128 else 1 for char in word["text"])
-                if current and not sentence_pages and width + word_width > max_width:
-                    groups.append(current)
-                    current, width = [], 0.0
                 current.append(word)
-                width += word_width
                 if re.search(r"[。！？!?][」”\"]?\s*$" if sentence_pages else r"[，。！？；,!?;]\s*$", word["text"]):
-                    groups.append(current)
-                    current, width = [], 0.0
+                    clauses.append(current)
+                    current = []
             if current:
-                groups.append(current)
+                clauses.append(current)
+            groups = []
+            for clause in clauses:
+                if sentence_pages or _line_width("".join(word["text"] for word in clause)) <= max_width:
+                    groups.append(clause)
+                else:
+                    # One line per page: even pages cut at word ends; punctuation
+                    # stays with the words before it instead of flashing on its own.
+                    groups.extend(_split_even(clause, max_width, lambda word: word["text"]))
             # ASR may tokenize Chinese one character at a time. A width break
             # must not turn the last character of a word into a flashing page.
             balanced = []
@@ -385,13 +466,12 @@ def reference_caption_cues(captions, base=0, max_width=26, *, sentence_pages=Fal
                 text = "".join(word["text"] for word in group)
                 previous = balanced[-1] if balanced else []
                 previous_text = "".join(word["text"] for word in previous)
-                combined_width = sum(0.55 if ord(char) < 128 else 1
-                                     for char in previous_text + text)
+                combined_width = _line_width(previous_text + text)
                 if (previous and not re.search(r"[，。！？；,!?;]\s*$", previous_text)
                         and len(spoken_key(text)) <= 3
                         and int(group[-1]["end_ms"]) - int(group[0]["start_ms"]) <= 500
                         and 0 <= int(group[0]["start_ms"]) - int(previous[-1]["end_ms"]) <= 200
-                        and combined_width <= min(42, max_width + 3)):
+                        and combined_width <= max_width):
                     previous.extend(group)
                 else:
                     balanced.append(group)
@@ -412,11 +492,11 @@ def reference_caption_cues(captions, base=0, max_width=26, *, sentence_pages=Fal
                         continue
                     sentences.extend(_proportional_caption_units(parts, unit["start_ms"], unit["end_ms"]) or [unit])
                 units = sentences
-            sentence_limit = 42
-            if not sentence_pages and any(_caption_width(unit["text"]) > sentence_limit for unit in units):
+            sentence_limit = max_width
+            if not sentence_pages and any(_line_width(unit["text"]) > sentence_limit for unit in units):
                 split_units = []
                 for unit in units:
-                    if _caption_width(unit["text"]) <= sentence_limit:
+                    if _line_width(unit["text"]) <= sentence_limit:
                         split_units.append(unit)
                         continue
                     split_units.extend(_audio_proportional_caption_units(
@@ -425,12 +505,11 @@ def reference_caption_cues(captions, base=0, max_width=26, *, sentence_pages=Fal
                         unit["text"] for unit in units):
                     units = split_units
         if sentence_pages:
-            units = [page for unit in units for page in _semantic_caption_pages(unit)]
+            units = [page for unit in units for page in _semantic_caption_pages(unit, max_width)]
         for unit in units:
-            width = _caption_width(unit["text"])
-            if width > 42:
+            if _line_width(unit["text"]) > max_width:
                 raise ContentEngineError("narrated_caption_timing_insufficient",
-                    "语音识别没有给出足够细的字幕时间，这句话过长，无法清楚排成两行。请将该段改短后重新确认，正文未被自动修改。")
+                    "语音识别没有给出足够细的字幕时间，这句话过长，无法排成一行字幕。请将该段改短后重新确认，正文未被自动修改。")
             cues.append({"text": unit["text"], "start_ms": max(0, int(unit["start_ms"]) - base),
                          "end_ms": max(1, int(unit["end_ms"]) - base),
                          "timing_source": unit["timing_source"],
