@@ -83,3 +83,5 @@ html[data-beat="1"] .pv2-bars .is-now i b{opacity:.55}
 .pv2-side .pv2-empty{flex:1;display:flex;flex-direction:column;gap:16px}
 .pv2-side .pv2-canvas{flex:1;height:auto;min-height:320px}
 .pv2-side .pv2-empty .pv2-note{font-size:16px;font-weight:700;color:#4b5563}
+.pv2-side .pv2-canvas{position:relative}
+.pv2-side .pv2-canvas img{position:absolute;inset:0;width:100%;height:100%;max-width:none;max-height:none;object-fit:contain}
