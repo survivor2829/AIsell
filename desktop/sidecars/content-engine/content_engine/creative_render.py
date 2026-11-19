@@ -2316,7 +2316,9 @@ class FFmpegCreativeRenderer:
         if style.get("preset") == "none":
             return []
         if recipe.get("caption_presentation") == "reference_narration":
+            # One line per page: 10 wide for the large presentation style, 14 for the plain one.
             return cls._single_caption_lane(reference_caption_cues(captions, base,
+                max_width=10 if recipe.get("presentation") else 14,
                 sentence_pages=bool(recipe.get("presentation"))))
         max_chars = max(8, min(18, int(style.get("max_chars") or 12)))
         word_timed = (

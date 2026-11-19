@@ -106,7 +106,8 @@ function serviceActivity(title, items) {
   const task = (items || []).find((item) => WORKING_TASK.has(item.status));
   if (!task) return null;
   const percent = Math.max(0, Math.min(100, Math.round(Number(task.progress) || 0)));
-  return { title, detail: String(task.statusLabel || ""), ...(percent ? { done: percent, total: 100 } : {}) };
+  const eta = Number(task.etaSeconds), left = Number.isFinite(eta) && eta > 0 ? `还要约 ${Math.max(1, Math.round(eta / 60))} 分钟` : "";
+  return { title, detail: [String(task.statusLabel || ""), left].filter(Boolean).join(" · "), ...(percent ? { done: percent, total: 100 } : {}) };
 }
 function pushedActivity(channel, state) {
   if (channel === "geo:update") {

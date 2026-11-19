@@ -28,10 +28,12 @@ function planStoryVideo(input) {
   const scene = SCENES.find((row) => row.id === asked[0]) || SCENES.find((row) => row.id === 'factory');
   const productName = clean(input.productName, 80) || '这款产品';
   const segments = seconds / SEGMENT_SECONDS;
+  // A cleaning robot drives itself: nobody sits on it, steers or pushes it (customer video, 2026-11-19).
+  const unmanned = /机器人|无人驾驶|无人值守|自主导航|自动驾驶/u.test(`${productName}${input.facts || ''}`);
   return {
     version: STORY_VERSION, pipelineVersion: 5, videoProvider: 'bailian', videoModel: DIRECT_MODEL, videoAudio: true,
     sourceResolution: '480p', outputSize: '1080x1920', imageModel: IMAGE_MODEL, director: '剧情导演',
-    productName, scene: scene.name, sceneIds: [scene.id], segments,
+    productName, scene: scene.name, sceneIds: [scene.id], segments, unmanned,
     // One image for the 定妆照, four for the place, the floor and two people, six per segment for the storyboard.
     imageCount: 1 + 4 + SHOTS_PER_SEGMENT * segments,
     shots: Array.from({ length: segments }, (_, index) => ({ index, seconds: SEGMENT_SECONDS, title: `第 ${index + 1} 段`, narration: '' })),
@@ -41,12 +43,19 @@ function planStoryVideo(input) {
 }
 
 // What the writer is asked for. Facts are data, not instructions.
-function storyMessages({ productName, facts, scene, segments, feedback = '' }) {
+// Rules from a customer's video (2026-11-19): a driver appeared on an unmanned robot, a person did by
+// hand what the machine does by itself, a person merged into the machine, the ending happened twice.
+const UNMANNED_RULE = '这台机器是无人驾驶的清洁机器人：没有座椅、没有方向盘、没有操纵把手；人物从不坐上去、不开它、不推它、不用手操作它，它自己移动、自己干活。';
+const CONTACT_RULE = '人物和机器之间始终隔着至少一米，不碰机身，身体不和机器重叠。';
+function storyMessages({ productName, facts, scene, segments, feedback = '', unmanned = false }) {
   const system = [
     '你是纪录片风格的短视频编剧，为清洁设备等商用产品写真实可信的现场小故事。',
     '只用用户给的产品资料，不编造参数、价格、效率、资质或效果承诺；资料里没有的能力不出现在画面和台词里。',
     '故事规则：两个普通人物（一般是现场干活的人和管事的人），说普通话，台词口语、很短；机器是主角，替人把活干了；幽默来自反差，不靠夸张表演。',
     '机器只朝机头方向前进，只有机器底部实际经过之后那里才变干净，干净的地方之后一直保持干净。脏污只写「日常量」：一层薄灰、零星碎屑，不写成堆垃圾。',
+    ...(unmanned ? [UNMANNED_RULE, '资料里写的自动功能（自动上下水、自动回充、自己乘电梯等）都由机器自己完成，人物只在旁边看，不动手帮忙。'] : []),
+    CONTACT_RULE,
+    '每句台词只说一次；收尾的动作（例如下班、离开）全片只出现一次，放在最后一个镜头。',
     `每段正好 ${SHOTS_PER_SEGMENT} 个镜头，合计 15 秒，时间连续（例如 0-2、2-4、4-7、7-9、9-12、12-15）。每句台词不超过 ${LINE_LIMIT - 6} 个字，每段最多 5 句，至少两个镜头只有画面和声音、没有台词（15 秒说不完 6 句）。`,
     segments > 1 ? `一共 ${segments} 段，是同一个连续故事：同样的人物、同样的地点，后一段接着前一段；最后一段收在轻松放心的结尾。` : '只有一段：累 → 意外 → 看清楚它怎么干活 → 放心和轻松。',
     '只输出 JSON，不要多余文字。'
@@ -110,7 +119,7 @@ function parseStory(text, segments) {
 }
 
 const personText = (person) => `${person.name}（${person.role}）：${person.look}${person.prop ? `，手里拿着${person.prop}` : ''}。`;
-const machineRule = (story) => `机器必须是图1这一台，造型、比例、配色、零件以图1为准，不新增零件，不变成其他型号。机器${story.machine.size}，实实在在压在地面上，下方有接地阴影。机器只朝机头方向前进。画面里只有这一台机器。`;
+const machineRule = (story) => `机器必须是图1这一台，造型、比例、配色、零件以图1为准，不新增零件，不变成其他型号。机器${story.machine.size}，实实在在压在地面上，下方有接地阴影。机器只朝机头方向前进。画面里只有这一台机器。${story.unmanned ? UNMANNED_RULE : ''}${CONTACT_RULE}`;
 
 function sheetPrompt(productName) {
   return `产品定妆设定图。参考图是「${productName}」的真实产品照。请在纯白无缝背景上生成同一台产品的四个视图，2×2等分排列，格与格之间用留白分隔，不加边框、文字、标注、箭头。
@@ -162,10 +171,10 @@ function videoPrompt(story, segmentIndex) {
 【六、摄影机】像纪录片摄影师肩扛索尼 Venice 2 在现场跟拍，35毫米定焦，画面稳但有很轻的呼吸感，跟拍略微滞后于被拍的对象。
 【七、分镜】
 ${shots}
-【八、运动与清洁规则】机器以成人慢走的速度匀速前进，实实在在压在地面上行驶，轮子持续滚动，机身有轻微颤动，相对背景产生真实位移。只有机器底部实际经过之后那里才变干净，露出与机身同宽的干净带；机头前方和两侧没经过的地方保持原样。扫干净的地面直到最后一帧都保持干净，不重新落灰，是同一块旧地面的干净状态，不映出倒影。没扫的地面：${story.floor.dirty}
-【九、声音】台词只有分镜里写明的那几句，每句很短，说完就停；没有旁白。环境声贯穿全片，音量低于人声；机器运转声平稳低沉，不盖过台词。无配乐。
+【八、运动与清洁规则】${story.unmanned ? UNMANNED_RULE : ''}${CONTACT_RULE}任何时刻画面里都只有一台机器，不复制、不分身。机器以成人慢走的速度匀速前进，实实在在压在地面上行驶，轮子持续滚动，机身有轻微颤动，相对背景产生真实位移。只有机器底部实际经过之后那里才变干净，露出与机身同宽的干净带；机头前方和两侧没经过的地方保持原样。扫干净的地面直到最后一帧都保持干净，不重新落灰，是同一块旧地面的干净状态，不映出倒影。没扫的地面：${story.floor.dirty}
+【九、声音】台词只有分镜里写明的那几句，每句只说一次，每句很短，说完就停；没有旁白。环境声贯穿全片，音量低于人声；机器运转声平稳低沉，不盖过台词。无配乐。
 【十、风格】纪实跟拍的现场画面，不是广告，不是摆拍；颜色中性克制，画质细腻，只有极轻微的噪点。人物是普通的工作人员，长相普通，表演克制自然。
-【十一、负向】广告感、夸张调色、柔光滤镜、夕阳、光柱、光晕、雾气、模特长相、字幕、文字、水印、分屏、分格白线、慢动作、静帧、人物看镜头、台词之外的对白、口型对不上、夸张表情、换脸、换装、第二台机器、机器悬浮或平移滑行、倒车、原地旋转、机器变形或多出零件、地面提前变干净、干净地面重新落灰、镜面地板、清晰倒影、成堆垃圾。`;
+【十一、负向】广告感、夸张调色、柔光滤镜、夕阳、光柱、光晕、雾气、模特长相、字幕、文字、水印、分屏、分格白线、慢动作、静帧、人物看镜头、台词之外的对白、口型对不上、夸张表情、换脸、换装、第二台机器、多台机器同框、人和机器融在一起、${story.unmanned ? '人坐在或站在机器上、方向盘、座椅、人推机器、' : ''}同一个动作或台词重复一遍、机器悬浮或平移滑行、倒车、原地旋转、机器变形或多出零件、地面提前变干净、干净地面重新落灰、镜面地板、清晰倒影、成堆垃圾。`;
   if ([...prompt].length > VIDEO_PROMPT_LIMIT) throw fail('product_video_story_invalid', '这一段的拍摄要求太长，没有继续花钱，请重试。');
   return prompt;
 }

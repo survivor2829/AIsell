@@ -8,8 +8,11 @@ class ObservedSpanTests(unittest.TestCase):
         words = [{'text': char, 'start_ms': index * 120, 'end_ms': (index + 1) * 120}
                  for index, char in enumerate(text)]
         cues = reference_caption_cues([{'text': text, 'alignment': {'source': 'asr_words', 'words': words}}])
-        self.assertEqual([text], [cue['text'] for cue in cues])
-        self.assertEqual((0, len(text) * 120), (cues[0]['start_ms'], cues[0]['end_ms']))
+        # One line per page (2026-11-19): the sentence becomes two pages, and the closing comma
+        # stays with its words instead of flashing as a page of its own.
+        self.assertEqual(text, ''.join(cue['text'] for cue in cues))
+        self.assertEqual(['可以先对照实物把每个部件的', '位置、外观和基础作用问清楚，'], [cue['text'] for cue in cues])
+        self.assertEqual((0, len(text) * 120), (cues[0]['start_ms'], cues[-1]['end_ms']))
         independent = [{'text': '已经问清楚了，', 'start_ms': 0, 'end_ms': 1800},
                        {'text': '好。', 'start_ms': 1800, 'end_ms': 2100}]
         separate = reference_caption_cues([{'alignment': {'source': 'asr_words', 'words': independent}}])

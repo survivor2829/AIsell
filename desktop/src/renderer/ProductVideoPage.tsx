@@ -5,22 +5,23 @@ import { ExampleBanner } from './VideoExamples';
 import { SceneIcon } from "./SceneIcons";
 import { formatWan } from "./BillingBadge";
 import { StoryVideoProgress, storyProgress, type StoryTask } from "./StoryVideoProgress";
+import { Countdown, ProductPhotos, RealShootFields, RealShootProgress, initialReal, minutes, realEstimate, storyEstimate, type ProductImage, type RealCatalog, type RealDraft, type Timing } from "./RealShootForm";
 
 type Choice = { id: string; name: string };
 type Quote = { ready?: boolean; estimatedCny?: number | null; maximumCny?: number; actualCny?: number; pendingCny?: number; reservedCny?: number; budgetCny?: number; note?: string; message?: string; checkedAt?: string };
 type Plan = {
   version: string; pipelineVersion?: number; scene: string; evidenceStatus: string; sourceResolution?: string;
-  shots: { index: number; seconds: number; title: string; narration: string }[];
+  shots: { index: number; seconds: number; title: string; narration: string; caption?: string }[];
   sendText: string;
 };
 type VideoTask = {
   id: string; mode: "product" | "social"; status: string; statusLabel: string; createdAt: string;
   durationSeconds: number; sceneIds?: string[]; productName?: string; facts: string; imageId: string; plan: Plan; currentShot: number;
-  completedShots: number; shotsReady?: boolean[]; storyPipeline?: boolean; imagesReady?: Record<string, boolean>; imageTotal?: number; sheetRedos?: number;
+  completedShots: number; shotsReady?: boolean[]; shotsRunning?: boolean[]; storyPipeline?: boolean; realPipeline?: boolean; progress?: number; etaSeconds?: number | null; estimatedFinishAt?: string | null; imagesReady?: Record<string, boolean>; imageTotal?: number; sheetRedos?: number;
   story?: StoryTask["story"]; error: string; resumeStatus?: string; retryLabel?: string; canRetry: boolean; canExport: boolean; canExportSource?: boolean; canPreview: boolean; canRefresh?: boolean; quote?: Quote;
 };
 type Result<T> = { ok: boolean; data?: T; error?: string; code?: string; task?: VideoTask };
-type Capabilities = { ready: boolean; message: string; scenes: Choice[]; story?: { ready: boolean; message: string } };
+type Capabilities = { ready: boolean; message: string; scenes: Choice[]; story?: { ready: boolean; message: string }; real?: { ready: boolean; message: string }; catalog?: RealCatalog; timing?: Timing };
 type VideoApi = {
   capabilities(): Promise<Result<Capabilities>>;
   importImage(): Promise<Result<{ id: string; name: string; previewDataUrl: string } | null>>;
@@ -52,6 +53,7 @@ async function unwrap<T>(result: Promise<Result<T>>): Promise<T> {
 }
 const credits = (cny?: number | null) => Number.isFinite(cny) && Number(cny) > 0 ? formatWan(Number(cny) * 40000) : "";
 function progressOf(task: VideoTask) {
+  if (Number.isFinite(task.progress) && (task.storyPipeline || task.realPipeline)) return Number(task.progress);
   if (task.storyPipeline) return storyProgress(task);
   if (task.status === "completed") return 100;
   const total = Math.max(1, task.plan.shots.length);
@@ -69,7 +71,11 @@ export function ProductVideoPage() {
   const api = window.xiaoxiProductVideo;
   const [capability, setCapability] = useState<Capabilities | null>(null);
   const [draft, setDraft] = useState({ ...initial });
-  const [image, setImage] = useState<{ id: string; name: string; previewDataUrl: string } | null>(null);
+  // 无人实拍 is the default (user, 2026-11-19); the 剧情版 with two people stays available.
+  const [style, setStyle] = useState<"real" | "story">("real");
+  const [realDraft, setRealDraft] = useState<RealDraft>({ ...initialReal });
+  const [images, setImages] = useState<ProductImage[]>([]);
+  const image = images[0] || null;
   const [factsFile, setFactsFile] = useState("");
   const [selected, setSelected] = useState<VideoTask | null>(null);
   const [items, setItems] = useState<VideoTask[]>([]);
@@ -127,7 +133,11 @@ export function ProductVideoPage() {
     if (!api || busy) return;
     setBusy("start"); setError(""); setVideo(""); setExportResult("");
     try {
-      const result = await api.createAndStart({ ...draft, mode: "product", style: "story" });
+      const input = style === "real"
+        ? { mode: "product", style: "real", productName: draft.productName, facts: draft.facts, durationSeconds: draft.durationSeconds, imageId: draft.imageId,
+          extraImageIds: images.slice(1).map((item) => item.id), deviceId: realDraft.deviceId, sceneIds: [realDraft.sceneId], floorId: realDraft.floorId, dirtIds: realDraft.dirtIds, pointIds: realDraft.pointIds }
+        : { ...draft, mode: "product", style: "story" };
+      const result = await api.createAndStart(input);
       if (result.ok && result.data) updateTask(result.data);
       else { if (result.task) updateTask(result.task); setError(result.code === "trusted_user_click_required" ? "还没开始：请在右边点一下「开始生成」。" : result.error || "没能开始制作，请稍后再试。"); }
     } catch (cause) { setError(cause instanceof Error ? cause.message : "没能开始制作。"); }
@@ -136,7 +146,14 @@ export function ProductVideoPage() {
   // The story happens in one place.
   const toggleScene = (id: string) => { setError(""); setDraft(old => ({ ...old, sceneIds: old.sceneIds[0] === id ? [] : [id] })); };
   const running = Boolean(selected && ACTIVE.has(selected.status));
-  const canGenerate = Boolean(draft.imageId && !busy && !running && draft.facts.length <= 12000);
+  const realReady = Boolean(realDraft.deviceId && realDraft.sceneId && realDraft.floorId && realDraft.dirtIds.length);
+  const canGenerate = Boolean(draft.imageId && !busy && !running && draft.facts.length <= 12000 && (style === "story" || realReady));
+  const estimate = style === "real" ? realEstimate(capability?.timing, capability?.catalog, draft.durationSeconds, realDraft.pointIds.length) : storyEstimate(capability?.timing, draft.durationSeconds);
+  const addImage = (extra: boolean) => api && void perform("image", () => unwrap(api.importImage()), item => {
+    if (!item) return;
+    setImages(old => extra ? [...old.filter(row => row.id !== item.id), item].slice(0, 3) : [item, ...old.slice(1)]);
+    if (!extra) setDraft(old => ({ ...old, imageId: item.id }));
+  });
   const quote = selected?.quote;
   const shots = selected?.plan.shots || [];
   const ready = selected?.shotsReady || shots.map((_, index) => index < (selected?.completedShots || 0));
@@ -147,27 +164,43 @@ export function ProductVideoPage() {
     <ExampleBanner topic="product-video" />
     <div className="pv2-grid">
       <section className="pv2-card pv2-form" aria-label="产品资料">
+        <div className="rs-mode" role="radiogroup" aria-label="视频类型">
+          <button type="button" role="radio" aria-checked={style === "real"} className={style === "real" ? "is-on" : ""} disabled={!!busy || running} onClick={() => setStyle("real")}><b>无人实拍</b><small>设备在现场干活，像真拍的</small></button>
+          <button type="button" role="radio" aria-checked={style === "story"} className={style === "story" ? "is-on" : ""} disabled={!!busy || running} onClick={() => setStyle("story")}><b>有人剧情</b><small>两个人物的现场小故事</small></button>
+        </div>
         <div className="pv2-top">
           <div><h2>产品图</h2>
-            <button type="button" className={`pv2-upload${image ? " has-image" : ""}`} disabled={!!busy || running} onClick={() => api && void perform("image", () => unwrap(api.importImage()), item => {
-              if (item) { setImage(item); setDraft(old => ({ ...old, imageId: item.id })); }
-            })}>{image ? <><img src={image.previewDataUrl} alt="已上传的产品" /><span className="pv2-chip">点一下换一张</span></> : <><ImagePlus size={54} strokeWidth={1.4} /><b>放产品图</b><small>产品完整、背景干净</small></>}</button>
+            <button type="button" className={`pv2-upload${image ? " has-image" : ""}`} disabled={!!busy || running} onClick={() => addImage(false)}>{image ? <><img src={image.previewDataUrl} alt="已上传的产品" /><span className="pv2-chip">点一下换一张</span></> : <><ImagePlus size={54} strokeWidth={1.4} /><b>放产品图</b><small>产品完整、背景干净</small></>}</button>
+            {style === "real" && <ProductPhotos images={images} disabled={!!busy || running} onAdd={() => addImage(true)} onRemove={(id) => setImages(old => old.filter(row => row.id !== id))} />}
           </div>
           <div className="pv2-fields">
             <label><h2>产品叫什么？</h2><input maxLength={80} value={draft.productName} onChange={event => setDraft({ ...draft, productName: event.target.value })} placeholder="例如：CC1 Pro 洗地机器人" /></label>
+            {style === "story" && <>
             <label htmlFor="pv-facts" className="pv2-facts-head"><h2>它最厉害的几点</h2><button type="button" className="pv2-link" disabled={!!busy} onClick={(event) => { event.preventDefault(); api && void perform("facts", () => unwrap(api.importFacts()), file => { if (file) { setFactsFile(file.name); setDraft(old => ({ ...old, facts: old.facts ? `${old.facts}\n\n${file.text}` : file.text })); } }); }}><FileText size={16} />导入资料</button></label>
             <textarea id="pv-facts" maxLength={12000} rows={4} value={draft.facts} onChange={event => setDraft({ ...draft, facts: event.target.value })} placeholder="例如：一小时拖完 1500 平；自己回站加水倒污水。没有也可以先做外观展示。" />
             {factsFile && <small className="pv2-meta">已导入：{factsFile}</small>}
             {draft.facts.length > 12000 && <p className="pv-error">资料超过 12,000 字，请精简一些。</p>}
+            </>}
+            {style === "real" && <p className="pv2-note">不用写提示词：下面点选设备、场景和卖点就行。多放一张侧面或背面的图，转弯时更像原机。</p>}
           </div>
         </div>
+        {style === "real" ? (capability?.catalog ? <RealShootFields catalog={capability.catalog} draft={realDraft} durationSeconds={draft.durationSeconds} disabled={!!busy || running}
+          onChange={(next) => { setError(""); setRealDraft(next); }} /> : <p className="pv2-note">正在读取可选的设备和场景…</p>) : <>
         <h2 className="pv2-label">故事发生在哪里？<small>选一个，不选就拍工厂仓储</small></h2>
         <div className="pv2-scenes">{(capability?.scenes || []).map(scene => { const on = draft.sceneIds.includes(scene.id); return <button key={scene.id} type="button" aria-pressed={on} className={on ? "is-on" : ""} onClick={() => toggleScene(scene.id)}><span className="pv2-scene-icon"><SceneIcon id={scene.id} /></span>{scene.name}{on && <Check className="pv2-check" size={16} strokeWidth={3} />}</button>; })}</div>
+        </>}
         <h2 className="pv2-label">要多长？</h2>
-        <div className="pv2-choices">{DURATIONS.map(seconds => <button key={seconds} type="button" aria-pressed={draft.durationSeconds === seconds} className={draft.durationSeconds === seconds ? "is-on" : ""} onClick={() => setDraft({ ...draft, durationSeconds: seconds })}>{seconds} 秒</button>)}</div>
-        <button type="button" className="pv2-go" data-product-video-action="start" disabled={!canGenerate} onClick={() => void generate()}>{busy === "start" ? <LoaderCircle size={24} className="spin" /> : <Play size={24} />}生成视频</button>
-        <p className="pv2-note">{!draft.imageId ? "先放一张产品图。" : running ? "这条还在做，做完再开始下一条。" : "做完后按实际用量扣算力，没做成的不扣。"}</p>
-        {capability && !capability.story?.ready && capability.story?.message && <p className="pv2-note">{capability.story.message}</p>}
+        <div className="pv2-choices">{DURATIONS.map(seconds => <button key={seconds} type="button" aria-pressed={draft.durationSeconds === seconds} className={draft.durationSeconds === seconds ? "is-on" : ""} onClick={() => {
+          setDraft({ ...draft, durationSeconds: seconds });
+          // Fewer selling points fit a shorter video: keep the first ones picked.
+          const limit = capability?.catalog?.pointLimit[seconds];
+          if (limit) setRealDraft(old => ({ ...old, pointIds: old.pointIds.slice(0, limit) }));
+        }}>{seconds} 秒</button>)}</div>
+        <button type="button" className="pv2-go" data-product-video-action="start" disabled={!canGenerate} onClick={() => void generate()}>{busy === "start" ? <LoaderCircle size={24} className="spin" /> : <Play size={24} />}生成视频{estimate > 0 && <small className="rs-go-eta">预计 {minutes(estimate)}</small>}</button>
+        <p className="pv2-note">{!draft.imageId ? "先放一张产品图。" : style === "real" && !realReady ? "选好设备、场景、地面和脏东西就能生成。" : running ? "这条还在做，做完再开始下一条。"
+          : `做完后按实际用量扣算力，没做成的不扣。${style === "story" ? "预计时间不含你确认定妆照的时间。" : ""}`}</p>
+        {capability && style === "story" && !capability.story?.ready && capability.story?.message && <p className="pv2-note">{capability.story.message}</p>}
+        {capability && style === "real" && !capability.real?.ready && capability.real?.message && <p className="pv2-note">{capability.real.message}</p>}
       </section>
 
       <section className="pv2-card pv2-side" aria-label="制作进度">
@@ -181,8 +214,13 @@ export function ProductVideoPage() {
               {selected.canExportSource && <button type="button" className="pv2-btn" disabled={!!busy} onClick={() => api && void perform("source", () => unwrap(api.exportSource(selected.id)), result => { if (result) setExportResult(`已导出原片：${result.path}`); })}>导出原片</button>}
             </div>
             {selected.plan.sendText && <div className="pv2-send"><b>发给客户时可以配这句话</b><p>{selected.plan.sendText}</p></div>}
-          </div> : selected.storyPipeline && !STUCK.has(selected.status) && selected.status !== "draft" ? <>
-            <div className="pv2-progress"><Ring value={progressOf(selected)} lines={[selected.status === "awaiting_sheet" ? "等你确认" : selected.statusLabel, `${selected.durationSeconds} 秒 · ${shots.length} 段`]} /></div>
+          </div> : selected.realPipeline && !STUCK.has(selected.status) && selected.status !== "draft" ? <>
+            <div className="pv2-progress"><Ring value={progressOf(selected)} lines={[selected.statusLabel, `${selected.durationSeconds} 秒 · ${shots.length} 个镜头`]} />
+              <div className="rs-side-info"><Countdown finishAt={selected.estimatedFinishAt} /><p className="pv2-note">几个镜头同时在拍，拍好一个就显示一个。可以先去做别的，做好了桌宠会告诉你。</p></div></div>
+            <RealShootProgress task={selected} shotVideos={shotVideos} />
+          </> : selected.storyPipeline && !STUCK.has(selected.status) && selected.status !== "draft" ? <>
+            <div className="pv2-progress"><Ring value={progressOf(selected)} lines={[selected.status === "awaiting_sheet" ? "等你确认" : selected.statusLabel, `${selected.durationSeconds} 秒 · ${shots.length} 段`]} />
+              {selected.status !== "awaiting_sheet" && <div className="rs-side-info"><Countdown finishAt={selected.estimatedFinishAt} /></div>}</div>
             <StoryVideoProgress task={selected} busy={!!busy} imageMedia={(id, key) => api ? api.imageMedia(id, key) : Promise.resolve({ ok: false })} shotMedia={(id, index) => api ? api.shotMedia(id, index) : Promise.resolve({ ok: false })}
               onConfirm={() => api && void perform("confirm", () => unwrap(api.confirmSheet(selected.id)), updateTask)}
               onRedo={() => api && void perform("redo", () => unwrap(api.redoSheet(selected.id)), updateTask)} />
@@ -211,8 +249,9 @@ export function ProductVideoPage() {
           {exportResult && <p className="pv2-note" role="status">{exportResult}</p>}
         </> : <div className="pv2-empty">
           <div className="pv2-canvas">{image ? <img src={image.previewDataUrl} alt="已选择的产品图" /> : <ImagePlus size={70} strokeWidth={1.2} />}</div>
-          <ol className="pv2-journey"><li><span><ImagePlus size={26} /></span>放产品图</li><li><span><SceneIcon id="market" size={34} /></span>选场景</li><li><span><Play size={26} /></span>点生成</li></ol>
-          <p className="pv2-note">AI 先照产品画定妆照，你确认后再写故事、找演员、画分镜，一段一段拍出带对话的现场视频。</p>
+          <ol className="pv2-journey"><li><span><ImagePlus size={26} /></span>放产品图</li><li><span><SceneIcon id="market" size={34} /></span>{style === "real" ? "点选场景卖点" : "选场景"}</li><li><span><Play size={26} /></span>点生成</li></ol>
+          <p className="pv2-note">{style === "real" ? "不用把设备拉到现场：放产品图，点选设备、场景和卖点，AI 拍出它在现场干活的真实画面，每个卖点一个镜头，配一行字幕。"
+            : "AI 先照产品画定妆照，你确认后再写故事、找演员、画分镜，拍出带对话的现场视频。"}</p>
         </div>}
         {history.length > 0 && <div className="pv2-history"><h3>做过的</h3><div>{history.slice(0, 9).map(task => <button type="button" key={task.id} onClick={() => selectTask(task)} className={`is-${task.status === "completed" ? "done" : STUCK.has(task.status) ? "stuck" : "other"}`}>
           <span className="pv2-history-icon">{task.status === "completed" ? <Play size={18} /> : STUCK.has(task.status) ? <AlertTriangle size={18} /> : <LoaderCircle size={18} />}</span>

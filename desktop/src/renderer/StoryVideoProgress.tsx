@@ -5,7 +5,7 @@ import { Check, Clapperboard, Image as ImageIcon, LoaderCircle, PenLine, Refresh
 
 export type StoryTask = {
   id: string; status: string; statusLabel: string; durationSeconds: number; currentShot: number; completedShots: number;
-  shotsReady?: boolean[]; plan: { shots: { index: number }[] };
+  shotsReady?: boolean[]; shotsRunning?: boolean[]; plan: { shots: { index: number }[] };
   imagesReady?: Record<string, boolean>; imageTotal?: number; sheetRedos?: number;
   story?: { title: string; logline: string; characters: { name: string; role: string }[]; lines: { who: string; line: string }[] } | null;
 };
@@ -89,10 +89,11 @@ export function StoryVideoProgress({ task, busy, imageMedia, shotMedia, onConfir
       {task.story.lines.length > 0 && <ul className="sv-lines">{task.story.lines.slice(0, 8).map((row, i) => <li key={i}><b>{row.who}</b>“{row.line}”</li>)}</ul>}
     </section>}
     {task.plan.shots.length > 0 && stage >= 3 && <div className="sv-parts">{task.plan.shots.map((_, index) => {
-      const video = videos[index], board = pictures[`grid_${index}`];
-      return <figure key={index} className={video ? "is-done" : index === task.currentShot && stage === 4 ? "is-now" : ""}>
+      // Parts are filmed at the same time now (2026-11-19), so more than one can be in progress.
+      const video = videos[index], board = pictures[`grid_${index}`], filming = task.shotsRunning ? Boolean(task.shotsRunning[index]) : index === task.currentShot && stage === 4;
+      return <figure key={index} className={video ? "is-done" : filming ? "is-now" : ""}>
         {video ? <video src={video} controls muted preload="metadata" /> : board ? <img src={board} alt={`第 ${index + 1} 段分镜`} /> : <span><LoaderCircle size={28} className="spin" /></span>}
-        <figcaption>第 {index + 1} 段 · {video ? "拍好了" : index === task.currentShot && stage === 4 ? "正在拍" : board ? "分镜好了" : "画分镜中"}</figcaption></figure>;
+        <figcaption>第 {index + 1} 段 · {video ? "拍好了" : filming ? "正在拍" : board ? "分镜好了" : "画分镜中"}</figcaption></figure>;
     })}</div>}
   </div>;
 }

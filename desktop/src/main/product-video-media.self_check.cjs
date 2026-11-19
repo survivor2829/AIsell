@@ -3,17 +3,28 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { normalizeAndAssemble, assemblePreparedVideo, extractAudio, buildCaptions, renderCaptioned, videoEncoderArgs } = require('./product-video-media.cjs');
+const { normalizeAndAssemble, assemblePreparedVideo, extractAudio, buildCaptions, buildPlannedCaptions, renderCaptioned, videoEncoderArgs } = require('./product-video-media.cjs');
 
 async function main() {
   assert.throws(() => buildCaptions({ utterances: [{ text: '计划台词不是字幕' }] }), { code: 'product_video_caption_timing_missing' });
-  assert.throws(() => buildCaptions({ utterances: [{ text: '较长的对白缺少实际词级时间不能随便拆分字幕的显示时间', start_time: 0, end_time: 6000 }] }), { code: 'product_video_caption_words_missing' });
+  // Without word timings a long line is split over its own time span instead of failing (review, 2026-11-19).
+  const untimed = buildCaptions({ utterances: [{ text: '较长的对白缺少实际词级时间不能随便拆分字幕的显示时间', start_time: 0, end_time: 6000 }] });
+  assert.equal(untimed.cues.map((cue) => cue.text).join(''), '较长的对白缺少实际词级时间不能随便拆分字幕的显示时间');
+  assert.ok(untimed.cues.length === 3 && untimed.cues[0].start === 0 && untimed.cues.at(-1).end === 6);
+  const mismatched = buildCaptions({ utterances: [{ text: '这台CC1Pro一小时能洗1500平，自己回站加水。', start_time: 0, end_time: 5000, words: [{ text: '这台', start_time: 0, end_time: 300 }] }] });
+  assert.ok(mismatched.cues.every((cue) => cue.lines.length === 1) && mismatched.cues.some((cue) => cue.text.includes('CC1Pro')) && mismatched.cues.some((cue) => cue.text.includes('1500')), 'model names and numbers are not cut');
   const text = '雨天带进来的泥脚印，机器经过以后，地面清洁轨迹清楚可见。';
   const words = Array.from(text).filter((char) => !/[，。]/u.test(char)).map((char, index) => ({ text: char, start_time: index * 150, end_time: (index + 1) * 150 }));
   const captions = buildCaptions({ utterances: [{ text, start_time: 0, end_time: words.at(-1).end_time, words }] });
   assert.equal(captions.cues.map((cue) => cue.text).join(''), text);
   assert(captions.cues.length >= 2);
-  assert(captions.cues.every((cue) => cue.lines.length <= 2 && cue.lines.every((line) => Array.from(line).length <= 10)));
+  // One line per subtitle (2026-11-19): longer speech becomes more cues, never a second line.
+  assert(captions.cues.every((cue) => cue.lines.length === 1 && Array.from(cue.lines[0]).length <= 10));
+  assert(!captions.ass.includes('\\N'), 'no forced line break in the subtitle file');
+  const planned = buildPlannedCaptions({ cues: [{ text: '自动上下水 不用人管', start: 0.3, end: 5.8 }, { text: '贴边清洁 不留死角', start: 6.3, end: 11.8 }], durationSeconds: 12 });
+  assert.deepEqual(planned.cues.map((cue) => cue.lines), [['自动上下水 不用人管'], ['贴边清洁 不留死角']]);
+  assert.throws(() => buildPlannedCaptions({ cues: [{ text: '这一行字幕写得太长太长了', start: 0, end: 2 }] }), { code: 'product_video_caption_too_long' });
+  assert.throws(() => buildPlannedCaptions({ cues: [{ text: '一', start: 0, end: 3 }, { text: '二', start: 2, end: 4 }] }), { code: 'product_video_caption_overlap' });
   assert.equal(captions.cues[1].start * 1000 % 150, 0, 'split uses real word timing');
   const escaped = buildCaptions({ utterances: [{ text: '{\\pos(1,2)}字', start_time: 0, end_time: 1000 }] });
   assert(!escaped.ass.includes('{\\pos'));
