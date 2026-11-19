@@ -47,7 +47,10 @@ const base = { mode: 'product', durationSeconds: 30, deviceId: 'robot_scrubber',
         assert.ok([...shot.prompt].length <= real.PROMPT_LIMIT, `${device.id}/${sceneId}/${shot.pointId} prompt length`);
         assert.ok(shot.seconds >= 2 && shot.seconds <= 15);
         assert.match(shot.prompt, /一镜到底/u);
-        if (device.operator === 'none') assert.match(shot.prompt, /没有任何人/u); else assert.match(shot.prompt, /不露脸/u);
+        // A customer's video (2026-11-19): a driver on an unmanned robot, extra machines, a person merging into the machine.
+        if (device.operator === 'none') { assert.match(shot.prompt, /没有任何人/u); assert.match(shot.prompt, /没有方向盘/u); }
+        else { assert.match(shot.prompt, /不露脸/u); assert.match(shot.prompt, /不融在一起/u); }
+        assert.match(shot.prompt, /不复制、不分身/u);
       }
     }
   }

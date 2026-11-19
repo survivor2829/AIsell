@@ -566,10 +566,10 @@ function createProductVideoService(options = {}) {
       const attempt = (task.storyAttempts ||= []).length;
       const name = attempt ? `story_${attempt + 1}` : 'story';
       const response = await operation(task, name, null, null, task.prices.storyReserveCny, {}, async () => {
-        const result = await options.writeStory(story.storyMessages({ productName: task.plan.productName, facts: task.facts, scene, segments, feedback: task.storyAttempts.at(-1) || '' }));
+        const result = await options.writeStory(story.storyMessages({ productName: task.plan.productName, facts: task.facts, scene, segments, feedback: task.storyAttempts.at(-1) || '', unmanned: Boolean(task.plan.unmanned) }));
         return { content: String(result?.content || '') };
       });
-      try { task.story = story.parseStory(response.content, segments); }
+      try { task.story = { ...story.parseStory(response.content, segments), unmanned: Boolean(task.plan.unmanned) }; }
       catch (error) {
         if (error.code !== 'product_video_story_invalid' || task.storyAttempts.length >= 2) { task.storyAttempts = []; throw error; }
         task.storyAttempts.push(String(error.message || '').replace(/，没有继续花钱，请重试。$/u, '')); save(task); return;
