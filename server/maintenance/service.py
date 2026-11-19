@@ -231,6 +231,11 @@ BUSY_REPLY = (b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/js
               b"Connection: close\r\nContent-Length: " + str(len(_BUSY_BODY)).encode() + b"\r\n\r\n" + _BUSY_BODY)
 # Requests passed on to the provider gateway: a detail-image task alone polls several times a minute.
 GATEWAY_RATE_LIMITS = (1200, 240)
+# One office often shares one public address (field 2026-11-19: the computers behind one address
+# were refused at 60 a minute, so 吐槽中心 showed no public feedback). Per address 300 a minute.
+DEFAULT_RATE_LIMITS = (1500, 300)
+# Reading the public feedback list has its own allowance, so uploads never crowd it out.
+PUBLIC_FEEDBACK_RATE_LIMITS = (600, 120)
 
 
 class Server(ThreadingHTTPServer):
@@ -289,7 +294,7 @@ class Server(ThreadingHTTPServer):
             super().process_request_thread(request, address)
         finally:
             self.slots.release()
-    def rate_limit(self, address, limits=(300, 60), bucket=""):
+    def rate_limit(self, address, limits=DEFAULT_RATE_LIMITS, bucket=""):
         minute = int(time.time() / 60)
         retry_after = max(1, int((minute + 1) * 60 - time.time()))
         with self.rate_lock:
@@ -651,7 +656,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(chunk)
             return
         if route == "/v1/feedback/public":
-            limit = self.server.rate_limit(self.client_address[0])
+            limit = self.server.rate_limit(self.client_address[0], PUBLIC_FEEDBACK_RATE_LIMITS, ":public")
             if not limit["allowed"]:
                 return self.reply(
                     429,

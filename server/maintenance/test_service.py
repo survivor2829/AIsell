@@ -120,9 +120,12 @@ class ServiceTest(unittest.TestCase):
     def test_gateway_requests_have_their_own_larger_allowance(self):
         public = Server(('127.0.0.1', 0), Handler, None)
         minute = int(time.time() / 60)
-        public.rates['127.0.0.1'] = (minute, 60)
+        public.rates['127.0.0.1'] = (minute, 300)
         self.assertFalse(public.rate_limit('127.0.0.1')['allowed'], 'other routes keep their limit')
         self.assertTrue(public.rate_limit('127.0.0.1', (1200, 240), ':gateway')['allowed'])
+        self.assertTrue(public.rate_limit('127.0.0.1', (600, 120), ':public')['allowed'], 'the public list has its own allowance')
+        public.rates['10.0.0.2'] = (minute, 299)
+        self.assertTrue(public.rate_limit('10.0.0.2')['allowed'], 'an office behind one address gets 300 a minute')
         public.server_close()
 
     def test_input_diagnostics_survive_report_and_feedback_without_raw_input(self):
