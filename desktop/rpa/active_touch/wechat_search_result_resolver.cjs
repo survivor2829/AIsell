@@ -86,6 +86,11 @@ function searchObservationEvidence(observation, identity) {
     web_search_boundary_tops: boundaryTops,
     web_search_top_detected: boundaryTops.length ? Math.min(...boundaryTops) : null,
     bottom_gap: crop && ocrBoxes.length ? Number(crop.bottom) - Math.max(...ocrBoxes.map((item) => item.bottom)) : null,
+    // "微信号：…" captions the chat-title reader read again, and how many of those readings were used.
+    line_ocr_id_rows: Number.isInteger(observation.lineOcrIdRows) ? observation.lineOcrIdRows : null,
+    line_ocr_id_replaced: Number.isInteger(observation.lineOcrIdReplaced) ? observation.lineOcrIdReplaced : null,
+    line_ocr_id_errors: Number.isInteger(observation.lineOcrIdErrors) ? observation.lineOcrIdErrors : null,
+    line_ocr_id_error: /^[A-Za-z][A-Za-z0-9]{0,59}$/u.test(String(observation.lineOcrIdError || "")) ? observation.lineOcrIdError : "",
     candidate_set_hash: hash(JSON.stringify(candidateSet))
   };
 }

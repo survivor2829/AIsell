@@ -1885,6 +1885,33 @@ function Test-LocalContactSection($value) {
   $text = [Text.RegularExpressions.Regex]::Replace(([string]$value).Normalize([Text.NormalizationForm]::FormKC), "\\s+", "").ToLowerInvariant()
   return $text -match '^(?:最)?常.{0,2}用$' -or $text -in @('联系人','最近联系人','好友')
 }
+# The "微信号：…" caption read again by the chat-title reader (PP-OCRv4, served by the desktop
+# app). Windows' OCR misread this small gray caption on 100% screens (a letter as "×", a dot
+# inside 微信号): on the development machine (2026-11-20) two of six real contacts were then
+# "not found"; the reader read all six exactly. Without the reader, or with a doubtful reading,
+# Windows' reading stays. The reader may only cost accuracy, never the search: 1.5 s per caption,
+# 3 s for all of them, and no more calls after one failed.
+$script:lineOcrIdRows = 0; $script:lineOcrIdReplaced = 0; $script:lineOcrIdErrors = 0; $script:lineOcrIdError = ""
+$script:lineOcrBudget = [Diagnostics.Stopwatch]::StartNew()
+function Read-SearchLineOcr($source, [int]$x, [int]$y, [int]$width, [int]$height) {
+  $lineOcrUrl = [Environment]::GetEnvironmentVariable("XIAOXI_LINE_OCR_URL")
+  $lineOcrToken = [Environment]::GetEnvironmentVariable("XIAOXI_LINE_OCR_TOKEN")
+  if (-not ($lineOcrUrl -match '^http://127[.]0[.]0[.]1:[0-9]+/read$') -or $lineOcrToken.Length -lt 32 -or $width -lt 8 -or $height -lt 6) { return $null }
+  if ($script:lineOcrIdErrors -gt 0 -or $script:lineOcrBudget.ElapsedMilliseconds -gt 3000) { return $null }
+  $band = $null; $pngStream = $null
+  try {
+    $band = $source.Clone([System.Drawing.Rectangle]::new($x, $y, $width, $height), $source.PixelFormat)
+    $pngStream = [IO.MemoryStream]::new(); $band.Save($pngStream, [System.Drawing.Imaging.ImageFormat]::Png)
+    $request = [System.Net.HttpWebRequest]::Create($lineOcrUrl)
+    $request.Method = 'POST'; $request.Timeout = 1500; $request.ReadWriteTimeout = 1500; $request.Proxy = $null
+    $request.ContentType = 'image/png'; $request.Headers.Add('X-Xiaoxi-Token', $lineOcrToken)
+    $request.ServicePoint.Expect100Continue = $false
+    $payload = $pngStream.ToArray(); $request.ContentLength = $payload.Length
+    $requestStream = $request.GetRequestStream(); $requestStream.Write($payload, 0, $payload.Length); $requestStream.Close()
+    $response = $request.GetResponse()
+    try { $reader = [IO.StreamReader]::new($response.GetResponseStream(), [Text.Encoding]::UTF8); return ($reader.ReadToEnd() | ConvertFrom-Json) } finally { $response.Close() }
+  } catch { $script:lineOcrIdErrors++; $script:lineOcrIdError = $_.Exception.GetType().Name; return $null } finally { foreach ($resource in @($pngStream, $band)) { if ($null -ne $resource) { $resource.Dispose() } } }
+}
 $expectedPid = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID")
 $expectedHwnd = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_HWND")
 $exactWindowBinding = -not [string]::IsNullOrWhiteSpace($expectedPid) -and -not [string]::IsNullOrWhiteSpace($expectedHwnd)
@@ -2197,6 +2224,33 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
           x = [int]($cropLeft + (($left + $right) / (2 * $ocrScale)))
           y = [int]($cropTop + (($top + $bottom) / (2 * $ocrScale)))
         }
+        # A "微信号：…" caption (Windows may read 微信.号, or avatar specks before it): read its
+        # pixels again from the label to the right edge, and keep that reading when it is one.
+        # Not when anything readable stands before 微 (网络查找微信号 cut short), and not when
+        # Windows already read exactly the query.
+        $captionMatch = [Text.RegularExpressions.Regex]::Match($compactText, '^(.{0,3})微.?信.{0,2}号[:：]?(.*)$')
+        if (-not $reading.boundaryOnly -and $captionMatch.Success -and $captionMatch.Groups[1].Value -notmatch '[\\p{L}\\p{N}]' -and
+          -not ($compactQuery -and $captionMatch.Groups[2].Value -ceq $compactQuery)) {
+          $labelWord = @($words | Where-Object { ([string]$_.Text).Contains('微') }) | Select-Object -First 1
+          $labelX = $(if ($labelWord) { [double]$labelWord.BoundingRect.X } else { $left })
+          $bandLeft = [Math]::Max(0, [int][Math]::Floor($labelX / $ocrScale) - 4)
+          $bandTop = [Math]::Max(0, [int][Math]::Floor($top / $ocrScale) - 5)
+          $bandRight = [Math]::Min([int]$cropWidth, [int][Math]::Ceiling($right / $ocrScale) + 80)
+          $bandBottom = [Math]::Min([int]$cropHeight, [int][Math]::Ceiling($bottom / $ocrScale) + 5)
+          $lineReading = Read-SearchLineOcr $bitmap $bandLeft $bandTop ($bandRight - $bandLeft) ($bandBottom - $bandTop)
+          if ($lineReading) {
+            $script:lineOcrIdRows++
+            $lineText = ([string]$lineReading.text).Normalize([Text.NormalizationForm]::FormKC).Trim()
+            $lineCompact = [Text.RegularExpressions.Regex]::Replace($lineText, "\\s+", "").ToLowerInvariant()
+            if ($lineCompact.StartsWith('微信号') -and $lineCompact.Length -gt 4 -and [double]$lineReading.score -ge 0.8) {
+              $script:lineOcrIdReplaced++
+              $labelLeft = [Math]::Max([int]$candidate.left, [int]($cropLeft + ($labelX / $ocrScale)))
+              $candidate.text = $lineText
+              $candidate.words = @(@{ text = $lineText; left = $labelLeft; right = [int]$candidate.right })
+              $candidate.lineOcr = $true
+            }
+          }
+        }
         [void]$visualCandidates.Add($candidate)
        }
       }
@@ -2229,7 +2283,7 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
     }
   }
   Assert-ExactSearchForeground
-  @{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; searchQuery = $query; cursorParked = [bool]$script:searchCursorParked; inputLeaseTick = [uint64]$script:inputLeaseTick; searchCapturePng = $searchCapturePng; searchResultObservation = @{ uiaCandidates = $uiaCandidates.ToArray(); visualCandidates = $visualCandidates.ToArray(); webSearchCandidates = $webSearchCandidates.ToArray(); webSearchTop = $webSearchTop; cropBounds = $cropBounds; popupBounds = $popupBounds; popupDpi = $popupDpi; popupCandidateCount = [int]$script:searchPopupCandidateCount; captureSource = $captureSource; ocrOk = $ocrOk; webSearchVisible = $webSearchVisible } } | ConvertTo-Json -Compress -Depth 8
+  @{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; searchQuery = $query; cursorParked = [bool]$script:searchCursorParked; inputLeaseTick = [uint64]$script:inputLeaseTick; searchCapturePng = $searchCapturePng; searchResultObservation = @{ uiaCandidates = $uiaCandidates.ToArray(); visualCandidates = $visualCandidates.ToArray(); webSearchCandidates = $webSearchCandidates.ToArray(); webSearchTop = $webSearchTop; cropBounds = $cropBounds; popupBounds = $popupBounds; popupDpi = $popupDpi; popupCandidateCount = [int]$script:searchPopupCandidateCount; captureSource = $captureSource; ocrOk = $ocrOk; webSearchVisible = $webSearchVisible; lineOcrIdRows = [int]$script:lineOcrIdRows; lineOcrIdReplaced = [int]$script:lineOcrIdReplaced; lineOcrIdErrors = [int]$script:lineOcrIdErrors; lineOcrIdError = [string]$script:lineOcrIdError } } | ConvertTo-Json -Compress -Depth 8
   exit
 } elseif (-not [string]::IsNullOrWhiteSpace($resultAutomationId)) {
   # Kept for the explicitly named File Transfer Assistant flow.
