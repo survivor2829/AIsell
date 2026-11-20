@@ -2922,6 +2922,27 @@ async function main() {
     return observedReadyOrder(mixed);
   }));
   assert.equal(touchFirstOrders.every((order) => order[0] === "T4-touch"), true, "P3 touch must remain first in every non-empty mixed ready set");
+  {
+    // 用户 2026-11-19：触达人数实时算。每天重复的任务前一天没跑完，第二天重置前已发出的人也要留在记录里。
+    const rollRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-roll-"));
+    const id = "00000000-0000-4000-8000-000000000005";
+    fs.mkdirSync(path.join(rollRoot, "wechat_workflow"), { recursive: true });
+    fs.mkdirSync(path.join(rollRoot, "moments", "planned_tasks"), { recursive: true });
+    fs.writeFileSync(path.join(rollRoot, "moments", "planned_tasks", `${id}.json`), JSON.stringify({ id, type: "interact", payload: { maxPosts: 10 } }), "utf8");
+    const yesterday = new Date(clock.getTime() - 86_400_000);
+    const ymd = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(yesterday.getDate()).padStart(2, "0")}`;
+    fs.writeFileSync(path.join(rollRoot, "wechat_workflow", "state.json"), JSON.stringify({ version: 1, tasks: [
+      { id, type: "interact", title: "daily-unfinished", status: "pending", sequence: 1, accountName: "test-account", repeat: "daily", startTime: "10:00",
+        occurrenceDate: ymd, startedAt: yesterday.toISOString(), progress: { done: 4, total: 10 }, runs: [] }
+    ] }), "utf8");
+    const rollControl = createWechatWorkflowController({ rootDir: rollRoot, autoReplyDir: path.join(rollRoot, "reply"), activeTouchDir: path.join(rollRoot, "touch"),
+      momentsDir: path.join(rollRoot, "moments"), now: () => clock, getAccount: () => "test-account", autoSchedule: false, executors: {} });
+    const rolled = rollControl.refresh().state.tasks.find((task) => task.id === id);
+    await rollControl.dispose();
+    assert.equal(rolled.progress.done, 0, "the new day starts from zero");
+    assert.deepEqual(rolled.runs.map(({ occurrence, done, unfinished }) => ({ occurrence, done, unfinished })), [{ occurrence: ymd, done: 4, unfinished: true }],
+      "yesterday's unfinished sends stay in the history");
+  }
 
   const control = createWechatWorkflowController(options);
   const replyOnlyRoot = path.join(rootDir, "reply-only");
