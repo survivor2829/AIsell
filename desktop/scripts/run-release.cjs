@@ -66,6 +66,10 @@ function preflightReleaseInputs(edition, environment = process.env) {
       && mediaTools.licenseRecord.record.useType !== "commercial-delivery"
     ) {
       failures.push("Media tools: Delivery requires a commercial media-tools redistribution record.");
+    } else {
+      // The FFmpeg about to be packaged provides everything the app's media paths use.
+      const missing = require("./media-tools-capabilities.cjs").missingMediaToolCapabilities(mediaTools.ffmpeg);
+      if (missing.length) failures.push(`Media tools: the bundled FFmpeg lacks ${missing.join(", ")}, which the app uses.`);
     }
   } catch (error) {
     failures.push(`Media tools: ${error.message}`);

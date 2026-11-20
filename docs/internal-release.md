@@ -26,6 +26,10 @@
 
 在 `desktop/` 执行。首次配置构建机时，参考 `build/internal-release-config.example.json`，将实际已有 Python、FFmpeg、Chromium 和对应来源记录的路径保存到 `.build/internal-release-config.json`。相对路径相对于配置文件所在目录；不要把密钥放进此文件。环境准备与安装依赖不是每次更新的重复步骤。
 
+**构建输入放在固定目录，不放 `.build`（2026-11-20）。** FFmpeg、Chromium 及其来源记录放在 `D:/OpenAI/ReleaseInputs`，原始下载包另存一份在 `D:/OpenAI/ReleaseInputsArchive`。上游只保留约两周的自动构建，原始包丢了就再也下不到、构建预检会停下：2026-11-20 清理磁盘时把旧的 `desktop/.build/release-inputs` 当成中间产物删掉，FFmpeg n9.0.2-45 的原始包无法找回，只能换版本。清理任何目录前先读发版工作区的 `.build/internal-release-config.json`，凡被它引用的路径不删；`XIAOXI_BUILD_PYTHON` 指向的虚拟环境同样不能删。
+
+**换 FFmpeg 的步骤。** ① 从上游下载新的 LGPL shared 构建，核对官方摘要，原始包存入 `ReleaseInputsArchive`；② 解压到 `ReleaseInputs`，以旧来源记录为模板改版本、地址、原始包摘要和各文件摘要（构建自己的 `resolveMediaToolSources` 能通过即正确）；③ 运行 `node scripts/media-tools-compare.cjs --old <旧 bin> --new <新 bin> --sample <真实手机/大疆视频>` 对比软件每条 JS 媒体路径的输出，再用两版分别设置 `XIAOXI_FFMPEG_PATH`/`XIAOXI_FFPROBE_PATH` 跑内容引擎测试并逐条对比；④ 有差异先查清再换；⑤ 改发版配置，FFmpeg 属于底座变更，用 `release:sop -- --full` 出完整包。发版预检会核对打包的 FFmpeg 提供代码用到的每个编码器、滤镜和封装格式（`scripts/media-tools-capabilities.cjs`），缺一个就停下——1.2.46 换版后缺 libx264、客户数字人上传失败到 1.2.62 才修好的问题不会再先由客户发现。代码开始用新的编码器或滤镜时，同步加进这份清单。
+
 **开发发布提速（2026-10-21）。** 干净HEAD对应的push或手动Windows CI全部必需组及`Product detail local E2E`成功时，发布复用源码/E2E证据。主线push另可复用同仓已合并PR的完整CI：原run必须整体成功，证明文件绑定run/attempt、PR head/base、实际受检的合成合并提交；GitHub不可变提交对象必须证明受检全树与最终main全树完全相同，且受检base等于main父提交。主线事件范围的失败原因检查仍执行。原run缺组、跳过、取消、证据过期、内容/基线失配或查询失败均不复用，主线正常跑完整检查；发布端再次独立核对原始证据链，不凭主线汇总成功放行。构建与空间记录保存主线和原始run id、受检提交及tree。`release:internal -- --force-checks`强制本地检查。运行时清洁门禁、包验收、隐私扫描、发布前归档摘要和读回验签继续执行。
 
 Python构建指纹按解释器/DLL、包版本、requirements和显式运行时配方版本计算，同一次发布共享环境探测；缓存实现和回执脚本变化不会单独重打运行时。不可变运行时缓存、短路径暂存目录与候选程序保持同卷优先硬链接，共享缓存按用户/仓库/目标卷隔离并串行构建；实际位置记入 `buildStorage`，可通过 `XIAOXI_RELEASE_STORAGE_ROOT` 指定同卷短目录。旧缓存只读复用，不自动取得删除权。底座稳定化写入先独立替换目录项，真实进程门禁前后重新读取摘要。仅在显式不可变构建范围内复用带文件身份和时间戳的摘要清单；归档流式写盘，压缩媒体使用STORE。上述复用不提供检测保持元数据不变的任意外部篡改的保证。CI纯文档提交跳过源码作业；自检进程数默认不超过6，独占资源检查串行。
