@@ -5,19 +5,19 @@ import { ExampleBanner } from './VideoExamples';
 import { SceneIcon } from "./SceneIcons";
 import { formatWan } from "./BillingBadge";
 import { SheetConfirm, StoryVideoProgress, storyProgress, type StoryTask } from "./StoryVideoProgress";
-import { Countdown, ProductPhotos, RealShootFields, RealShootProgress, initialReal, minutes, realEstimate, storyEstimate, type ProductImage, type RealCatalog, type RealDraft, type Timing } from "./RealShootForm";
+import { Countdown, ProductPhotos, RealShootFields, RealShootProgress, ShotReviewPanel, initialReal, minutes, realEstimate, storyEstimate, type ProductImage, type RealCatalog, type RealDraft, type ShotReview, type Timing } from "./RealShootForm";
 
 type Choice = { id: string; name: string };
 type Quote = { ready?: boolean; estimatedCny?: number | null; maximumCny?: number; actualCny?: number; pendingCny?: number; reservedCny?: number; budgetCny?: number; note?: string; message?: string; checkedAt?: string };
 type Plan = {
-  version: string; pipelineVersion?: number; scene: string; evidenceStatus: string; sourceResolution?: string;
+  version: string; pipelineVersion?: number; scene: string; evidenceStatus: string; sourceResolution?: string; machine?: string; surface?: string; dirt?: string;
   shots: { index: number; seconds: number; title: string; narration: string; caption?: string }[];
   sendText: string;
 };
 type VideoTask = {
   id: string; mode: "product" | "social"; status: string; statusLabel: string; createdAt: string;
   durationSeconds: number; sceneIds?: string[]; productName?: string; facts: string; imageId: string; plan: Plan; currentShot: number;
-  completedShots: number; shotsReady?: boolean[]; shotsRunning?: boolean[]; storyPipeline?: boolean; realPipeline?: boolean; progress?: number; etaSeconds?: number | null; estimatedFinishAt?: string | null; imagesReady?: Record<string, boolean>; imageTotal?: number; sheetRedos?: number; sheetStep?: boolean; sheetConfirmed?: boolean;
+  completedShots: number; shotsReady?: boolean[]; shotsRunning?: boolean[]; storyPipeline?: boolean; realPipeline?: boolean; progress?: number; etaSeconds?: number | null; estimatedFinishAt?: string | null; imagesReady?: Record<string, boolean>; imageTotal?: number; sheetRedos?: number; sheetStep?: boolean; sheetConfirmed?: boolean; directorStep?: boolean; directed?: boolean; review?: ShotReview | null; canRedoShot?: boolean;
   story?: StoryTask["story"]; error: string; resumeStatus?: string; retryLabel?: string; canRetry: boolean; canExport: boolean; canExportSource?: boolean; canPreview: boolean; canRefresh?: boolean; quote?: Quote;
 };
 type Result<T> = { ok: boolean; data?: T; error?: string; code?: string; task?: VideoTask };
@@ -32,12 +32,12 @@ type VideoApi = {
   refresh(id: string): Promise<Result<VideoTask>>; media(id: string): Promise<Result<{ dataUrl: string }>>;
   shotMedia(id: string, index: number): Promise<Result<{ dataUrl: string }>>;
   imageMedia(id: string, key: string): Promise<Result<{ dataUrl: string }>>;
-  confirmSheet(id: string): Promise<Result<VideoTask>>; redoSheet(id: string): Promise<Result<VideoTask>>;
+  confirmSheet(id: string): Promise<Result<VideoTask>>; redoSheet(id: string): Promise<Result<VideoTask>>; redoShot?(id: string, index: number): Promise<Result<VideoTask>>;
   export(id: string): Promise<Result<{ path: string; subtitlePath?: string; sendText: string } | null>>;
   exportSource(id: string): Promise<Result<{ path: string } | null>>;
 };
 declare global { interface Window { xiaoxiProductVideo?: VideoApi } }
-const ACTIVE = new Set(["imaging", "writing_story", "composing", "uploading", "preparing_frames", "frame_generating", "locking_frames", "preparing_audio", "audio_preparing", "submitting", "generating", "assembling", "enhancing", "transcribing", "packaging"]);
+const ACTIVE = new Set(["imaging", "directing", "writing_story", "composing", "uploading", "preparing_frames", "frame_generating", "locking_frames", "preparing_audio", "audio_preparing", "submitting", "generating", "assembling", "enhancing", "transcribing", "packaging"]);
 // After the shots: putting them together. Transcribing also runs before any shot (the narration
 // is prepared first), so it only counts as finishing once every shot is done.
 const FINISHING = new Set(["assembling", "enhancing", "packaging"]);
@@ -135,7 +135,7 @@ export function ProductVideoPage() {
     try {
       const input = style === "real"
         ? { mode: "product", style: "real", productName: draft.productName, facts: draft.facts, durationSeconds: draft.durationSeconds, imageId: draft.imageId,
-          extraImageIds: images.slice(1).map((item) => item.id), deviceId: realDraft.deviceId, sceneIds: [realDraft.sceneId], floorId: realDraft.floorId, dirtIds: realDraft.dirtIds, pointIds: realDraft.pointIds }
+          extraImageIds: images.slice(1).map((item) => item.id), sceneIds: [realDraft.sceneId], pointIds: realDraft.pointIds, customPoints: realDraft.customPoints }
         : { ...draft, mode: "product", style: "story" };
       const result = await api.createAndStart(input);
       if (result.ok && result.data) updateTask(result.data);
@@ -146,9 +146,9 @@ export function ProductVideoPage() {
   // The story happens in one place.
   const toggleScene = (id: string) => { setError(""); setDraft(old => ({ ...old, sceneIds: old.sceneIds[0] === id ? [] : [id] })); };
   const running = Boolean(selected && ACTIVE.has(selected.status));
-  const realReady = Boolean(realDraft.deviceId && realDraft.sceneId && realDraft.floorId && realDraft.dirtIds.length);
+  const realReady = Boolean(draft.productName.trim() && realDraft.sceneId);
   const canGenerate = Boolean(draft.imageId && !busy && !running && draft.facts.length <= 12000 && (style === "story" || realReady));
-  const estimate = style === "real" ? realEstimate(capability?.timing, capability?.catalog, draft.durationSeconds, realDraft.pointIds) : storyEstimate(capability?.timing, draft.durationSeconds);
+  const estimate = style === "real" ? realEstimate(capability?.timing, capability?.catalog, draft.durationSeconds, realDraft) : storyEstimate(capability?.timing, draft.durationSeconds);
   const addImage = (extra: boolean) => api && void perform("image", () => unwrap(api.importImage()), item => {
     if (!item) return;
     setImages(old => extra ? [...old.filter(row => row.id !== item.id), item].slice(0, 3) : [item, ...old.slice(1)]);
@@ -181,11 +181,11 @@ export function ProductVideoPage() {
             {factsFile && <small className="pv2-meta">已导入：{factsFile}</small>}
             {draft.facts.length > 12000 && <p className="pv-error">资料超过 12,000 字，请精简一些。</p>}
             </>}
-            {style === "real" && <p className="pv2-note">不用写提示词：下面点选设备、场景和卖点就行。多放一张侧面或背面的图，转弯时更像原机。</p>}
+            {style === "real" && <p className="pv2-note">不用写提示词：AI 导演会看你的产品图，自己安排地面、脏污和每个镜头。有特写图就多放一张，转弯时更像原机。</p>}
           </div>
         </div>
         {style === "real" ? (capability?.catalog ? <RealShootFields catalog={capability.catalog} draft={realDraft} durationSeconds={draft.durationSeconds} disabled={!!busy || running}
-          onChange={(next) => { setError(""); setRealDraft(next); }} /> : <p className="pv2-note">正在读取可选的设备和场景…</p>) : <>
+          onChange={(next) => { setError(""); setRealDraft(next); }} /> : <p className="pv2-note">正在读取可选的场所和卖点…</p>) : <>
         <h2 className="pv2-label">故事发生在哪里？<small>选一个，不选就拍工厂仓储</small></h2>
         <div className="pv2-scenes">{(capability?.scenes || []).map(scene => { const on = draft.sceneIds.includes(scene.id); return <button key={scene.id} type="button" aria-pressed={on} className={on ? "is-on" : ""} onClick={() => toggleScene(scene.id)}><span className="pv2-scene-icon"><SceneIcon id={scene.id} /></span>{scene.name}{on && <Check className="pv2-check" size={16} strokeWidth={3} />}</button>; })}</div>
         </>}
@@ -194,10 +194,10 @@ export function ProductVideoPage() {
           setDraft({ ...draft, durationSeconds: seconds });
           // Fewer selling points fit a shorter video: keep the first ones picked.
           const limit = capability?.catalog?.pointLimit[seconds];
-          if (limit) setRealDraft(old => ({ ...old, pointIds: old.pointIds.slice(0, limit) }));
+          if (limit) setRealDraft(old => { const pointIds = old.pointIds.slice(0, limit); return { ...old, pointIds, customPoints: old.customPoints.slice(0, Math.max(0, limit - pointIds.length)) }; });
         }}>{seconds} 秒</button>)}</div>
         <button type="button" className="pv2-go" data-product-video-action="start" disabled={!canGenerate} onClick={() => void generate()}>{busy === "start" ? <LoaderCircle size={24} className="spin" /> : <Play size={24} />}生成视频{estimate > 0 && <small className="rs-go-eta">预计 {minutes(estimate)}</small>}</button>
-        <p className="pv2-note">{!draft.imageId ? "先放一张产品图。" : style === "real" && !realReady ? "选好设备、场景、地面和脏东西就能生成。" : running ? "这条还在做，做完再开始下一条。"
+        <p className="pv2-note">{!draft.imageId ? "先放一张产品图。" : style === "real" && !realReady ? (draft.productName.trim() ? "选一个使用场所就能生成。" : "填上产品名称、选一个使用场所就能生成。") : running ? "这条还在做，做完再开始下一条。"
           : "做完后按实际用量扣算力，没做成的不扣。预计时间不含你确认定妆照的时间。"}</p>
         {capability && style === "story" && !capability.story?.ready && capability.story?.message && <p className="pv2-note">{capability.story.message}</p>}
         {capability && style === "real" && !capability.real?.ready && capability.real?.message && <p className="pv2-note">{capability.real.message}</p>}
@@ -213,6 +213,8 @@ export function ProductVideoPage() {
               <button type="button" className="pv2-btn" onClick={startNew}><Plus size={19} />再做一条</button>
               {selected.canExportSource && <button type="button" className="pv2-btn" disabled={!!busy} onClick={() => api && void perform("source", () => unwrap(api.exportSource(selected.id)), result => { if (result) setExportResult(`已导出原片：${result.path}`); })}>导出原片</button>}
             </div>
+            {selected.realPipeline && <ShotReviewPanel review={selected.review} titles={shots.map((shot) => shot.title)} canRedo={Boolean(api?.redoShot && selected.canRedoShot)} busy={!!busy}
+              onRedo={(index) => api?.redoShot && void perform("redo-shot", () => unwrap(api.redoShot!(selected.id, index)), updateTask)} />}
             {selected.plan.sendText && <div className="pv2-send"><b>发给客户时可以配这句话</b><p>{selected.plan.sendText}</p></div>}
           </div> : selected.realPipeline && !STUCK.has(selected.status) && selected.status !== "draft" ? <>
             <div className="pv2-progress"><Ring value={progressOf(selected)} lines={[selected.status === "awaiting_sheet" ? "等你确认" : selected.statusLabel, `${selected.durationSeconds} 秒 · ${shots.length} 个镜头`]} />
@@ -254,7 +256,7 @@ export function ProductVideoPage() {
         </> : <div className="pv2-empty">
           <div className="pv2-canvas">{image ? <img src={image.previewDataUrl} alt="已选择的产品图" /> : <ImagePlus size={70} strokeWidth={1.2} />}</div>
           <ol className="pv2-journey"><li><span><ImagePlus size={26} /></span>放产品图</li><li><span><SceneIcon id="market" size={34} /></span>{style === "real" ? "点选场景卖点" : "选场景"}</li><li><span><Play size={26} /></span>点生成</li></ol>
-          <p className="pv2-note">{style === "real" ? "不用把设备拉到现场：放产品图，点选设备、场景和卖点。AI 先照产品图画四个角度给你确认，再拍出它在现场干活的真实画面，每个卖点一个镜头，配一行字幕。"
+          <p className="pv2-note">{style === "real" ? "不用拉设备、不用布置现场、不用人操作和剪辑：放产品图，填名称，选场所和卖点。AI 先照产品图画四个角度给你确认，AI 导演再看图安排镜头，拍出它在现场干活的真实画面，每个卖点一个镜头，配一行字幕。"
             : "AI 先照产品画定妆照，你确认后再写故事、找演员、画分镜，拍出带对话的现场视频。"}</p>
         </div>}
         {history.length > 0 && <div className="pv2-history"><h3>做过的</h3><div>{history.slice(0, 9).map(task => <button type="button" key={task.id} onClick={() => selectTask(task)} className={`is-${task.status === "completed" ? "done" : STUCK.has(task.status) ? "stuck" : "other"}`}>
