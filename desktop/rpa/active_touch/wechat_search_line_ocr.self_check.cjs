@@ -25,7 +25,7 @@ const characterWords = (value, x, y, width, height) => [...value.replace(/\s+/gu
   Text: character, BoundingRect: { X: x + index * width / all.length, Y: y, Width: width / all.length, Height: height }
 }));
 
-function replay(script, env) {
+function replay(script, env, captions = null) {
   const initialization = script.split(/\r?\n/u).filter((line) =>
     line.startsWith("$compactQuery =") || line.startsWith("$networkSearchPattern =") || line.startsWith("$ocrScale =")).join("\n");
   const start = script.indexOf("      foreach ($reading in $ocrReadings)");
@@ -35,9 +35,9 @@ function replay(script, env) {
   // What Windows read on the development machine: a dot inside 微信号 and the first letter as ×.
   // A second contact's caption below it, read right, as in the development-machine dropdowns.
   const windowsCaption = "微信.号：×10000000001", otherCaption = "微信号：Xyz20000000002", networkText = "搜索网络结果";
+  const rows = captions || [windowsCaption, otherCaption];
   const fixture = Buffer.from(JSON.stringify({ Lines: [
-    { Text: windowsCaption, Words: characterWords(windowsCaption, 68, 156, 360, 48) },
-    { Text: otherCaption, Words: characterWords(otherCaption, 68, 284, 360, 48) },
+    ...rows.map((text, index) => ({ Text: text, Words: characterWords(text, 68, 156 + index * 128, 360, 48) })),
     { Text: networkText, Words: characterWords(networkText, 60, 420, 380, 52) }
   ] }), "utf8").toString("base64");
   const source = `
@@ -58,7 +58,7 @@ ${script.slice(start, end)}
 @{ searchResultObservation=@{
   uiaCandidates=@(); visualCandidates=$visualCandidates.ToArray()
   webSearchCandidates=$webSearchCandidates.ToArray(); webSearchTop=$webSearchTop
-  webSearchVisible=$webSearchVisible; ocrOk=$true; lineOcrIdRows=[int]$script:lineOcrIdRows; lineOcrIdReplaced=[int]$script:lineOcrIdReplaced
+  webSearchVisible=$webSearchVisible; ocrOk=$true; lineOcrIdRows=[int]$script:lineOcrIdRows; lineOcrIdReplaced=[int]$script:lineOcrIdReplaced; lineOcrIdErrors=[int]$script:lineOcrIdErrors; lineOcrIdError=[string]$script:lineOcrIdError
   cropBounds=@{ left=58; top=72; right=430; bottom=490 }
 } } | ConvertTo-Json -Compress -Depth 6
 `;
@@ -75,7 +75,7 @@ ${script.slice(start, end)}
   });
 }
 
-function reader(answers) {
+function reader(answers, { delayMs = 0 } = {}) {
   const list = Array.isArray(answers) ? answers : [answers];
   const token = "t".repeat(40);
   const requests = [];
@@ -84,7 +84,8 @@ function reader(answers) {
     request.on("data", (chunk) => chunks.push(chunk));
     request.on("end", () => {
       requests.push({ token: request.headers["x-xiaoxi-token"], type: request.headers["content-type"], png: Buffer.concat(chunks).subarray(1, 4).toString("ascii") });
-      response.setHeader("Content-Type", "application/json"); response.end(JSON.stringify(list[Math.min(requests.length - 1, list.length - 1)]));
+      const answer = list[Math.min(requests.length - 1, list.length - 1)];
+      setTimeout(() => { response.setHeader("Content-Type", "application/json"); response.end(JSON.stringify(answer)); }, delayMs);
     });
   });
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({ server, requests,
@@ -127,5 +128,29 @@ function decide(observation) {
   assert.equal(none.searchResultObservation.visualCandidates[0].text, "微信.号:×10000000001");
   assert.equal(none.searchResultObservation.lineOcrIdRows, 0);
   assert.equal(decide(none).clicks, 0, "without the reader the old result stays");
-  console.log("search caption reader passed: good reading finds the contact, doubtful or missing reader keeps Windows' reading");
+  // Review of #314: a "网络查找微信号" row Windows cut to "查找微信号" is never read again (it must stay a
+  // network row); a caption Windows already read as the query is not overwritten.
+  const guarded = await reader({ text: "微信号：Abc10000000001", score: 0.99 });
+  try {
+    const network = await replay(script, guarded.env, ["查找微信号：Abc10000000001"]);
+    assert.equal(guarded.requests.length, 0, "a cut network-lookup row is not read again");
+    assert.equal(network.searchResultObservation.visualCandidates[0].text, "查找微信号:Abc10000000001");
+    assert.equal(decide(network).clicks, 0, "the network-lookup row is never clicked as a contact");
+    const exact = await replay(script, guarded.env, ["微信号：Abc10000000001", "微信号：Xyz20000000002"]);
+    assert.equal(guarded.requests.length, 1, "only the caption that is not already the query is read again");
+    assert.equal(exact.searchResultObservation.visualCandidates[0].text, "微信号:Abc10000000001");
+    assert.equal(exact.searchResultObservation.visualCandidates[0].lineOcr, undefined);
+  } finally { guarded.server.close(); }
+  // A hung reader costs at most one short wait: no further calls, and the failure is in the evidence.
+  const slow = await reader({ text: "微信号：Abc10000000001", score: 0.99 }, { delayMs: 4000 });
+  try {
+    const started = Date.now();
+    const observation = await replay(script, slow.env);
+    assert.ok(Date.now() - started < 9000, "the search does not wait for a hung reader");
+    assert.equal(slow.requests.length, 1, "no further calls after the first failed");
+    assert.equal(observation.searchResultObservation.lineOcrIdErrors, 1);
+    assert.match(observation.searchResultObservation.lineOcrIdError, /^[A-Za-z]+$/u);
+    assert.equal(observation.searchResultObservation.visualCandidates[0].text, "微信.号:×10000000001");
+  } finally { slow.server.close(); }
+  console.log("search caption reader passed: good reading finds the contact, doubtful or missing reader keeps Windows' reading, network rows and exact readings untouched, hung reader bounded");
 })().catch((error) => { console.error(error); process.exit(1); });

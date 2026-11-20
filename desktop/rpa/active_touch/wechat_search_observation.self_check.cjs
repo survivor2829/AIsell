@@ -1,5 +1,15 @@
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
+// Replays of the search script are longer than a command line may be (Windows' limit is 32767
+// characters): they run from a temporary file, UTF-8 with a BOM for Windows PowerShell.
+function runReplayFile(source, options) {
+  const fsModule = require("node:fs"), osModule = require("node:os"), pathModule = require("node:path");
+  const dir = fsModule.mkdtempSync(pathModule.join(osModule.tmpdir(), "xiaoxi-search-replay-"));
+  const file = pathModule.join(dir, "replay.ps1");
+  fsModule.writeFileSync(file, "\uFEFF" + source, "utf8");
+  try { return spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", file], options); }
+  finally { fsModule.rmSync(dir, { recursive: true, force: true }); }
+}
 const { openWechatSearchResult, openWechatSearchResultAsync, discardSearchCapture, runPowerShell } = require("./wechat_window_driver.cjs");
 const { searchObservationEvidence } = require("./wechat_search_result_resolver.cjs");
 
@@ -439,9 +449,7 @@ ${script.slice(start, end)}
   cropBounds=@{ left=58; top=72; right=430; bottom=490 }
 } } | ConvertTo-Json -Compress -Depth 6
 `;
-        const replayed = spawnSync("powershell.exe", [
-          "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(replay, "utf16le").toString("base64")
-        ], { encoding: "utf8", windowsHide: true, timeout: 10000 });
+        const replayed = runReplayFile(replay, { encoding: "utf8", windowsHide: true, timeout: 10000 });
         assert.equal(replayed.status, 0, replayed.stderr || replayed.error?.message);
         const observation = JSON.parse(replayed.stdout.trim().replace(/^\uFEFF/u, ""));
         assert.equal(observation.compactQuery, "sams_01", "normalization must preserve the letter s");
@@ -498,8 +506,7 @@ ${script.slice(start, end)}
       + `function Find-SearchPopup { $script:searchPopupCandidateCount=${found ? 1 : 0}; ${found
         ? "return @{left=300;top=200;right=700;bottom=550;dpi=120}" : "return $null"} }\n`
       + `if ($true) { if ($uiaCandidates.Count -eq 0) { try {\n${replayBody}\n}\n`;
-    const replayed = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
-      Buffer.from(replay, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true, timeout: 15000 });
+    const replayed = runReplayFile(replay, { encoding: "utf8", windowsHide: true, timeout: 15000 });
     assert.equal(replayed.status, 0, replayed.stderr || replayed.error?.message);
     const observation = JSON.parse(replayed.stdout.trim().replace(/^\uFEFF/u, "")).searchResultObservation;
     assert.equal(observation.captureSource, found ? "popup" : "formula_crop");

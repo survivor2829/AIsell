@@ -89,6 +89,8 @@ function searchObservationEvidence(observation, identity) {
     // "微信号：…" captions the chat-title reader read again, and how many of those readings were used.
     line_ocr_id_rows: Number.isInteger(observation.lineOcrIdRows) ? observation.lineOcrIdRows : null,
     line_ocr_id_replaced: Number.isInteger(observation.lineOcrIdReplaced) ? observation.lineOcrIdReplaced : null,
+    line_ocr_id_errors: Number.isInteger(observation.lineOcrIdErrors) ? observation.lineOcrIdErrors : null,
+    line_ocr_id_error: /^[A-Za-z][A-Za-z0-9]{0,59}$/u.test(String(observation.lineOcrIdError || "")) ? observation.lineOcrIdError : "",
     candidate_set_hash: hash(JSON.stringify(candidateSet))
   };
 }
