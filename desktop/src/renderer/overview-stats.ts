@@ -35,10 +35,14 @@ export function taskRuns(tasks: Dated[], type: string): Dated[] {
       : task.completedAt || task.lastCompletedDate
         ? [{ completedAt: task.completedAt ?? task.lastCompletedDate, done: Number.isFinite(Number(task.sent_verified_count)) ? task.sent_verified_count : progress?.done }]
         : [];
-    const recorded = task.status === "completed" || runs.some((run) => !("occurrence" in run) || (task.occurrenceDate !== undefined && run.occurrence === task.occurrenceDate));
+    const legacy = !(Array.isArray(task.runs) && task.runs.length);
+    const sameDay = (value: unknown) => typeof value === "string" && typeof task.occurrenceDate === "string" && value.slice(0, 10) === task.occurrenceDate;
+    const recorded = task.status === "completed" || (legacy ? runs.length > 0 && (task.occurrenceDate === undefined || sameDay(task.lastCompletedDate) || sameDay(task.completedAt))
+      : runs.some((run) => task.occurrenceDate !== undefined && run.occurrence === task.occurrenceDate));
     const live = !recorded && runDone(progress || {}) > 0
       ? [{ completedAt: task.startedAt ?? task.updatedAt ?? task.occurrenceDate ?? task.createdAt, done: progress?.done }] : [];
-    return [...runs, ...live];
+    // An older task's only entry is built from its current progress; while today's run is live it is that run.
+    return legacy && live.length ? live : [...runs, ...live];
   });
 }
 export const runDone = (run: Dated) => { const done = Number(run.done); return Number.isFinite(done) && done > 0 ? done : 0; };

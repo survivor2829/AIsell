@@ -153,6 +153,14 @@ const direction = (plan, overrides = {}) => JSON.stringify({ machine: '自主行
   assert.match(directed.platePrompt, /空无一人，没有任何机器设备/u);
   // What a director naturally writes is reworded, not sent back; a real description of liquid is sent back with the reason.
   assert.equal(ai.reword('红色滚刷与黑色吸水扒紧贴地面，干净处干燥平整，无任何水渍、湿痕或反光。画面无文字、商标、水渍或泡沫。'), '红色滚刷与黑色后部刮条紧贴地面，干净处干燥平整，无反光。画面无文字、商标。');
+  // Review of #313: floors named with 水 are not liquid; the 自动上下水 station shot may mention water.
+  assert.equal(ai.reword('没有杂物的水泥地面，没有划痕的水磨石台阶。'), '没有杂物的水泥地面，没有划痕的水磨石台阶。');
+  const station = ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['water'] });
+  assert.match(ai.directorMessages({ plan: station, images: [] })[1].content.at(-1).text, /污水被抽走/u, 'the station hint keeps its water');
+  const stationAnswer = JSON.parse(direction(station)); stationAnswer.shots[station.shots.findIndex((shot) => shot.pointId === 'water')].prompt += '透明管里清水灌进机器、污水被抽走。';
+  assert.doesNotThrow(() => ai.parseDirection(JSON.stringify(stationAnswer), station));
+  const oily = ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['dry'] });
+  assert.doesNotMatch(ai.directorMessages({ plan: oily, images: [] })[1].content.at(-1).text.split('\n').find((line) => line.includes('洗完即干')).split('常见拍法')[1], /水渍|水痕/u, 'no liquid words in other hints');
   const wet = JSON.parse(direction(plan)); wet.shots[0].prompt += '机器把地上的污水吸进去。';
   assert.throws(() => ai.parseDirection(JSON.stringify(wet), plan), (e) => e.code === 'product_video_direction_invalid' && /第1镜提示词里写了「污水」/u.test(e.message));
   assert.doesNotThrow(() => ai.parseDirection(JSON.stringify({ ...wet, wet: true }), plan), 'a washer may show clean water');
@@ -383,6 +391,32 @@ async function run() {
     assert.equal(redone.review.shots[2].redone, true); assert.equal(redone.canRedoShot, false);
     assert.ok(fs.existsSync(path.join(root, directedDraft.id, 'shot-2-before-redo.mp4')), 'the earlier take is kept');
     await assert.rejects(service.redoShot(directedDraft.id, 0), (e) => e.code === 'product_video_retry_limit');
+    // Review of #313: after three bad answers the retry asks again three times instead of reusing old answers.
+    let alwaysBad = true;
+    provider.request = ((original) => async (route, request = {}) => {
+      if (alwaysBad && route === ai.DIRECTOR_ROUTE && request.method === 'POST' && !/视频质检员/u.test(request.body.messages[0].content)) {
+        posts.push({ route, body: request.body }); return { choices: [{ message: { content: '不是 JSON' } }] };
+      }
+      return original(route, request);
+    })(provider.request);
+    const stubborn = await service.create({ mode: 'product', style: 'real', durationSeconds: 15, productName: 'S9 扫地机器人', sceneIds: ['community'], imageId: front.id, pointIds: ['edge'] });
+    await service.start(stubborn.id); await until(stubborn.id, (t) => t.status === 'awaiting_sheet'); await service.confirmSheet(stubborn.id);
+    const gaveUp = await until(stubborn.id, (t) => t.status === 'needs_attention');
+    assert.equal(gaveUp.errorCode, 'product_video_direction_invalid');
+    const directCalls = () => posts.filter((p) => p.route === ai.DIRECTOR_ROUTE && !/视频质检员/u.test(p.body.messages[0].content) && /S9/u.test(p.body.messages[1].content.at(-1).text)).length;
+    assert.equal(directCalls(), 3);
+    alwaysBad = false;
+    await service.retryShot(stubborn.id);
+    await until(stubborn.id, (t) => t.directed === true);
+    assert.ok(directCalls() >= 4, 'the retry really asks the director again');
+    // Review of #313: a redo that fails puts the earlier take back and keeps the finished video exportable.
+    const stubbornDone = await until(stubborn.id, (t) => t.status === 'completed');
+    assert.equal(stubbornDone.canRedoShot, true);
+    failVideo = `第${stubbornDone.plan.shots.findIndex((shot) => shot.pointId === 'edge') + 1}镜：`;
+    await service.redoShot(stubborn.id, stubbornDone.plan.shots.findIndex((shot) => shot.pointId === 'edge'));
+    const kept = await until(stubborn.id, (t) => t.status === 'completed' && Boolean(t.redoNote));
+    assert.match(kept.redoNote, /原来的成片还在/u); assert.equal(kept.canExport, true); assert.equal(kept.canRedoShot, false);
+    assert.ok(fs.existsSync(path.join(root, stubborn.id, 'final.mp4')));
   } finally { await service.close(); fs.rmSync(root, { recursive: true, force: true }); }
 }
 run().then(() => console.log('real-shoot self-check passed: AI director (plan, checks, rewrite, flow, AI check, one shot redo), pick lists, plans and prompts, prices, time estimate, scene picture, shots a few at a time, busy service, failed shot redo, one-line subtitles'),

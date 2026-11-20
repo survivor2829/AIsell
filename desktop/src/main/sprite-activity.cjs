@@ -99,7 +99,7 @@ function productDetailEvent(before, report) {
 
 const GEO_BUSY = { writing: ["正在写 GEO 文章", "大约要一分钟"], publish: ["正在把文章发到媒体号", "结果以平台页面为准"], visibility: ["正在豆包里查有没有提到你", ""] };
 // Only statuses where the software is really working: a task waiting for the customer must not look busy.
-const WORKING_TASK = new Set(["imaging", "writing_story", "composing", "uploading", "preparing_frames", "frame_generating", "locking_frames", "preparing_audio", "submitting", "generating", "assembling", "enhancing", "transcribing",
+const WORKING_TASK = new Set(["imaging", "directing", "writing_story", "composing", "uploading", "preparing_frames", "frame_generating", "locking_frames", "preparing_audio", "submitting", "generating", "assembling", "enhancing", "transcribing",
   "audio_preparing", "video_submitting", "video_generating", "packaging"]);
 // Paid video services keep their own task list; this reads the one in progress.
 function serviceActivity(title, items) {

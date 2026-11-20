@@ -411,7 +411,7 @@ function createWechatWorkflowController(options) {
         if (task.status !== "completed" && Number(task.progress?.done) > 0) {
           const occurrence = String(task.occurrenceDate || localDate(task.startedAt || now()));
           const runs = Array.isArray(task.runs) ? task.runs.filter((entry) => entry.occurrence !== occurrence) : [];
-          task.runs = [...runs, { occurrence, completedAt: task.startedAt || new Date(now()).toISOString(), done: Number(task.progress.done), total: Number(task.progress?.total) || 0, unfinished: true }].slice(-RUN_HISTORY_LIMIT);
+          task.runs = [...runs, { occurrence, completedAt: task.startedAt || new Date(`${occurrence}T23:59:00`).toISOString(), done: Number(task.progress.done), total: Number(task.progress?.total) || 0, unfinished: true }].slice(-RUN_HISTORY_LIMIT);
         }
         task.status = "pending";
         task.progress = { done: 0, total: payload.maxPosts };

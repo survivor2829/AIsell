@@ -36,7 +36,8 @@ const REWORD = [[/吸水扒|吸水胶条|刮水胶条|刮水条|刮水板|刮水
 // In a clause that says what is NOT there ("无任何水渍、湿痕或反光"), the items about liquid are dropped;
 // every shot's closing rule already says no liquid appears.
 const NEGATED = /^(?:[^，。；、]{0,6}?(无|没有|不要|避免|严禁|禁止)|(不))(?:任何)?/u;
-const WET_ITEM = /水|湿|泡沫/u;
+const NOT_LIQUID = /水泥|水磨石|水平|上下水|水箱/gu;
+const WET_ITEM = { test: (text) => /水|湿|泡沫/u.test(String(text).replace(NOT_LIQUID, '')) };
 function reword(text) {
   const renamed = REWORD.reduce((value, [pattern, to]) => value.replace(pattern, to), String(text));
   return renamed.replace(/[^，。；,;]+[，。；,;]?/gu, (segment) => {
@@ -105,8 +106,11 @@ function planDirected(input) {
 // How a selling point from the list is usually filmed — a hint the director may follow or improve on.
 function pointHint(shot) {
   const point = catalog.POINTS.find((row) => row.id === shot.pointId);
+  // Liquid words in a hint would be copied into the prompt; only the station shot keeps them.
   if (!point) return shot.custom ? '客户自己写的卖点，按字面意思拍出看得见的证明，不夸大' : '';
-  return `${point.action.replace('{work}', '机器正常作业')}（参考机位：${point.camera}）`;
+  const action = point.action.replace('{work}', '机器正常作业');
+  const said = point.id === 'water' ? action : action.split(/(?<=[，。；])/u).filter((part) => !LIQUID.test(part)).join('');
+  return `${said}（参考机位：${point.camera}）`;
 }
 
 // The vision model's brief. images: data URLs of the product photos followed by the 定妆照.
@@ -160,7 +164,7 @@ function parseDirection(content, plan) {
     const row = shots[i] || {};
     const prompt = reword(clean(row.prompt, 2000)), caption = clean(row.caption, 30) || slot.caption, title = clean(row.title, 16) || slot.title;
     if (prompt.length < 80) problems.push(`第${i + 1}镜提示词太短`);
-    if (!wet && LIQUID.test(prompt)) problems.push(`第${i + 1}镜提示词里写了「${prompt.match(LIQUID)[0]}」，不要写和水有关的词，只写看得见的结果`);
+    if (!wet && slot.pointId !== 'water' && LIQUID.test(prompt)) problems.push(`第${i + 1}镜提示词里写了「${prompt.match(LIQUID)[0]}」，不要写和水有关的词，只写看得见的结果`);
     if (!caption || width(caption) > catalog.CAPTION_WIDTH) problems.push(`第${i + 1}镜字幕「${caption}」超过10个汉字宽`);
     return { title, caption, venue: row.venue !== false, prompt };
   });

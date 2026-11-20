@@ -65,6 +65,8 @@ const live = overviewStats({ workflowTasks: [
 ] }, now);
 assert.deepEqual(live.reached, { now: 7 + 4 + 2 + 3 + 10 + 6 + 5, before: 0 });
 assert.deepEqual(taskRuns([{ type: "touch", status: "running", startedAt: ago(0.1), progress: { done: 7 } }], "touch").map(runDone), [7]);
+// Review of #313: an older daily task with only yesterday's completion still counts today's live sends.
+assert.deepEqual(taskRuns([{ type: "touch", status: "running", repeat: "daily", occurrenceDate: "2026-10-29", lastCompletedDate: "2026-10-28", startedAt: ago(0.1), progress: { done: 20 } }], "touch").map(runDone), [20]);
 assert.equal(stats.publishedToday, 3); assert.equal(stats.platformsToday, 2);
 assert.equal(stats.materials, 240); assert.equal(stats.tutorials, null, "教程目录还没取到时不显示数字");
 assert.equal(gain(stats.reached), 33); assert.equal(gain({ now: 1, before: 4 }), 0, "比上周少时不显示");

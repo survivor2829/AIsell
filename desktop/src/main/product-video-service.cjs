@@ -116,8 +116,8 @@ function createProductVideoService(options = {}) {
       shotsRunning: task.shots.map((shot) => Boolean(shot.providerTaskId && !shot.file)),
       progress: progressOf(task), etaSeconds: eta, estimatedFinishAt: eta === null ? null : new Date(Date.now() + eta * 1000).toISOString(),
       ...(task.plan.pipelineVersion === 6 ? { realPipeline: true, sheetStep: Boolean(task.plan.sheet), sheetRedos: task.sheetRedos || 0, sheetConfirmed: Boolean(task.sheetConfirmedAt),
-        ...(task.plan.director === 'ai' ? { directorStep: true, directed: Boolean(task.plan.directed), review: task.review || null,
-          canRedoShot: task.status === 'completed' && (task.videoRetryCount || 0) < 1 } : {}),
+        ...(task.plan.director === 'ai' ? { directorStep: true, directed: Boolean(task.plan.directed), review: task.review || null, redoNote: task.redoNote || '',
+          canRedoShot: task.status === 'completed' && (task.videoRetryCount || 0) < 1 && redoAffordable(task) } : {}),
         imagesReady: { sheet: Boolean(task.images?.sheet?.file), plate: Boolean(task.images?.plate?.file || !realPlateNeeded(task)) } } : {}),
       preparation: task.plan.pipelineVersion >= 3 ? { referenceMode: task.plan.pipelineVersion === 4 ? 'original_product_image' : 'scene_first_frames',
         inputsLocked: Boolean(task.frameManifest), framesReady: task.shots.filter((shot) => shot.frameFile).length, framesLocked: task.plan.pipelineVersion !== 4 && Boolean(task.frameManifest),
@@ -253,7 +253,7 @@ function createProductVideoService(options = {}) {
       if (realPlateNeeded(task) && !task.images?.plate?.file && !task.operations.img_plate && exclude !== 'img_plate') total += image;
       task.plan.shots.forEach((shot, index) => { if (!task.shots[index].file && !task.operations[`shot_${index}`] && exclude !== `shot_${index}`) total += videoReserve(task, shot); });
       if (task.plan.director === 'ai') {
-        const directs = Object.keys(task.operations).filter((key) => /^direct(?:_d+)?$/u.test(key)).length;
+        const directs = Object.keys(task.operations).filter((key) => /^direct(?:_\d+)?$/u.test(key)).length;
         if (!task.plan.directed) total += Math.max(0, 3 - directs - (/^direct/u.test(String(exclude || '')) ? 1 : 0)) * DIRECTOR_RESERVE_CNY;
         if (!task.operations.review && exclude !== 'review') total += DIRECTOR_RESERVE_CNY;
       }
@@ -282,6 +282,10 @@ function createProductVideoService(options = {}) {
       total += Math.max(0, p.audioReserveCny - usedAudio - (exclude?.startsWith('audio_') ? proposedReserve : 0));
     }
     return total;
+  }
+  // Whether the allowance still covers redoing the longest shot (the page hides the button otherwise).
+  function redoAffordable(task) {
+    try { return round(quote(task).reservedCny + Math.max(0, ...task.plan.shots.map((shot) => videoReserve(task, shot)))) <= task.budgetCny; } catch { return false; }
   }
   function videoReserve(task, shot) {
     return round(shot.seconds * (task.plan.pipelineVersion >= 3 ? task.prices.videoCnyPerSecond : task.prices.videoUsdPerSecond * task.prices.fxCnyPerUsd));
@@ -701,7 +705,8 @@ function createProductVideoService(options = {}) {
       }
       const response = await operation(task, 'review', aiDirector.DIRECTOR_ROUTE, aiDirector.reviewRequest({ plan: task.plan, images, sheets }), DIRECTOR_RESERVE_CNY);
       task.review = { checkedAt: new Date().toISOString(), shots: aiDirector.parseReview(String(response?.choices?.[0]?.message?.content || ''), task.plan) };
-    } catch {
+    } catch (error) {
+      if (error.code === 'product_video_update_pending' || error.outcomeUnknown) throw error;
       task.review = { checkedAt: new Date().toISOString(), skipped: true, shots: [] };
     }
     save(task);
@@ -748,7 +753,7 @@ function createProductVideoService(options = {}) {
       const relative = `${task.id}/final.mp4`;
       await media.renderCaptioned({ source: contained(root, task.sourceFile), destination: contained(root, relative), captions: task.captions, ffmpegPath });
       fs.writeFileSync(contained(root, `${task.id}/final.srt`), task.captions.srt, 'utf8'); task.subtitleFile = `${task.id}/final.srt`;
-      task.finalFile = relative; task.status = 'completed'; save(task);
+      task.finalFile = relative; task.status = 'completed'; delete task.redoInProgress; save(task);
       recordTiming(root, 'finish', (Date.now() - Date.parse(task.finishStartedAt)) / 1000);
     }
   }
@@ -853,7 +858,21 @@ function createProductVideoService(options = {}) {
       task.finalFile = relative; task.status = 'completed'; save(task);
     }
   }
+  // A shot redone after the AI check that fails: the earlier take goes back and the finished video stays usable.
+  function undoFailedRedo(task, error) {
+    const redo = task.redoInProgress;
+    if (!redo || error.outcomeUnknown || !task.finalFile || !fs.existsSync(contained(root, task.finalFile))) return false;
+    const relative = `${task.id}/shot-${redo.index}.mp4`;
+    fs.copyFileSync(contained(root, redo.before), contained(root, relative));
+    task.shots[redo.index] = { ...task.shots[redo.index], file: relative };
+    delete task.shots[redo.index].providerTaskId;
+    if (task.review?.shots?.[redo.index]) task.review.shots[redo.index] = { ...task.review.shots[redo.index], redone: false, redoFailed: true };
+    delete task.redoInProgress; task.status = 'completed'; task.error = ''; task.errorCode = '';
+    task.redoNote = `重拍第 ${redo.index + 1} 镜没有成功（${cleanMessage(error.message || '生成失败')}），原来的成片还在，可以直接用。`;
+    save(task); return true;
+  }
   function pause(task, error) {
+    if (undoFailedRedo(task, error)) return;
     task.resumeStatus = task.status; task.status = error.outcomeUnknown ? 'outcome_unknown' : 'needs_attention';
     task.error = cleanMessage(error.message || '制作需要处理。'); task.errorCode = error.code || 'product_video_step_failed';
     if (['product_video_native_audio_missing', 'product_video_shot_too_short'].includes(error.code)
@@ -964,7 +983,7 @@ function createProductVideoService(options = {}) {
         delete task.failedImageKey;
         task.resumeStatus = 'imaging';
       } else if (task.plan.pipelineVersion === 6 && task.errorCode === 'product_video_direction_invalid') {
-        for (const key of Object.keys(task.operations).filter((k) => /^direct(?:_d+)?$/u.test(k))) { (task.archivedOperations ||= []).push(task.operations[key]); delete task.operations[key]; }
+        for (const key of Object.keys(task.operations).filter((k) => /^direct(?:_\d+)?$/u.test(k))) { (task.archivedOperations ||= []).push(task.operations[key]); delete task.operations[key]; }
         task.resumeStatus = 'directing'; task.directAttempts = [];
       } else if (task.plan.pipelineVersion === 5 && task.errorCode === 'product_video_story_invalid') {
         for (const key of Object.keys(task.operations).filter((k) => /^story(?:_\d+)?$/u.test(k))) { (task.archivedOperations ||= []).push(task.operations[key]); delete task.operations[key]; }
@@ -993,8 +1012,9 @@ function createProductVideoService(options = {}) {
       task.failedShotIndex = index;
       await prepareVideoRetry(task);
       task.redoneShots = [...(task.redoneShots || []), { index, before: kept, at: new Date().toISOString() }];
+      task.redoInProgress = { index, before: kept };
       if (task.review?.shots?.[index]) task.review.shots[index] = { ...task.review.shots[index], redone: true };
-      for (const key of ['finalFile', 'sourceFile', 'subtitleFile', 'captions', 'finishStartedAt']) delete task[key];
+      delete task.finishStartedAt;
       hold(); save(task); schedule(id); return publicTask(task);
     });
   }

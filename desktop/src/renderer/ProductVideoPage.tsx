@@ -17,7 +17,7 @@ type Plan = {
 type VideoTask = {
   id: string; mode: "product" | "social"; status: string; statusLabel: string; createdAt: string;
   durationSeconds: number; sceneIds?: string[]; productName?: string; facts: string; imageId: string; plan: Plan; currentShot: number;
-  completedShots: number; shotsReady?: boolean[]; shotsRunning?: boolean[]; storyPipeline?: boolean; realPipeline?: boolean; progress?: number; etaSeconds?: number | null; estimatedFinishAt?: string | null; imagesReady?: Record<string, boolean>; imageTotal?: number; sheetRedos?: number; sheetStep?: boolean; sheetConfirmed?: boolean; directorStep?: boolean; directed?: boolean; review?: ShotReview | null; canRedoShot?: boolean;
+  completedShots: number; shotsReady?: boolean[]; shotsRunning?: boolean[]; storyPipeline?: boolean; realPipeline?: boolean; progress?: number; etaSeconds?: number | null; estimatedFinishAt?: string | null; imagesReady?: Record<string, boolean>; imageTotal?: number; sheetRedos?: number; sheetStep?: boolean; sheetConfirmed?: boolean; directorStep?: boolean; directed?: boolean; review?: ShotReview | null; canRedoShot?: boolean; redoNote?: string;
   story?: StoryTask["story"]; error: string; resumeStatus?: string; retryLabel?: string; canRetry: boolean; canExport: boolean; canExportSource?: boolean; canPreview: boolean; canRefresh?: boolean; quote?: Quote;
 };
 type Result<T> = { ok: boolean; data?: T; error?: string; code?: string; task?: VideoTask };
@@ -215,6 +215,7 @@ export function ProductVideoPage() {
             </div>
             {selected.realPipeline && <ShotReviewPanel review={selected.review} titles={shots.map((shot) => shot.title)} canRedo={Boolean(api?.redoShot && selected.canRedoShot)} busy={!!busy}
               onRedo={(index) => api?.redoShot && void perform("redo-shot", () => unwrap(api.redoShot!(selected.id, index)), updateTask)} />}
+            {selected.redoNote && <p className="pv2-note" role="status">{selected.redoNote}</p>}
             {selected.plan.sendText && <div className="pv2-send"><b>发给客户时可以配这句话</b><p>{selected.plan.sendText}</p></div>}
           </div> : selected.realPipeline && !STUCK.has(selected.status) && selected.status !== "draft" ? <>
             <div className="pv2-progress"><Ring value={progressOf(selected)} lines={[selected.status === "awaiting_sheet" ? "等你确认" : selected.statusLabel, `${selected.durationSeconds} 秒 · ${shots.length} 个镜头`]} />
