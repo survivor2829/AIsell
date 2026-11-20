@@ -108,16 +108,25 @@ async function runAll(label, bin, inputs, root) {
 function streams(probe, file) {
   try {
     const info = JSON.parse(sh(probe, ["-v", "error", "-show_streams", "-show_format", "-of", "json", file]).toString());
-    return info.streams.map((s) => s.codec_type === "video" ? `v:${s.codec_name} ${s.width}x${s.height} ${s.avg_frame_rate} ${s.pix_fmt}` : `a:${s.codec_name} ${s.sample_rate} ${s.channels}ch`).join(" | ") + ` dur=${Number(info.format.duration).toFixed(2)}`;
+    // Only real audio counts as "a:": camera files also carry data tracks (DJI metadata).
+    return info.streams.map((s) => s.codec_type === "video" ? `v:${s.codec_name} ${s.width}x${s.height} ${s.avg_frame_rate} ${s.pix_fmt}`
+      : s.codec_type === "audio" ? `a:${s.codec_name} ${s.sample_rate} ${s.channels}ch` : `${s.codec_type}:${s.codec_name}`).join(" | ") + ` dur=${Number(info.format.duration).toFixed(2)}`;
   } catch { return "unreadable"; }
 }
+// "n/a" when the comparison itself failed: counted as a difference, never as "same".
 function psnr(ffmpeg, a, b) {
   const result = spawnSync(ffmpeg, ["-hide_banner", "-i", a, "-i", b, "-lavfi", "[0:v][1:v]scale2ref[x][y];[x][y]psnr", "-f", "null", "-"], { windowsHide: true, encoding: "utf8" });
+  if (result.error || result.status !== 0) return "n/a";
   return (String(result.stderr).match(/average:(\S+)/) || [])[1] || "n/a";
 }
-function audioHash(ffmpeg, file) {
-  const result = spawnSync(ffmpeg, ["-v", "error", "-i", file, "-map", "0:a:0?", "-f", "s16le", "-ac", "1", "-ar", "16000", "-"], { windowsHide: true, maxBuffer: 256 * 1024 * 1024 });
-  return result.stdout?.length ? crypto.createHash("sha256").update(result.stdout).digest("hex") : "-";
+// A unique marker when decoding fails, so two failed decodes never compare equal; "-" only when the file has no audio.
+function audioHash(ffmpeg, probe, file) {
+  const described = streams(probe, file);
+  if (described === "unreadable") return `decode-failed:${crypto.randomUUID()}`;
+  if (!described.split(" | ").some((part) => part.startsWith("a:"))) return "-";
+  const result = spawnSync(ffmpeg, ["-v", "error", "-i", file, "-map", "0:a:0?", "-f", "s16le", "-ac", "1", "-ar", "16000", "-"], { windowsHide: true, maxBuffer: 1024 * 1024 * 1024 });
+  if (result.error || result.status !== 0 || String(result.stderr || "").trim()) return `decode-failed:${crypto.randomUUID()}`;
+  return result.stdout?.length ? crypto.createHash("sha256").update(result.stdout).digest("hex") : `decode-failed:${crypto.randomUUID()}`;
 }
 function files(dir) { const list = []; const walk = (d) => { for (const n of fs.readdirSync(d)) { const p = path.join(d, n); if (fs.statSync(p).isDirectory()) walk(p); else list.push(path.relative(dir, p)); } }; walk(dir); return list.sort(); }
 
@@ -143,8 +152,10 @@ async function main(argv) {
     if (!fs.existsSync(a) || !fs.existsSync(b)) { differences += 1; console.log(`  MISSING ${file}`); continue; }
     const sa = streams(probe, a), sb = streams(probe, b);
     const picture = /\.(mp4|jpg|png)$/iu.test(file) ? psnr(ffmpeg, a, b) : null;
-    const sound = /\.(mp4|wav)$/iu.test(file) ? audioHash(ffmpeg, a) === audioHash(ffmpeg, b) : null;
-    if (sa !== sb || (picture !== null && picture !== "inf" && Number(picture) < 40) || sound === false) differences += 1;
+    const sound = /\.(mp4|wav)$/iu.test(file) ? audioHash(ffmpeg, probe, a) === audioHash(ffmpeg, probe, b) : null;
+    // Unreadable files or a comparison that could not run are differences to look at, not matches.
+    const pictureBad = picture !== null && (picture === "n/a" || (picture !== "inf" && !(Number(picture) >= 40)));
+    if (sa !== sb || sa === "unreadable" || pictureBad || sound === false) differences += 1;
     console.log(`  ${sa === sb ? "same-params" : "PARAMS-DIFF"} ${file}${picture === null ? "" : ` psnr=${picture}`}${sound === null ? "" : ` audio ${sound ? "same" : "DIFF"}`}`);
   }
   console.log(`\n${differences ? `${differences} difference(s) to look at before switching` : "no differences: every path gives the same result"}`);
@@ -152,4 +163,4 @@ async function main(argv) {
 }
 
 if (require.main === module) main(process.argv.slice(2)).then((d) => { process.exitCode = d ? 1 : 0; }, (error) => { console.error(error.message || error); process.exitCode = 2; });
-module.exports = { parseArgs, capabilityDiff };
+module.exports = { parseArgs, capabilityDiff, psnr, audioHash, streams };
