@@ -5,6 +5,7 @@ function createProductVideoApi(ipcRenderer) {
   const retryClick = createTrustedClickGate('[data-product-video-action="retry-shot"]', "product-video:retry-shot");
   const confirmClick = createTrustedClickGate('[data-product-video-action="confirm-sheet"]', "product-video:confirm-sheet");
   const redoClick = createTrustedClickGate('[data-product-video-action="redo-sheet"]', "product-video:redo-sheet");
+  const redoShotClick = createTrustedClickGate('[data-product-video-action="redo-shot"]', "product-video:redo-shot");
   const invoke = (name, payload = {}) => ipcRenderer.invoke(`product-video:${name}`, payload);
   return {
     capabilities: () => invoke("capabilities"),
@@ -30,6 +31,7 @@ function createProductVideoApi(ipcRenderer) {
     imageMedia: (id, key) => invoke("image-media", { id, key }),
     confirmSheet: (id) => invoke("confirm-sheet", { id, clickToken: confirmClick() }),
     redoSheet: (id) => invoke("redo-sheet", { id, clickToken: redoClick() }),
+    redoShot: (id, index) => invoke("redo-shot", { id, index, clickToken: redoShotClick() }),
     export: (id) => invoke("export", { id }),
     exportSource: (id) => invoke("export-source", { id })
   };

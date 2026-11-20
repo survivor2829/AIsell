@@ -17,7 +17,7 @@ function loadTs(name) {
   return compiled.exports;
 }
 
-const { overviewStats, weekCount, gain } = loadTs("overview-stats.ts");
+const { overviewStats, weekCount, gain, taskRuns, runDone } = loadTs("overview-stats.ts");
 // Local noon, so "today" is the same day whatever the computer's time zone.
 const now = new Date(2026, 9, 29, 12).getTime();
 const ago = (days) => new Date(now - days * 86_400_000).toISOString();
@@ -48,6 +48,25 @@ assert.deepEqual(stats.reached, { now: 42, before: 9 });
 const daily = overviewStats({ workflowTasks: [{ type: "touch", completedAt: ago(0.5), progress: { done: 20 },
   runs: [{ completedAt: ago(0.5), done: 20 }, { completedAt: ago(1.5), done: 18 }, { completedAt: ago(2.5), done: 25 }, { completedAt: ago(9), done: 30 }] }] }, now);
 assert.deepEqual(daily.reached, { now: 63, before: 30 });
+// 用户 2026-11-19：触达了多少就实时算多少，任务没结束（进行中、暂停、需要处理、已取消）也算已经发出去的人。
+const live = overviewStats({ workflowTasks: [
+  { type: "touch", status: "running", startedAt: ago(0.1), occurrenceDate: "2026-10-29", progress: { done: 7, total: 50 } },
+  { type: "touch", status: "needs_attention", startedAt: ago(0.2), progress: { done: 4, total: 9 } },
+  { type: "touch", status: "cancelled", startedAt: ago(3), progress: { done: 2, total: 9 } },
+  { type: "touch", status: "pending", startedAt: ago(0.3), progress: { done: 0, total: 9 } },
+  // 每天重复：昨天的已记在 runs，今天这一轮还没跑完。
+  { type: "touch", status: "paused", repeat: "daily", startedAt: ago(0.4), occurrenceDate: "2026-10-29", progress: { done: 3, total: 10 },
+    runs: [{ occurrence: "2026-10-28", completedAt: ago(1), done: 10 }] },
+  // 完成后重排跳过的人：这一轮已在 runs 里，不重复算。
+  { type: "touch", status: "pending", startedAt: ago(0.5), occurrenceDate: "2026-10-29", progress: { done: 6, total: 8 },
+    runs: [{ occurrence: "2026-10-29", completedAt: ago(0.45), done: 6 }] },
+  { type: "touch", status: "completed", completedAt: ago(0.6), progress: { done: 5, total: 5 } },
+  { type: "publish", status: "running", startedAt: ago(0.1), progress: { done: 1, total: 1 } }
+] }, now);
+assert.deepEqual(live.reached, { now: 7 + 4 + 2 + 3 + 10 + 6 + 5, before: 0 });
+assert.deepEqual(taskRuns([{ type: "touch", status: "running", startedAt: ago(0.1), progress: { done: 7 } }], "touch").map(runDone), [7]);
+// Review of #313: an older daily task with only yesterday's completion still counts today's live sends.
+assert.deepEqual(taskRuns([{ type: "touch", status: "running", repeat: "daily", occurrenceDate: "2026-10-29", lastCompletedDate: "2026-10-28", startedAt: ago(0.1), progress: { done: 20 } }], "touch").map(runDone), [20]);
 assert.equal(stats.publishedToday, 3); assert.equal(stats.platformsToday, 2);
 assert.equal(stats.materials, 240); assert.equal(stats.tutorials, null, "教程目录还没取到时不显示数字");
 assert.equal(gain(stats.reached), 33); assert.equal(gain({ now: 1, before: 4 }), 0, "比上周少时不显示");

@@ -23,6 +23,30 @@ export function weekCount(items: Dated[], fields: string[], now: number, weight:
   return result;
 }
 
+// What WeChat tasks of one type have done, one entry per run: every completed run (runs, kept since
+// 1.2.29; a task saved before that only has its latest completion) plus the run still under way —
+// people reached count as soon as they are sent, not when the whole task ends (user 2026-11-19:
+// 别人一直触达显示 0 个，实际已经发了很多). A run already in runs is not counted twice.
+export function taskRuns(tasks: Dated[], type: string): Dated[] {
+  return tasks.filter((task) => task.type === type).flatMap((task) => {
+    const progress = task.progress as Dated | undefined;
+    const runs = Array.isArray(task.runs) && task.runs.length
+      ? (task.runs as Dated[]).map((run) => ({ completedAt: run.completedAt, done: run.done, occurrence: run.occurrence }))
+      : task.completedAt || task.lastCompletedDate
+        ? [{ completedAt: task.completedAt ?? task.lastCompletedDate, done: Number.isFinite(Number(task.sent_verified_count)) ? task.sent_verified_count : progress?.done }]
+        : [];
+    const legacy = !(Array.isArray(task.runs) && task.runs.length);
+    const sameDay = (value: unknown) => typeof value === "string" && typeof task.occurrenceDate === "string" && value.slice(0, 10) === task.occurrenceDate;
+    const recorded = task.status === "completed" || (legacy ? runs.length > 0 && (task.occurrenceDate === undefined || sameDay(task.lastCompletedDate) || sameDay(task.completedAt))
+      : runs.some((run) => task.occurrenceDate !== undefined && run.occurrence === task.occurrenceDate));
+    const live = !recorded && runDone(progress || {}) > 0
+      ? [{ completedAt: task.startedAt ?? task.updatedAt ?? task.occurrenceDate ?? task.createdAt, done: progress?.done }] : [];
+    // An older task's only entry is built from its current progress; while today's run is live it is that run.
+    return legacy && live.length ? live : [...runs, ...live];
+  });
+}
+export const runDone = (run: Dated) => { const done = Number(run.done); return Number.isFinite(done) && done > 0 ? done : 0; };
+
 export function overviewStats(input: {
   finished?: Dated[]; acquisitionLeads?: Dated[]; mapLeads?: Dated[]; workflowTasks?: Dated[]; publishJobs?: Dated[]; detailSaves?: Dated[];
   materials?: number | null; tutorials?: number | null;
@@ -30,12 +54,7 @@ export function overviewStats(input: {
   const finished = weekCount((input.finished || []).filter((item) => item.available !== false), ["createdAt"], now);
   const keyword = weekCount(input.acquisitionLeads || [], ["createdAt"], now);
   const map = weekCount(input.mapLeads || [], ["collectedAt", "createdAt"], now);
-  // Every completed run of a touch task counts, a daily task's too (runs, kept since 1.2.29);
-  // a task saved before that only has its latest completion.
-  const runs = (input.workflowTasks || []).filter((task) => task.type === "touch").flatMap((task) => Array.isArray(task.runs) && task.runs.length
-    ? (task.runs as Dated[]).map((run) => ({ completedAt: run.completedAt, done: run.done }))
-    : [{ completedAt: task.completedAt ?? task.lastCompletedDate, done: Number.isFinite(Number(task.sent_verified_count)) ? task.sent_verified_count : (task.progress as Dated | undefined)?.done }]);
-  const reached = weekCount(runs, ["completedAt"], now, (run) => { const done = Number(run.done); return Number.isFinite(done) && done >= 0 ? done : 0; });
+  const reached = weekCount(taskRuns(input.workflowTasks || [], "touch"), ["completedAt"], now, runDone);
   const today = (input.publishJobs || []).filter((job) => job.status === "published" && sameDay(time(job.finishedAt ?? job.updatedAt), now));
   return {
     finished, leads: { now: keyword.now + map.now, before: keyword.before + map.before }, reached,

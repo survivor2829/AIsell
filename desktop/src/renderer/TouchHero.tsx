@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { ImagePlus, PlayCircle, Plus, ThumbsUp } from "lucide-react";
-import { weekCount } from "./overview-stats";
+import { runDone, taskRuns, weekCount } from "./overview-stats";
 import { atTutorialSpeed } from "./SpeedVideo";
 import { DemoPlayer } from "./VideoExamples";
 import "./TouchHero.css";
@@ -9,15 +9,13 @@ type Loose = Record<string, unknown>;
 const asset = (file: string) => new URL(`./video-examples/${file}`, document.baseURI).toString();
 
 // How much tasks of one type did this week and today (people reached, posts published, interactions),
-// counting every run of a daily task.
+// counting every run of a daily task and what an unfinished run has already done.
 export function runNumbers(tasks: Loose[], type: string, now = Date.now()) {
-  const runs = tasks.filter((task) => task.type === type).flatMap((task) => Array.isArray(task.runs) && task.runs.length
-    ? task.runs as Loose[] : task.completedAt ? [{ completedAt: task.completedAt, done: (task.progress as Loose | undefined)?.done }] : []);
-  const done = (run: Loose) => { const value = Number(run.done); return Number.isFinite(value) && value > 0 ? value : 0; };
+  const runs = taskRuns(tasks, type);
   const today = new Date(now).toDateString();
   return {
-    week: weekCount(runs, ["completedAt"], now, done).now,
-    today: runs.filter((run) => new Date(String(run.completedAt)).toDateString() === today).reduce((sum, run) => sum + done(run), 0)
+    week: weekCount(runs, ["completedAt"], now, runDone).now,
+    today: runs.filter((run) => new Date(String(run.completedAt)).toDateString() === today).reduce((sum, run) => sum + runDone(run), 0)
   };
 }
 

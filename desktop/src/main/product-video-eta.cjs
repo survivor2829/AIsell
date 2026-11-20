@@ -71,9 +71,12 @@ function estimateTask(task, timings, { now = Date.now(), shotSlots = 3, imageSlo
     const venue = task.plan.shots.some((shot) => shot.place === 'venue');
     // Before the customer confirms the 定妆照 only that picture is counted; the rest follows the confirmation.
     if (task.plan.sheet && !task.sheetConfirmedAt) return Math.round(DEFAULTS.upload + imageLeft(task, 'sheet', r, now));
+    // AI 导演: one look at the photos (measured with the story writer's times) before the scene picture.
+    const directing = task.plan.director === 'ai' && !task.plan.directed
+      ? Math.max(5, r.story - (task.status === 'directing' ? since(task.operations?.direct?.submittedAt, now) : 0)) : 0;
     const plate = FINISHING.has(task.status) || !venue ? 0 : imageLeft(task, 'plate', r, now);
     const shots = FINISHING.has(task.status) ? 0 : shotsLeft(task, r, shotSlots, now);
-    return Math.round(plate + shots + finishLeft(task, r, now));
+    return Math.round(directing + plate + shots + finishLeft(task, r, now));
   }
   if (task.plan.pipelineVersion === 5) {
     if (!task.images?.sheet?.file) return Math.round(DEFAULTS.upload + imageLeft(task, 'sheet', r, now));

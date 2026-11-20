@@ -57,6 +57,7 @@
 | `desktop/src/main/cloud-maintenance*`、`cloud-transport.cjs` | 测试版签名更新、公告缓存/已读状态、30 分钟元数据刷新；完整下载归属/延期重试、受同意控制的阶段诊断及受限 IPC | 上传聊天原文；把查看公告当成下载安装包；绕过正常退出流程安装 |
 | `desktop/src/renderer/MixWidgets.tsx` | 线索视频混剪的四步条、制作进度环、做几条选择、成片逐条播放 | 在这里调用制作或扣费接口 |
 | `desktop/src/renderer/SceneIcons.tsx` | 场景效果视频九大场景的彩色图标（颜色跟页面主题） | 新增场景只加图标不改 video-directors 的场景表 |
+| `desktop/src/main/real-shoot-ai-director.cjs` | 场景效果视频·AI 导演（1.3.48 起页面默认）：按产品名/场所/卖点定镜头表，看图模型写每镜提示词与字幕并校验、改写水相关词；成片前 AI 逐镜检查（只报不重拍） |
 | `desktop/src/main/scene-video-catalog.cjs`、`real-shoot-director.cjs`、`renderer/RealShootForm.tsx` | 场景效果视频·无人实拍（管线 v6）：设备类型/场景/地面/污物/卖点勾选表，每个卖点一个一镜到底镜头与一行字幕；页面勾选、产品图最多 3 张、倒计时 | 让客户写提示词；卖点字幕超过一行；替客户声称设备有某项能力（只按客户勾选） |
 | `desktop/src/main/product-video-eta.cjs` | 场景效果视频剩余时间：各步骤默认耗时，按本机最近 20 次实际耗时取中位数校准（`timings.json`） | 等客户确认时显示倒计时；估算失败影响制作 |
 | `desktop/src/renderer/CartoonAvatar.tsx` | 按种子生成的卡通头像（精准获客客户卡、吐槽中心帖子）；只决定颜色和小配饰 | 用真实头像或把手机号、姓名、安装编号当种子显示 |

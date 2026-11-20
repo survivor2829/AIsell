@@ -327,6 +327,18 @@ async function referenceJpeg({ source, destination, ffmpegPath = 'ffmpeg' }) {
     return destination;
   });
 }
+/** AI 检查: six frames spread over one shot, side by side in one small picture for the vision model. */
+async function shotContactSheet({ source, destination, seconds, ffmpegPath = 'ffmpeg' }) {
+  separateOutput(source, destination);
+  const span = Number(seconds) > 0 ? Number(seconds) : 5;
+  return temporaryWork(destination, async (directory) => {
+    const output = path.join(directory, 'sheet.jpg');
+    await run(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y', '-i', path.resolve(source),
+      '-vf', `fps=6/${span},scale=200:-2,pad=iw+12:ih:6:0:white,tile=6x1`, '-frames:v', '1', '-q:v', '4', output]);
+    await fs.rename(output, path.resolve(destination));
+    return destination;
+  });
+}
 /** 剧情版: six storyboard frames as one 3 × 2 board with thin white gaps, in reading order. */
 async function composeStoryboard({ frames, destination, ffmpegPath = 'ffmpeg' }) {
   if (!Array.isArray(frames) || frames.length !== 6) throw mediaError('product_video_storyboard_invalid', '分镜需要正好六格。');
@@ -340,4 +352,4 @@ async function composeStoryboard({ frames, destination, ffmpegPath = 'ffmpeg' })
     return destination;
   });
 }
-module.exports = { referenceJpeg, composeStoryboard, normalizeAndAssemble, assemblePreparedVideo, extractAudio, buildCaptions, buildPlannedCaptions, renderCaptioned, run, probe, videoEncoderArgs, LINE_WIDTH };
+module.exports = { referenceJpeg, shotContactSheet, composeStoryboard, normalizeAndAssemble, assemblePreparedVideo, extractAudio, buildCaptions, buildPlannedCaptions, renderCaptioned, run, probe, videoEncoderArgs, LINE_WIDTH };

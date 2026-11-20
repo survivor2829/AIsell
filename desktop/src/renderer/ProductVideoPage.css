@@ -141,3 +141,19 @@ html[data-beat="1"] .sv-stages li.is-now>span{opacity:.6}
 .rs-eta.is-late{font-size:16px;color:#c2410c}
 .pv2-shot-wait small{font-size:13px;font-weight:800;opacity:.8}
 @media(max-width:640px){.rs-mode{grid-template-columns:1fr}}
+/* AI 导演 (2026-11-19): your own selling point, what the director understood, the AI check of the finished shots. */
+.rs-custom{display:grid;gap:8px;margin-top:12px}
+.rs-custom label{font-size:15px;font-weight:800;color:#374151}
+.rs-custom>div:first-of-type{display:flex;gap:8px}
+.rs-custom input{flex:1;min-width:0;height:48px;padding:0 14px;border-radius:14px;border:1.5px solid var(--pv-line);background:#fff;font:inherit;font-size:16px}
+.rs-custom>div>button{display:inline-flex;align-items:center;gap:6px;height:48px;padding:0 16px;border-radius:14px;border:1.5px solid var(--pv-accent);background:var(--pv-soft);color:var(--pv-accent);font:inherit;font-size:16px;font-weight:800;cursor:pointer}
+.rs-custom>div>button:disabled{opacity:.45;cursor:default}
+.rs-custom .rs-chips button{display:inline-flex;align-items:center;gap:6px}
+.rs-director,.rs-review{display:flex;gap:12px;align-items:flex-start;background:#fff;border:1.5px solid var(--pv-line);border-radius:16px;padding:14px 16px;margin-bottom:12px;color:var(--pv-accent)}
+.rs-director>div,.rs-review>div{display:grid;gap:5px;min-width:0;color:#374151;font-size:15px;line-height:1.55}
+.rs-director b,.rs-review b{font-size:16px;color:#1f2937}
+.rs-review p{margin:0;color:#374151;font-size:15px}
+.rs-review-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;color:#92400e}
+.rs-review-row span{flex:1;min-width:180px;color:#374151}
+.rs-review-row em{font-style:normal;font-size:14px;font-weight:800;color:var(--pv-accent)}
+.rs-review small{color:#6b7280;font-size:13px}

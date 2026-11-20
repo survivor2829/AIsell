@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const catalog = require('./scene-video-catalog.cjs');
 const real = require('./real-shoot-director.cjs');
+const ai = require('./real-shoot-ai-director.cjs');
 const { estimateTask, recordTiming, readTimings, slotFinish, DEFAULTS } = require('./product-video-eta.cjs');
 const { createProductVideoService } = require('./product-video-service.cjs');
 const { parseDirectPrices, storyImagePrice, validPrices, quotePlan } = require('./product-video-pricing.cjs');
@@ -117,6 +118,62 @@ const base = { mode: 'product', durationSeconds: 30, deviceId: 'robot_scrubber',
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 
+// AI 导演 (2026-11-19): the customer gives a name, a place and selling points (picked or written); the shot
+// list is fixed up front so the price holds, and the director's answer is checked before anything is paid for.
+const aiBase = { mode: 'product', durationSeconds: 30, productName: 'DZ95X 洗地机器人', sceneIds: ['factory'] };
+const direction = (plan, overrides = {}) => JSON.stringify({ machine: '自主行驶的洗地机器人，底部滚刷和后部刮条', operator: 'none', wet: false, floor: '旧环氧地坪', dirt: '油污和铁屑',
+  plate: '工厂仓储通道，两侧货架和周转箱，环氧地坪上有油污和铁屑，顶灯偏冷', shots: plan.shots.map((shot, i) => ({ title: shot.title, caption: shot.caption || '自己会干活', venue: shot.pointId !== 'lift',
+    prompt: `第${i + 1}镜：摄影机在机器斜后方同速跟随，机器沿通道匀速前进，滚刷经过的地方油污消失露出环氧地坪本色，没经过的地方保持原样作对照。两侧是蓝色货架和灰色周转箱，地面有黄色地标线，光线是厂房顶上普通的白色工业灯，画面平实，像现场随手拍的设备演示。` })), ...overrides });
+{
+  assert.throws(() => ai.planDirected({ ...aiBase, productName: ' ' }), /产品名称/u);
+  assert.throws(() => ai.planDirected({ ...aiBase, sceneIds: [] }), /使用场所/u);
+  assert.throws(() => ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['wide', 'obstacle'], customPoints: ['洗拖一体', '免维护'] }), /最多3个卖点/u);
+  // Any selling point may be picked, whatever the machine, and the customer's own words become a shot of their own.
+  const plan = ai.planDirected({ ...aiBase, pointIds: ['lift', 'obstacle'], customPoints: ['洗拖一体', '这是一条超过十个字宽的自己写的卖点'] });
+  assert.equal(plan.director, 'ai'); assert.equal(plan.directed, undefined); assert.equal(plan.imageCount, 2);
+  assert.deepEqual(plan.shots.map((shot) => shot.pointId), ['clean', 'lift', 'obstacle', 'custom_0', 'custom_1'], 'a cleaning shot leads when none was picked');
+  assert.equal(plan.shots.reduce((sum, shot) => sum + shot.seconds, 0), 30);
+  assert.equal(plan.shots[3].caption, '洗拖一体'); assert.equal(plan.shots[4].caption, '', 'a long point gets its subtitle from the director');
+  assert.ok(plan.shots.every((shot) => shot.prompt === ''), 'no prompt before the director has seen the photos');
+  // The brief carries the photos, the place and every shot, and asks for JSON only.
+  const messages = ai.directorMessages({ plan, images: ['data:image/jpeg;base64,AA', 'data:image/jpeg;base64,BB'] });
+  assert.equal(messages[1].content.filter((part) => part.type === 'image_url').length, 2);
+  assert.match(messages[1].content.at(-1).text, /第5镜｜6秒｜卖点「这是一条超过十个字宽的自己写的卖点」/u);
+  assert.match(messages[0].content, /只输出一个 JSON/u); assert.match(messages[0].content, /不要在提示词里写“水/u);
+  // A good answer becomes five prompts with the pictures named, the proven rules appended and the lift shot outside the venue.
+  const directed = ai.applyDirection(plan, ai.parseDirection(['```json', direction(plan), '```'].join('\n'), plan));
+  assert.equal(directed.directed, true); assert.equal(directed.operator, 'none');
+  assert.equal(directed.shots[1].place, 'other'); assert.equal(directed.imageCount, 2);
+  for (const shot of directed.shots) {
+    assert.match(shot.prompt, /图1是这台机器的真实产品照片，图2是同一台机器的四视角定妆图/u);
+    assert.equal(/图3是拍摄现场/u.test(shot.prompt), shot.place === 'venue');
+    assert.match(shot.prompt, /一镜到底/u); assert.match(shot.prompt, /不倒着走/u); assert.match(shot.prompt, /没有人坐上去/u); assert.match(shot.prompt, /不复制、不分身/u);
+    assert.ok([...shot.prompt].length <= ai.PROMPT_LIMIT);
+  }
+  assert.match(directed.platePrompt, /空无一人，没有任何机器设备/u);
+  // What a director naturally writes is reworded, not sent back; a real description of liquid is sent back with the reason.
+  assert.equal(ai.reword('红色滚刷与黑色吸水扒紧贴地面，干净处干燥平整，无任何水渍、湿痕或反光。画面无文字、商标、水渍或泡沫。'), '红色滚刷与黑色后部刮条紧贴地面，干净处干燥平整，无反光。画面无文字、商标。');
+  // Review of #313: floors named with 水 are not liquid; the 自动上下水 station shot may mention water.
+  assert.equal(ai.reword('没有杂物的水泥地面，没有划痕的水磨石台阶。'), '没有杂物的水泥地面，没有划痕的水磨石台阶。');
+  const station = ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['water'] });
+  assert.match(ai.directorMessages({ plan: station, images: [] })[1].content.at(-1).text, /污水被抽走/u, 'the station hint keeps its water');
+  const stationAnswer = JSON.parse(direction(station)); stationAnswer.shots[station.shots.findIndex((shot) => shot.pointId === 'water')].prompt += '透明管里清水灌进机器、污水被抽走。';
+  assert.doesNotThrow(() => ai.parseDirection(JSON.stringify(stationAnswer), station));
+  const oily = ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['dry'] });
+  assert.doesNotMatch(ai.directorMessages({ plan: oily, images: [] })[1].content.at(-1).text.split('\n').find((line) => line.includes('洗完即干')).split('常见拍法')[1], /水渍|水痕/u, 'no liquid words in other hints');
+  const wet = JSON.parse(direction(plan)); wet.shots[0].prompt += '机器把地上的污水吸进去。';
+  assert.throws(() => ai.parseDirection(JSON.stringify(wet), plan), (e) => e.code === 'product_video_direction_invalid' && /第1镜提示词里写了「污水」/u.test(e.message));
+  assert.doesNotThrow(() => ai.parseDirection(JSON.stringify({ ...wet, wet: true }), plan), 'a washer may show clean water');
+  assert.throws(() => ai.parseDirection(direction(plan, { shots: JSON.parse(direction(plan)).shots.slice(1) }), plan), /必须正好 5 镜/u);
+  assert.throws(() => ai.parseDirection(direction(plan, { operator: 'robot' }), plan), /operator/u);
+  const long = JSON.parse(direction(plan)); long.shots[2].caption = '遇到障碍物会自己绕开走'; assert.throws(() => ai.parseDirection(JSON.stringify(long), plan), /超过10个汉字宽/u);
+  assert.throws(() => ai.parseDirection('我觉得可以这样拍', plan), (e) => e.code === 'product_video_direction_invalid');
+  // The AI check only reports; anything not clearly a problem counts as fine.
+  assert.deepEqual(ai.parseReview('{"shots":[{"index":2,"ok":false,"issue":"第3格出现两台机器"},{"index":1,"ok":true}]}', directed).map(({ ok, issue }) => [ok, issue]),
+    [[true, ''], [false, '第3格出现两台机器'], [true, ''], [true, ''], [true, '']]);
+  assert.equal(ai.reviewRequest({ plan: directed, images: ['a', 'b'], sheets: ['c'] }).messages[1].content.length, 4);
+}
+
 // Prices: the scene picture, the footage with sound, and one redo of a shot and the picture.
 const directDoc = 'wan3.0-video 模型价格 华北2（北京）<table>' + [['480P', '.3'], ['720P', '.6'], ['1080P', '1.2']].map(([r, v]) => `<tr><td>视频生成（${r}）</td><td>${v}</td><td>每秒</td></tr>`).join('') + '</table>';
 const ttsDoc = 'qwen3-tts-flash 模型价格 华北2（北京）<table><tr><td>语音合成</td><td>0.8</td><td>每万字符</td></tr></table>';
@@ -173,6 +230,14 @@ async function run() {
           throw Object.assign(new Error('服务未完成请求：Throttling'), { code: 'digital_human_provider_error', status: 429 });
         }
         posts.push({ route, body: request.body });
+        if (route === ai.DIRECTOR_ROUTE) {
+          const text = request.body.messages[1].content.at(-1).text, system = request.body.messages[0].content;
+          if (/视频质检员/u.test(system)) return { choices: [{ message: { content: '{"shots":[{"index":3,"ok":false,"issue":"第4格出现两台机器"}]}' } }] };
+          const count = (text.match(/第\d+镜｜/gu) || []).length, plan = { shots: Array.from({ length: count }, (_, i) => ({ index: i, title: `镜${i + 1}`, caption: '', pointId: i === 1 ? 'lift' : 'x' })) };
+          const answer = JSON.parse(direction(plan));
+          if (!/上一次的结果不合格/u.test(text)) answer.shots[0].prompt += '地上的污水被吸走。';
+          return { choices: [{ message: { content: JSON.stringify(answer) } }] };
+        }
         if (route.endsWith('/uploads/images')) return { url: 'https://fixture.example/product.png' };
         if (route.includes('/images/')) { const task_id = `img_${posts.length}`; imageTasks.set(task_id, request.body.prompt); return { task_id }; }
         const task_id = `v_${videoTasks.size}`;
@@ -205,7 +270,8 @@ async function run() {
         if (badCaptionsOnce) { badCaptionsOnce = false; throw Object.assign(new Error('字幕过长'), { code: 'product_video_caption_too_long' }); }
         return require('./product-video-media.cjs').buildPlannedCaptions(input);
       },
-      extractAudio: async () => { throw new Error('无人实拍不做语音识别'); }
+      extractAudio: async () => { throw new Error('无人实拍不做语音识别'); },
+      shotContactSheet: async ({ destination }) => fs.writeFileSync(destination, png)
     } });
   const until = async (id, predicate) => {
     for (let i = 0; i < 400; i += 1) { const task = service.get(id); if (predicate(task)) return task; await service.refresh(id); await new Promise((resolve) => setTimeout(resolve, 3)); }
@@ -214,7 +280,8 @@ async function run() {
   try {
     const caps = await service.capabilities();
     assert.equal(caps.real.ready, true, 'no story writer or speech recognition is needed');
-    assert.ok(caps.catalog.devices.length > 5 && caps.timing.shotSlots === 3);
+    // The page offers the places and every selling point; the AI director works out the machine from the photos.
+    assert.ok(caps.catalog.scenes.length >= 9 && caps.catalog.points.length > 10 && caps.catalog.customLimit === 3 && caps.timing.shotSlots === 3);
     const photo = (name) => { const file = path.join(root, name); fs.writeFileSync(file, Buffer.concat([png, Buffer.from(name)])); return service.importImage(file); };
     const front = photo('front.png'), side = photo('side.png');
     await assert.rejects(service.create({ ...base, style: 'story', imageId: front.id, deviceId: 'robot_scrubber' }), (e) => e.code === 'product_video_invalid_input');
@@ -290,7 +357,67 @@ async function run() {
     const legacyDone = await until(legacy.id, (t) => t.status === 'completed');
     assert.equal(posts.filter((p) => /产品定妆设定图/u.test(p.body?.prompt || '')).length, sheetsBefore, 'no 定妆照 for an older plan');
     assert.equal(legacyDone.sheetStep, false);
+    // AI 导演: name, place and selling points only. After the 定妆照 the director looks at the photos (sent
+    // back once with the reason), then the scene picture, the shots, the AI check, and one shot redone on request.
+    const postsBefore = posts.length;
+    const directedDraft = await service.create({ mode: 'product', style: 'real', durationSeconds: 15, productName: 'DZ95X 洗地机器人', sceneIds: ['factory'],
+      imageId: front.id, pointIds: ['lift'], customPoints: ['洗拖一体'] });
+    assert.equal(directedDraft.directorStep, true); assert.equal(directedDraft.directed, false);
+    assert.ok(directedDraft.quote.maximumCny > 0 && directedDraft.quote.directorCny === 0.2, 'the director and the check are in the quote');
+    await service.start(directedDraft.id);
+    await until(directedDraft.id, (t) => t.status === 'awaiting_sheet');
+    assert.equal(posts.slice(postsBefore).filter((p) => p.route === ai.DIRECTOR_ROUTE).length, 0, 'the director waits for the confirmed 定妆照');
+    await service.confirmSheet(directedDraft.id);
+    const directedDone = await until(directedDraft.id, (t) => t.status === 'completed');
+    const mine = posts.slice(postsBefore);
+    const directs = mine.filter((p) => p.route === ai.DIRECTOR_ROUTE && !/视频质检员/u.test(p.body.messages[0].content));
+    assert.equal(directs.length, 2, 'an answer with liquid in it is written once more');
+    assert.match(directs[1].body.messages[1].content.at(-1).text, /第1镜提示词里写了「污水」/u);
+    assert.equal(directs[0].body.messages[1].content.filter((part) => part.type === 'image_url').length, 2, 'the product photo and the 定妆照');
+    assert.equal(directedDone.directed, true); assert.match(directedDone.plan.machine, /洗地机器人/u);
+    const directedVideos = mine.filter((p) => p.route.includes('video-synthesis'));
+    assert.equal(directedVideos.length, 3);
+    assert.ok(directedVideos.every((p) => /一镜到底/u.test(p.body.input.prompt) && /不倒着走/u.test(p.body.input.prompt)));
+    assert.equal(directedVideos.filter((p) => p.body.input.media.length === 3).length, 2, 'venue shots carry the scene picture');
+    assert.deepEqual(directedDone.review.shots.map((shot) => shot.ok), [true, true, false]);
+    assert.equal(directedDone.canRedoShot, true);
+    assert.ok(directedDone.quote.reservedCny <= directedDone.quote.budgetCny + 1e-9);
+    // The customer redoes the flagged shot: only that shot is ordered again, once.
+    const ordersBefore = posts.filter((p) => p.route.includes('video-synthesis')).length;
+    await assert.rejects(service.redoShot(directedDraft.id, 7), (e) => e.code === 'product_video_redo_unavailable');
+    await service.redoShot(directedDraft.id, 2);
+    const redone = await until(directedDraft.id, (t) => t.status === 'completed');
+    assert.equal(posts.filter((p) => p.route.includes('video-synthesis')).length, ordersBefore + 1);
+    assert.equal(redone.review.shots[2].redone, true); assert.equal(redone.canRedoShot, false);
+    assert.ok(fs.existsSync(path.join(root, directedDraft.id, 'shot-2-before-redo.mp4')), 'the earlier take is kept');
+    await assert.rejects(service.redoShot(directedDraft.id, 0), (e) => e.code === 'product_video_retry_limit');
+    // Review of #313: after three bad answers the retry asks again three times instead of reusing old answers.
+    let alwaysBad = true;
+    provider.request = ((original) => async (route, request = {}) => {
+      if (alwaysBad && route === ai.DIRECTOR_ROUTE && request.method === 'POST' && !/视频质检员/u.test(request.body.messages[0].content)) {
+        posts.push({ route, body: request.body }); return { choices: [{ message: { content: '不是 JSON' } }] };
+      }
+      return original(route, request);
+    })(provider.request);
+    const stubborn = await service.create({ mode: 'product', style: 'real', durationSeconds: 15, productName: 'S9 扫地机器人', sceneIds: ['community'], imageId: front.id, pointIds: ['edge'] });
+    await service.start(stubborn.id); await until(stubborn.id, (t) => t.status === 'awaiting_sheet'); await service.confirmSheet(stubborn.id);
+    const gaveUp = await until(stubborn.id, (t) => t.status === 'needs_attention');
+    assert.equal(gaveUp.errorCode, 'product_video_direction_invalid');
+    const directCalls = () => posts.filter((p) => p.route === ai.DIRECTOR_ROUTE && !/视频质检员/u.test(p.body.messages[0].content) && /S9/u.test(p.body.messages[1].content.at(-1).text)).length;
+    assert.equal(directCalls(), 3);
+    alwaysBad = false;
+    await service.retryShot(stubborn.id);
+    await until(stubborn.id, (t) => t.directed === true);
+    assert.ok(directCalls() >= 4, 'the retry really asks the director again');
+    // Review of #313: a redo that fails puts the earlier take back and keeps the finished video exportable.
+    const stubbornDone = await until(stubborn.id, (t) => t.status === 'completed');
+    assert.equal(stubbornDone.canRedoShot, true);
+    failVideo = `第${stubbornDone.plan.shots.findIndex((shot) => shot.pointId === 'edge') + 1}镜：`;
+    await service.redoShot(stubborn.id, stubbornDone.plan.shots.findIndex((shot) => shot.pointId === 'edge'));
+    const kept = await until(stubborn.id, (t) => t.status === 'completed' && Boolean(t.redoNote));
+    assert.match(kept.redoNote, /原来的成片还在/u); assert.equal(kept.canExport, true); assert.equal(kept.canRedoShot, false);
+    assert.ok(fs.existsSync(path.join(root, stubborn.id, 'final.mp4')));
   } finally { await service.close(); fs.rmSync(root, { recursive: true, force: true }); }
 }
-run().then(() => console.log('real-shoot self-check passed: pick lists, plans and prompts, prices, time estimate, scene picture, shots a few at a time, busy service, failed shot redo, one-line subtitles'),
+run().then(() => console.log('real-shoot self-check passed: AI director (plan, checks, rewrite, flow, AI check, one shot redo), pick lists, plans and prompts, prices, time estimate, scene picture, shots a few at a time, busy service, failed shot redo, one-line subtitles'),
   (error) => { console.error(error); process.exit(1); });
