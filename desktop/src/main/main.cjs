@@ -1275,6 +1275,15 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       components.markHealthy(); cloudMaintenance?.refreshLocalState();
       // Retry only previously registered retirement, after the real page works.
       // Unclassified historical backups and current/candidate versions stay protected.
+      // An update helper that failed after the app had exited left its reason only in its status file.
+      try {
+        const userData = app.getPath("userData");
+        require("./update-failure-report.cjs").reportHelperFailures({
+          jobsDir: components.updatePaths(userData).jobs,
+          roots: { profile: userData, install: path.dirname(process.execPath), temp: require("node:os").tmpdir() },
+          log: (details) => logger.event("update", "update.helper_failed", details, { level: "error", code: details.error_code, phase: details.failure_phase })
+        });
+      } catch { /* Reporting never blocks the started app. */ }
       if (app.isPackaged) {
         await require("./update-startup-maintenance.cjs").maintainAfterStartup(components.updatePaths(app.getPath("userData")).directory,
           { profile: app.getPath("userData"), version: components.businessVersion(app), runtimeRoot: components.currentRoot() })

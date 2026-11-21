@@ -196,6 +196,8 @@ function updateFailure(error, phase) {
   const failure = { phase: Object.hasOwn(PHASES, phase) ? phase : "prepare", code,
     message: String(error?.message || code).slice(0, 2000) };
   for (const key of ["path", "syscall"]) if (typeof error?.[key] === "string") failure[key] = error[key].slice(0, 2000);
+  // Kept in the local status file only; the field report carries just our own file:line frames.
+  if (typeof error?.stack === "string") failure.stack = error.stack.slice(0, 4000);
   for (const key of ["requiredBytes", "availableBytes"]) if (Number.isFinite(error?.[key])) failure[key] = error[key];
   if (/^[a-zA-Z][a-zA-Z0-9_]{0,95}$/.test(error?.cleanupCode || "")) failure.cleanupCode = error.cleanupCode;
   return failure;
