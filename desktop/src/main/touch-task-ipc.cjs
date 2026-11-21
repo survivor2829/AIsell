@@ -44,6 +44,8 @@ let runnerOwner = "";
 let deepSeekClient = null;
 let executionMode = "draft_only";
 let realSendExecutor = null;
+// AI 看图兜底 (wechat-vision-check.cjs), handed to every contact send; absent = the old skip.
+let visionRescue = null;
 let realSendSessionVerifier = null;
 let messageBubbleVerifier = null;
 let waitForDelay = null;
@@ -1119,13 +1121,14 @@ function buildRunnableTask(script, excludedContactIds = []) {
   };
 }
 
-function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekClient: client, onPause, executionMode: mode, realSendExecutor: executor, verifyRealSendSession: sessionVerifier, verifyMessageBubble: verifier, detectDeliveryNotice, waitForDelay: wait, passport, appVersion = "unknown", buildId = "", buildCommit = "unknown" } = {}) {
+function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekClient: client, onPause, executionMode: mode, realSendExecutor: executor, visionRescue: rescue, verifyRealSendSession: sessionVerifier, verifyMessageBubble: verifier, detectDeliveryNotice, waitForDelay: wait, passport, appVersion = "unknown", buildId = "", buildCommit = "unknown" } = {}) {
   getMainWindowRef = getMainWindow;
   runtimeDataDir = String(dataDir || "");
   runtimeCoordinator = coordinator;
   deepSeekClient = client || null;
   executionMode = mode === "real_send" ? "real_send" : "draft_only";
   realSendExecutor = typeof executor === "function" ? executor : null;
+  visionRescue = typeof rescue === "function" ? rescue : null;
   realSendSessionVerifier = typeof sessionVerifier === "function" ? sessionVerifier : null;
   messageBubbleVerifier = typeof verifier === "function" ? verifier : null;
   waitForDelay = typeof wait === "function" ? wait : null;
@@ -1407,7 +1410,7 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
     coordinator: runtimeCoordinator,
     readContacts,
     client: deepSeekClient,
-    execute: withTitleReader(realSendExecutor),
+    execute: withTitleReader(realSendExecutor && visionRescue ? (options) => realSendExecutor({ ...options, visionRescue }) : realSendExecutor),
     detectDeliveryNotice,
     runStep: withTitleReader(runActiveTouch),
     restoreChatSurface: restoreWechatChatSurface,

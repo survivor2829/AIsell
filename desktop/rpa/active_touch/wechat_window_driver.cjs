@@ -14,6 +14,7 @@ const { findWechatExecutable } = require("../contact_sync/contact_sync_cli.cjs")
 const { readWechatWindowDiagnostics, readMomentsDiagnostics } = require("../../src/shared/wechat-window-diagnostics.cjs");
 const { sanitizeImageProgress } = require("../../src/shared/failure-diagnostics.cjs");
 const { WECHAT_MAIN_WINDOW_VISUAL_SCRIPT } = require("./wechat_window_visual.cjs");
+const { decodePng, sameRegion } = require("./png_pixels.cjs");
 const { NETWORK_SEARCH_LABELS, firstLocalRowFallback, resolveWechatSearchResultObservation, searchObservationEvidence } = require("./wechat_search_result_resolver.cjs");
 const { WECHAT_SEARCH_INPUT_GUARD_CSHARP } = require("./wechat_search_input.cjs");
 
@@ -2753,6 +2754,37 @@ function buildSearchEvidence(observed, resolution, query, context) {
   };
 }
 
+// AI 看图兜底 (2026-11-21): when the rules could not pick a row, the app showed the same dropdown
+// picture to a vision model, which named one exact, unique contact row (wechat-vision-check.cjs).
+// Its point is used only on a dropdown with exactly the same pixels at exactly the same place, so it
+// can never land on a different list; the click then goes through the usual landing and title checks.
+function visionResolution(observed, point) {
+  if (!point || typeof observed?.searchCapturePng !== "string") return null;
+  const observation = observed.searchResultObservation || {};
+  const bounds = observation.popupBounds;
+  if (observation.captureSource !== "popup" || !bounds) return null;
+  const width = Number(bounds.right) - Number(bounds.left), height = Number(bounds.bottom) - Number(bounds.top);
+  const x = Number(point.x), y = Number(point.y);
+  if (!(width > 0 && height > 0 && x > 0 && x < 1 && y > 0 && y < 1)) return null;
+  // The picture the model read (our own temp capture, by name and fingerprint) and the one just taken
+  // must match pixel for pixel from the top of the panel down past the chosen row; the panel's edges,
+  // where the window behind shows through its shadow, are left out (dev machine 2026-11-21).
+  let reference, current;
+  try {
+    if (!/^xiaoxi-search-capture-[a-f0-9]{32}\.png$/u.test(String(point.reference || ""))) return null;
+    const bytes = fs.readFileSync(path.join(os.tmpdir(), point.reference));
+    if (crypto.createHash("sha256").update(bytes).digest("hex") !== point.capture) return null;
+    reference = decodePng(bytes); current = decodePng(Buffer.from(observed.searchCapturePng, "base64"));
+  } catch { return null; }
+  if (!sameRegion(reference, current, { left: 0.1, right: 0.9, top: 0.04, bottom: Math.min(1, y + 0.08) })) return null;
+  const candidate = { x: Math.round(Number(bounds.left) + x * width), y: Math.round(Number(bounds.top) + y * height) };
+  return { status: "selected", mode: "vision_row", rule_id: "search-v001", candidate, diagnostics: { vision_point: true } };
+}
+// The capture's fingerprint, so the app can tell the second run which picture the model looked at.
+function searchCaptureSha256(file) {
+  try { return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"); } catch { return ""; }
+}
+
 function detachedSearchCapture(observed, resolution, captureFailure = false) {
   const { searchCapturePng, ...safeObserved } = observed;
   if (!captureFailure) return { observed: safeObserved, diagnostics: resolution.diagnostics };
@@ -2813,7 +2845,8 @@ function openWechatSearchResult(query, context = {}) {
     if (!observed?.ok) return observed || { ok: false, reason: "wechat_operation_failed" };
     const identity = { query, expectedName: context.searchIdentity.expectedName, queryType: context.searchQueryType };
       const strict = resolveWechatSearchResultObservation(observed.searchResultObservation, identity);
-      const resolution = firstLocalRowFallback(observed.searchResultObservation, identity, strict, String(context.searchFallbackReason || "")) || strict;
+      const ruled = firstLocalRowFallback(observed.searchResultObservation, identity, strict, String(context.searchFallbackReason || "")) || strict;
+      const resolution = ruled.status === "selected" ? ruled : visionResolution(observed, context.visionPoint) || ruled;
     const searchEvidence = buildSearchEvidence(observed, resolution, query, context);
     const capture = detachedSearchCapture(observed, resolution, context.captureSearchFailure === true);
     if (resolution.status !== "selected") {
@@ -2862,7 +2895,8 @@ function openWechatSearchResultAsync(query, context = {}) {
       if (!observed?.ok) return observed || { ok: false, reason: "wechat_operation_failed" };
       const identity = { query, expectedName: context.searchIdentity.expectedName, queryType: context.searchQueryType };
       const strict = resolveWechatSearchResultObservation(observed.searchResultObservation, identity);
-      const resolution = firstLocalRowFallback(observed.searchResultObservation, identity, strict, String(context.searchFallbackReason || "")) || strict;
+      const ruled = firstLocalRowFallback(observed.searchResultObservation, identity, strict, String(context.searchFallbackReason || "")) || strict;
+      const resolution = ruled.status === "selected" ? ruled : visionResolution(observed, context.visionPoint) || ruled;
       const searchEvidence = buildSearchEvidence(observed, resolution, query, context);
       const capture = detachedSearchCapture(observed, resolution, context.captureSearchFailure === true);
       if (resolution.status !== "selected") {
@@ -3433,6 +3467,8 @@ module.exports = {
   resolveWechatRpaWindowTarget,
   openWechatSearchResult,
   openWechatSearchResultAsync,
+  searchCaptureSha256,
+  visionResolution,
   discardSearchCapture,
   cleanupStaleSearchCaptures,
   runPowerShell,

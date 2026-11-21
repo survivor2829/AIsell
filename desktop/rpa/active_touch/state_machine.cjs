@@ -692,6 +692,13 @@ function searchConversationDryRun(baseDir = __dirname, searchDriver = inputWecha
   return output(true, "search-conversation-dry-run", nextState, { baseDir });
 }
 
+// "--vision-point 0.31,0.27,<sha256>,<xiaoxi-search-capture-….png>": the row the model named and the
+// temp picture it read (wechat-vision-check.cjs).
+function parseVisionPoint(value) {
+  const match = String(value || "").match(/^(0\.\d{1,6}),(0\.\d{1,6}),([a-f0-9]{64}),(xiaoxi-search-capture-[a-f0-9]{32}\.png)$/u);
+  return match ? { x: Number(match[1]), y: Number(match[2]), capture: match[3], reference: match[4] } : undefined;
+}
+
 function clickSearchResultDryRun(
   baseDir = __dirname,
   openResultDriver = openWechatSearchResult,
@@ -716,6 +723,7 @@ function clickSearchResultDryRun(
     hWnd: String(windowContext.hWnd || "").trim() || undefined,
     minIdleMs: Number(windowContext.minIdleMs) || 0,
     ...(windowContext.captureSearchFailure === true ? { captureSearchFailure: true } : {}),
+    ...(windowContext.visionPoint ? { visionPoint: windowContext.visionPoint } : {}),
     searchQueryType: searchPlan.queryType,
     searchIdentity: { query: searchQuery, expectedName: customerName }
   };
@@ -1228,6 +1236,7 @@ module.exports = {
   wechatWindowBlockText,
   calibrate,
   clickSearchResultDryRun,
+  parseVisionPoint,
   clearCustomer,
   focusWechatWindowDryRun,
   inputMessageDryRun,

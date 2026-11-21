@@ -8,6 +8,7 @@ const {
   inputMessageDryRun,
   locateConversation,
   openConversationDryRun,
+  parseVisionPoint,
   queueDryRun,
   searchConversationDryRun,
   selectCustomer,
@@ -141,7 +142,8 @@ function execute(command, baseDir, args) {
       pid: optionalValueAfter(args, "--expected-pid"),
       hWnd: optionalValueAfter(args, "--expected-hwnd"),
       minIdleMs: optionalValueAfter(args, "--min-idle-ms"),
-      captureSearchFailure: args.includes("--capture-search-failure")
+      captureSearchFailure: args.includes("--capture-search-failure"),
+      visionPoint: parseVisionPoint(optionalValueAfter(args, "--vision-point"))
     });
   }
   if (command === "input-message-dry-run") return inputMessageDryRun(baseDir, valueAfter(args, "--message"));

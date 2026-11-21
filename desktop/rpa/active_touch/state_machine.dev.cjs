@@ -16,6 +16,7 @@ const {
   isPreparedWechatRpaLayout,
   openWechatSearchResultAsync,
   discardSearchCapture,
+  searchCaptureSha256,
   prepareWechatRpaWindowAsync,
   verifyWechatCurrentConversationAsync: verifyWechatConversationTitleAsync
 } = require("./wechat_window_driver.cjs");
@@ -29,6 +30,38 @@ const FRESH_SESSION_MS = 60_000;
 const HANDED_WINDOW_MS = 10_000;
 const RETRYABLE_POST_SEND_CONFIRMATION_REASONS = new Set(["input_draft_read_failed"]);
 const { summarizeSendResult, observeSendStage } = require("../../src/shared/wechat-send-diagnostics.cjs");
+
+// AI 看图兜底 (user 2026-11-21, "more intelligence, less structure"): a dropdown the rules could not
+// read (cfe8221b, 200%: the green highlighted name of the person was never read, ~1,700 skips in a
+// night) is shown to a vision model before the person is skipped. The model only names a row; the
+// search runs once more and that row is clicked only if the dropdown is the very same picture, then
+// the usual landing and title checks decide. No answer or any doubt keeps the old skip.
+const VISION_RESCUE_REASONS = new Set(["exact_search_result_not_found", "search_result_identity_unverified"]);
+async function visionRescueSearch(options, baseDir, opened, windowArgs) {
+  const file = String(opened?.diagnostics?.search_capture_file || "");
+  const reason = String(opened?.blocked_reason || opened?.reason || "");
+  if (opened?.ok || typeof options.visionRescue !== "function" || !file || !VISION_RESCUE_REASONS.has(reason)
+    || opened?.diagnostics?.capture_source !== "popup") return opened;
+  const started = Date.now();
+  const state = loadState(baseDir);
+  const note = (outcome) => ({ ...opened, diagnostics: { ...opened.diagnostics, vision_outcome: outcome, vision_ms: Date.now() - started } });
+  let answer;
+  try {
+    answer = await options.visionRescue({ file, query: String(state.search_query || ""),
+      queryType: state.search_query_type === "wechat_id" ? "wechat_id" : "name", expectedName: String(state.selected_customer?.name || "") });
+  } catch (error) { answer = { ok: false, reason: String(error?.code || "vision_failed") }; }
+  if (!answer?.ok) return note(String(answer?.reason || "vision_not_found"));
+  const capture = searchCaptureSha256(file);
+  if (!capture || !(await executionMayContinue(options))) return note("vision_cancelled");
+  const point = `${Number(answer.x).toFixed(4)},${Number(answer.y).toFixed(4)},${capture},${path.basename(file)}`;
+  const retried = await options.runStep("click-search-result-dry-run", [...windowArgs, "--vision-point", point]);
+  if (retried?.ok) {
+    discardSearchCapture(opened);
+    return { ...retried, vision_rescued: true, diagnostics: { ...(retried.diagnostics || {}), vision_outcome: "vision_clicked", vision_ms: Date.now() - started } };
+  }
+  discardSearchCapture(retried);
+  return note(`vision_retry_${String(retried?.blocked_reason || retried?.reason || "failed").slice(0, 60)}`);
+}
 
 const IDLE_WINDOW_RECOVERY_ATTEMPTS = 3;
 const WINDOW_PREFLIGHT_FAILED = "wechat_window_preflight_failed";
@@ -866,6 +899,7 @@ async function executeVerifiedContactSendCore(options = {}) {
       "--min-idle-ms",
       "0"
     ];
+    let searchWindowArgs = exactWindowArgs;
     let openedConversation = await options.runStep("click-search-result-dry-run", exactWindowArgs);
     // The handed window lost focus or changed before the search (a notification, a click elsewhere):
     // prepare it the usual way once and search again. Nothing was typed or clicked in the chat yet.
@@ -886,9 +920,10 @@ async function executeVerifiedContactSendCore(options = {}) {
           error: wechatWindowBlockText(refreshed?.reason || "wechat_window_not_ready"),
           send_diagnostics: preflightDiagnostics(refreshed, "prepare_wechat_window", windowMinIdleMs, 0) });
       }
-      openedConversation = await options.runStep("click-search-result-dry-run",
-        ["--expected-pid", String(refreshedIdentity.pid), "--expected-hwnd", refreshedIdentity.hWnd, "--min-idle-ms", "0"]);
+      searchWindowArgs = ["--expected-pid", String(refreshedIdentity.pid), "--expected-hwnd", refreshedIdentity.hWnd, "--min-idle-ms", "0"];
+      openedConversation = await options.runStep("click-search-result-dry-run", searchWindowArgs);
     }
+    openedConversation = await visionRescueSearch(options, baseDir, openedConversation, searchWindowArgs);
     if (!(await executionMayContinue(options))) {
       discardSearchCapture(openedConversation);
       return withSendAttempted(cancelVerifiedContactSend(baseDir));
@@ -1101,4 +1136,4 @@ function verifyMessageBubble(baseDir = __dirname, verifier = verifyWechatMessage
   return output(true, "verify-message-bubble", nextState, { baseDir });
 }
 
-module.exports = { executeVerifiedContactSend, executeVerifiedFileHelperSend, failConversation, refreshRealSendSession, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession, verifyRealSendSessionAsync };
+module.exports = { executeVerifiedContactSend, visionRescueSearch, executeVerifiedFileHelperSend, failConversation, refreshRealSendSession, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession, verifyRealSendSessionAsync };
