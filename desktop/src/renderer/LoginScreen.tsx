@@ -281,7 +281,8 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
     <div className="signin-side">
     <section className="signin-panel signin-rise" style={step(5)} aria-labelledby="signin-title">
       {/* 用户 2026-11-19：标题和按钮都写「登录」重复了；标题改成招呼人开工的一句，按钮才是「登录」。产品名左上角已有，副标题不再重复。 */}
-      <h2 id="signin-title">开始获客吧</h2>
+      {/* 用户 2026-11-21：「获客」二字用红色，只强调这两个字。 */}
+      <h2 id="signin-title">开始<em className="signin-title-accent">获客</em>吧</h2>
       <p className="signin-sub">生素材 · 引客户 · 促成交</p>
       {!license ? <p className="signin-loading" role="status">正在读取登录信息…</p> : license.mode === "account"
         ? <AccountForm status={license} onLogin={onLogin} onStatus={onStatus || (() => {})} />

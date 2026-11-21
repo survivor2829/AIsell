@@ -117,6 +117,7 @@ html[data-beat="1"] .signin-line i { opacity: 0; }
   background: linear-gradient(140deg, #ffffff 0%, color-mix(in srgb, var(--signin-accent) 35%, #ffffff) 50%, #ffffff00 100%);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; }
 .signin-panel h2 { margin: 0; font-size: clamp(48px, 3.4vw, 64px); font-weight: 800; letter-spacing: -0.02em; }
+.signin-title-accent { font-style: normal; color: var(--signin-red); }
 .signin-sub { margin: -14px 0 12px; color: #3a3f4a; font-size: clamp(15px, 1.2vw, 20px); font-weight: 600; white-space: nowrap; }
 .signin-form { display: grid; gap: 22px; }
 .signin-field { display: grid; gap: 10px; font-size: clamp(16px, 1.05vw, 19px); font-weight: 700; color: #262a33; }
