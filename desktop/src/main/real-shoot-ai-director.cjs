@@ -30,7 +30,7 @@ const PEOPLE = {
   ride: '操作员坐在驾驶位上，镜头只拍到肩部以下，始终不露脸、不说话，从头到尾不上下车，身体和机身不重叠、不融在一起；画面里没有其他人。'
 };
 // Words that made the video model paint brown dirty water out of nothing (第二、三轮付费试拍).
-const LIQUID = /污水|脏水|积水|水渍|水痕|水迹|喷水|洒水|吸水|水花|水流|泡沫/u;
+const LIQUID = /污水|脏水|积水|水渍|水痕|湿痕|水迹|喷水|洒水|吸水|水花|水流|泡沫/u;
 // 2026-11-21 实拍 60 秒「强力去油污」：导演把油污写成「半透明黏稠状」一滩，视频模型画成液体，机器开过去
 // 拖成一道油印（重拍一次仍一样）。Oil is written as old dark stains soaked into the floor, never as a liquid.
 const OILY_LIQUID = /黏稠|粘稠|半透明|一滩|油洼|油坑|油池/u;
