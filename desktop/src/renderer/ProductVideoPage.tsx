@@ -213,7 +213,7 @@ export function ProductVideoPage() {
               <button type="button" className="pv2-btn" onClick={startNew}><Plus size={19} />再做一条</button>
               {selected.canExportSource && <button type="button" className="pv2-btn" disabled={!!busy} onClick={() => api && void perform("source", () => unwrap(api.exportSource(selected.id)), result => { if (result) setExportResult(`已导出原片：${result.path}`); })}>导出原片</button>}
             </div>
-            {selected.realPipeline && <ShotReviewPanel review={selected.review} titles={shots.map((shot) => shot.title)} canRedo={Boolean(api?.redoShot && selected.canRedoShot)} busy={!!busy}
+            {selected.realPipeline && <ShotReviewPanel review={selected.review} titles={shots.map((shot) => shot.title)} canRedo={Boolean(api?.redoShot && selected.canRedoShot)} busy={!!busy} finished={selected.status === "completed"}
               onRedo={(index) => api?.redoShot && void perform("redo-shot", () => unwrap(api.redoShot!(selected.id, index)), updateTask)} />}
             {selected.redoNote && <p className="pv2-note" role="status">{selected.redoNote}</p>}
             {selected.plan.sendText && <div className="pv2-send"><b>发给客户时可以配这句话</b><p>{selected.plan.sendText}</p></div>}

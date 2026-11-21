@@ -313,7 +313,7 @@
 .batch-material-start.has-library .batch-upload-empty { min-height:155px;gap:10px; }
 .batch-page .batch-brief-rail .batch-hint { font-size:12px; }.batch-page .batch-step-action>span { font-size:13px; }
 @media(max-width:960px){.batch-page-header{align-items:flex-start;flex-direction:column;gap:16px}.batch-header-actions{max-width:none;justify-content:flex-start}}
-@media(max-width:600px){.batch-library-preview{grid-template-columns:repeat(2,minmax(0,1fr))}.batch-header-actions{gap:7px}.batch-header-actions>button{font-size:12px}}
+@media(max-width:600px){.batch-library-preview{grid-template-columns:repeat(2,minmax(0,1fr))}.batch-library-preview>button:nth-child(n+5){display:none}.batch-header-actions{gap:7px}.batch-header-actions>button{font-size:12px}}
 
 .batch-results { container-type: inline-size; }
 .batch-result-grid.is-single { grid-template-columns: minmax(0, 1fr); }
@@ -465,3 +465,10 @@ html[data-beat="1"] .mix-ring-value.is-waiting { opacity: .5; }
 .is-visual-flow .batch-progress-message { font-size: 17px; font-weight: 800; color: #1f2937; }
 .is-visual-flow .batch-progress-meta { font-size: 15px; font-weight: 700; }
 .is-visual-flow .batch-output-row:not(:has(.batch-notice)) { display: none; }
+/* 混剪第一步（用户 2026-11-19：素材区下面一大段空白）：左栏和右栏一样高，素材区把整栏撑满——
+   没选素材时添加框变高，选了素材时网格占满，“我的素材/导入文件夹”贴在底部。 */
+.is-visual-flow .batch-material-start { display: flex; flex-direction: column; min-height: 0; }
+.is-visual-flow .batch-material-start > .file-drop-zone { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.is-visual-flow .batch-material-start .batch-material-board { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.is-visual-flow .batch-material-board > .batch-upload-empty { flex: 1; }
+.is-visual-flow .batch-material-board > .batch-visual-material-grid { flex: 1; align-content: start; grid-auto-rows: max-content; }

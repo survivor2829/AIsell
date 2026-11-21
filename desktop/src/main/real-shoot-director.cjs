@@ -129,4 +129,4 @@ function plannedCaptions(plan) {
   return plan.shots.filter((shot) => shot.caption).map((shot) => ({ text: shot.caption, start: shot.startSecond + 0.3, end: Math.max(shot.startSecond + 1, shot.endSecond - 0.2) }));
 }
 
-module.exports = { REAL_VERSION, PROMPT_LIMIT, MAX_PRODUCT_IMAGES, planRealShoot, plannedCaptions, platePrompt, shotPrompt };
+module.exports = { REAL_VERSION, PROMPT_LIMIT, MAX_PRODUCT_IMAGES, FILLERS, planRealShoot, plannedCaptions, platePrompt, shotPrompt };
