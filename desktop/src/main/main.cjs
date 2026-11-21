@@ -1061,19 +1061,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       buildCommit: build.buildCommit || process.env.XIAOXI_BUILD_COMMIT || "",
       executionMode: "real_send",
       realSendExecutor: internalRealSend.executeVerifiedContactSend,
-      // AI 看图兜底: the dropdown the rules could not read goes to the vision model through the account's gateway.
-      visionRescue: (() => {
-        const vision = require("./wechat-vision-check.cjs").createWechatVisionCheck({ gatewayClient: providerGatewayClient });
-        return async ({ file, query, queryType, expectedName }) => {
-          const started = Date.now();
-          const result = await vision.findSearchRow({ image: "data:image/png;base64," + fs.readFileSync(file).toString("base64"), query, queryType, expectedName })
-            .catch((error) => ({ ok: false, reason: String(error?.code || "vision_failed") }));
-          logger.event("active_touch", "vision_rescue", { outcome: result.ok ? "row_found" : String(result.reason || "vision_not_found"), elapsed_ms: Date.now() - started,
-            rows_seen: Number(result.rows) || 0, input_tokens: Number(result.usage?.prompt_tokens) || 0, output_tokens: Number(result.usage?.completion_tokens) || 0 },
-            { level: result.ok ? "info" : "warn", code: result.ok ? "vision_row_found" : String(result.reason || "vision_not_found") });
-          return result;
-        };
-      })(),
+      // AI 看图兜底 (微信之眼): what the rules could not read goes to the vision model through the account's gateway.
+      wechatEyes: require("./wechat-vision-check.cjs").createWechatEyes({ gatewayClient: providerGatewayClient, logger }),
       verifyRealSendSession: internalRealSend.refreshRealSendSession,
       verifyMessageBubble: internalRealSend.verifyMessageBubble,
       detectDeliveryNotice: internalRealSend ? require("../../rpa/active_touch/wechat_delivery_notice.cjs").detectWechatDeliveryNoticeAsync : undefined,

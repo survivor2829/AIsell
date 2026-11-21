@@ -28,12 +28,21 @@ function searchMessages({ image, query }) {
     { role: 'user', content: [{ type: 'image_url', image_url: { url: image } }, { type: 'text', text: `搜索框里输入的是：${query}` }] }];
 }
 
-// The chat that is open: the title above the messages.
+// The chat that is open: the top strip of the WeChat window (wechat_title_strip.cjs), whose layout
+// differs between computers (225%: the title sat well below where the rules looked), so the model
+// says where the title is as well as what it says.
 function titleMessages({ image }) {
-  const system = `你在看微信 Windows 版聊天窗口顶部的截图。读出当前打开的聊天的标题（对方的名字或群名），一字不差照抄，看不清的字不要猜，看不清就把 unsure 设为 true。没有打开任何聊天时 title 为空。
-只输出 JSON：{"title":"","unsure":false}`;
+  const system = `你在看微信 Windows 版主窗口顶部的一条截图：左右是整个窗口的宽度，从窗口最上沿往下截了一段。
+窗口从左到右依次是：最左边一列图标栏；会话列表区，它最上面是搜索框；右边是聊天区，聊天区最上方的一行大字是当前打开的聊天的标题（对方的名字或群名，群名后面可能带人数括号）。
+请读出：
+- title：聊天区顶部的标题，一字不差照抄，包括符号、空格和括号。会话列表里的名字、搜索框里的字、窗口左上角的"微信"字样都不是标题。聊天区空白、只有微信图标或者没打开任何聊天时为空；
+- title_box：标题文字在截图里的范围 [左, 上, 右, 下]，用 0 到 1000 的相对坐标；
+- search_box：搜索框里输入着的文字，一字不差照抄；搜索框里只有灰色的提示字"搜索"时为空；
+- dropdown_open：搜索框下面展开着搜索结果下拉面板时为 true；
+- unsure：标题里有任何一个字看不清、被挡住或被截断（比如末尾是省略号）时为 true，不要猜。
+只输出 JSON，不要解释：{"title":"","title_box":[0,0,0,0],"search_box":"","dropdown_open":false,"unsure":false}`;
   return [{ role: 'system', content: system },
-    { role: 'user', content: [{ type: 'image_url', image_url: { url: image } }, { type: 'text', text: '当前打开的是谁的聊天？' }] }];
+    { role: 'user', content: [{ type: 'image_url', image_url: { url: image } }, { type: 'text', text: '现在打开的是谁的聊天？' }] }];
 }
 
 function jsonOf(content) {
@@ -69,9 +78,20 @@ function pickSearchRow(answer, { query, queryType, expectedName }) {
   }
   return { ok: true, x: Number(local[0].x) / 1000, y: Number(local[0].y) / 1000, seen: rows.length };
 }
-function titleMatches(answer, expectedName) {
-  const title = fold(answer?.title);
-  return { ok: Boolean(title) && answer?.unsure !== true && title === fold(expectedName), read: Boolean(title) };
+// The chat counts as the expected one only if the model read the expected name exactly, surely, as
+// the chat title, with the search cleared and no dropdown left open (a click that did not land leaves
+// the query in the box: a060ad68, the query typed while another chat stayed open). Where the title is
+// tells the next step which pixels must stay the same.
+// The grey hint in an empty search box (replay of 32 field strips, 2026-11-21: copied as text 6 times).
+const typed = (value) => !['', '搜索', 'search'].includes(fold(value).toLowerCase());
+function pickTitle(answer, expectedName) {
+  const title = fold(answer?.title), expected = fold(expectedName);
+  const box = Array.isArray(answer?.title_box) ? answer.title_box.map(Number) : [];
+  const boxOk = box.length === 4 && box.every((value) => Number.isFinite(value) && value >= 0 && value <= 1000) && box[0] < box[2] && box[1] < box[3];
+  const reason = !title ? 'vision_title_empty' : answer?.unsure === true ? 'vision_title_unsure' : title !== expected ? 'vision_title_mismatch'
+    : typed(answer?.search_box) || answer?.dropdown_open === true ? 'vision_search_still_open' : !boxOk ? 'vision_position_invalid' : '';
+  if (!expected || reason) return { ok: false, reason: reason || 'vision_title_mismatch', read: Boolean(title) };
+  return { ok: true, read: true, box: { left: box[0] / 1000, top: box[1] / 1000, right: box[2] / 1000, bottom: box[3] / 1000 } };
 }
 
 function createWechatVisionCheck({ gatewayClient, fetchTimeoutMs = TIMEOUT_MS, model = MODEL } = {}) {
@@ -102,9 +122,31 @@ function createWechatVisionCheck({ gatewayClient, fetchTimeoutMs = TIMEOUT_MS, m
     },
     async confirmTitle({ image, expectedName }) {
       const { answer, usage } = await ask(titleMessages({ image }));
-      return { ...titleMatches(answer, expectedName), usage };
+      return { ...pickTitle(answer, expectedName), usage };
     }
   };
 }
 
-module.exports = { ROUTE, MODEL, searchMessages, titleMessages, pickSearchRow, titleMatches, jsonOf, createWechatVisionCheck };
+// 微信之眼: what the WeChat steps ask, each from a picture file our own steps took, every answer
+// logged (outcome, time, tokens; never names). Absent or failing, the steps keep the old skip.
+function createWechatEyes({ gatewayClient, logger, readFile = require('node:fs').readFileSync, vision = createWechatVisionCheck({ gatewayClient }) } = {}) {
+  const image = (file) => 'data:image/png;base64,' + readFile(file).toString('base64');
+  async function look(event, okCode, run) {
+    const started = Date.now();
+    const result = await Promise.resolve().then(run).catch((error) => ({ ok: false, reason: String(error?.code || 'vision_failed') }));
+    const code = result.ok ? okCode : String(result.reason || 'vision_failed');
+    logger?.event?.('active_touch', event, { outcome: code, elapsed_ms: Date.now() - started, rows_seen: Number(result.rows) || 0,
+      input_tokens: Number(result.usage?.prompt_tokens) || 0, output_tokens: Number(result.usage?.completion_tokens) || 0 },
+      { level: result.ok ? 'info' : 'warn', code });
+    return result;
+  }
+  return {
+    ready: vision.ready,
+    searchRow: ({ file, query, queryType, expectedName }) => look('vision_rescue', 'vision_row_found',
+      () => vision.findSearchRow({ image: image(file), query, queryType, expectedName })),
+    chatTitle: ({ file, expectedName }) => look('vision_title', 'vision_title_confirmed',
+      () => vision.confirmTitle({ image: image(file), expectedName }))
+  };
+}
+
+module.exports = { ROUTE, MODEL, searchMessages, titleMessages, pickSearchRow, pickTitle, jsonOf, createWechatVisionCheck, createWechatEyes };

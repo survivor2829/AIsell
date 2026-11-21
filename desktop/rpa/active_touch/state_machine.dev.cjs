@@ -20,7 +20,8 @@ const {
   prepareWechatRpaWindowAsync,
   verifyWechatCurrentConversationAsync: verifyWechatConversationTitleAsync
 } = require("./wechat_window_driver.cjs");
-const { appendLog, block, blockMessageBubble, blockSendGate, loadState, output, readContacts, saveState, wechatWindowBlockText } = require("./state_machine.cjs");
+const { captureWechatTitleStrip, discardTitleCapture, sameTitleStrip, titleCaptureSha256 } = require("./wechat_title_strip.cjs");
+const { appendLog, block, blockMessageBubble, blockSendGate, loadState, openedConversationState, output, readContacts, saveState, wechatWindowBlockText } = require("./state_machine.cjs");
 const { contactIdentityError, identityKey } = require("./touch_task_state.cjs");
 
 const POST_SEND_CONFIRMATION_ATTEMPTS = 2;
@@ -60,7 +61,72 @@ async function visionRescueSearch(options, baseDir, opened, windowArgs) {
     return { ...retried, vision_rescued: true, diagnostics: { ...(retried.diagnostics || {}), vision_outcome: "vision_clicked", vision_ms: Date.now() - started } };
   }
   discardSearchCapture(retried);
+  // The row was clicked and a chat opened whose title the rules could not read: the AI title check
+  // (visionRescueTitle) decides next, on its own picture.
+  if (String(retried?.blocked_reason || "") === "search_result_not_opened" && retried?.diagnostics?.title_capture_file) {
+    discardSearchCapture(opened);
+    return { ...retried, diagnostics: { ...retried.diagnostics, vision_outcome: "vision_clicked", vision_ms: Date.now() - started } };
+  }
   return note(`vision_retry_${String(retried?.blocked_reason || retried?.reason || "failed").slice(0, 60)}`);
+}
+
+// AI 看图 for the chat title (wechat_title_strip.cjs): the click opened a chat whose title the rules
+// could not read (8a37d741, 225%: the title sat below the band the rules read; the right chat was open
+// and every contact found by name was skipped). The model reads the title in the top strip of the
+// window; the code accepts only the expected name, read surely, with the search box cleared and no
+// dropdown open, and then only if a new strip shows the very same pixels around that title.
+// Unless the chat is confirmed, the strip stays with the failure for the field report (touch-workflow.cjs).
+async function visionRescueTitle(options, baseDir, opened, windowArgs) {
+  const file = String(opened?.diagnostics?.title_capture_file || "");
+  if (!file || opened?.ok || String(opened?.blocked_reason || "") !== "search_result_not_opened" || typeof options.visionTitle !== "function"
+    || !windowArgs.includes("--expected-pid") || !windowArgs.includes("--expected-hwnd")) return opened;
+  const started = Date.now();
+  const note = (outcome) => ({ ...opened, diagnostics: { ...opened.diagnostics, vision_title_outcome: outcome, vision_title_ms: Date.now() - started } });
+  let answer;
+  try {
+    answer = await options.visionTitle({ file, expectedName: String(loadState(baseDir).selected_customer?.name || "") });
+  } catch (error) { answer = { ok: false, reason: String(error?.code || "vision_failed") }; }
+  if (!answer?.ok) return note(String(answer?.reason || "vision_title_mismatch"));
+  const capture = titleCaptureSha256(file);
+  if (!capture || !(await executionMayContinue(options))) return note("vision_cancelled");
+  const box = [answer.box.left, answer.box.top, answer.box.right, answer.box.bottom].map((value) => Math.min(0.9999, Math.max(0, Number(value))).toFixed(4));
+  const confirmed = await options.runStep("confirm-vision-title", [...windowArgs, "--vision-title", `${box.join(",")},${capture},${path.basename(file)}`]);
+  if (!confirmed?.ok) return note(`vision_title_${String(confirmed?.diagnostics?.vision_title_outcome || confirmed?.blocked_reason || "failed").slice(0, 60)}`);
+  discardTitleCapture(file);
+  return { ...confirmed, vision_title_rescued: true, diagnostics: { ...(confirmed.diagnostics || {}), vision_title_outcome: "vision_title_confirmed", vision_title_ms: Date.now() - started } };
+}
+
+// The second half, as its own step: a new strip of the same window must show exactly the pixels the
+// model read around the title. Later checks then only require the chat header to stay as it is
+// (vision_title, handled like a chat opened by its exact 微信号).
+function confirmVisionTitle(baseDir = __dirname, context = {}, capture = captureWechatTitleStrip) {
+  const state = loadState(baseDir);
+  const name = String(state.selected_customer?.name || "").trim();
+  const pid = Number(context.pid), hWnd = String(context.hWnd || "").trim();
+  const refuse = (outcome) => block(baseDir, "AI 核对会话标题", state, "search_result_not_opened", "已阻断：未打开匹配客户会话", { diagnostics: { vision_title_outcome: outcome } });
+  if (!name || !state.target_selected || state.search_result_clicked !== true || state.blocked_reason !== "search_result_not_opened") return refuse("state_changed");
+  if (!context.visionTitle || !(pid > 0) || !/^\d+$/u.test(hWnd)) return refuse("context_missing");
+  const strip = capture({ pid, hWnd });
+  if (!strip?.ok) return refuse(String(strip?.outcome || "title_strip_capture_failed"));
+  try {
+    if (Number(strip.pid) !== pid || String(strip.hWnd) !== hWnd) return refuse("window_changed");
+    if (!sameTitleStrip(context.visionTitle, strip.file)) return refuse("title_strip_changed");
+  } finally { discardTitleCapture(strip.file); }
+  const nextState = openedConversationState({ ...state, search_input_done: true },
+    { title: name, mode: "vision_title", pid: strip.pid, hWnd: strip.hWnd, processName: strip.processName });
+  saveState(baseDir, nextState);
+  appendLog(baseDir, "AI 核对会话标题", `已打开并验证：${name}`);
+  return output(true, "confirm-vision-title", nextState, { baseDir });
+}
+
+// The chat's identity was settled when it was opened (the exact 微信号 search, or the AI title check
+// with the same pixels twice); from then on only an unchanged chat header is required.
+function provenConversation(state) {
+  const expectedWechatId = String(state.selected_customer?.wechatId ?? "").trim();
+  const exactWechatId = state.conversation_verification_mode === "exact_wechat_id_search"
+    && Boolean(expectedWechatId) && state.search_query === expectedWechatId;
+  return (exactWechatId || state.conversation_verification_mode === "vision_title")
+    && Boolean(state.window_pid) && Boolean(state.window_handle);
 }
 
 const IDLE_WINDOW_RECOVERY_ATTEMPTS = 3;
@@ -94,19 +160,14 @@ function sessionCheck(state, driver = verifyWechatCurrentConversation, baseDir =
   const customer = state.selected_customer;
   if (!customer?.name) return { ok: false, reason: "conversation_not_verified" };
   const expectedAccountId = String(customer.wechatAccountId ?? state.wechat_account_id ?? "").trim();
-  const expectedWechatId = String(customer.wechatId ?? "").trim();
-  const allowExactSearchFallback = !options.allowWindowRebind
-    && state.conversation_verification_mode === "exact_wechat_id_search"
-    && Boolean(expectedWechatId)
-    && state.search_query === expectedWechatId
-    && Boolean(state.window_pid)
-    && Boolean(state.window_handle);
+  const allowExactSearchFallback = !options.allowWindowRebind && provenConversation(state);
   const result = driver(customer.name, {
     wechatRoot: syncedWechatRoot(baseDir),
     expectedAccountId,
     expectedPid: options.allowWindowRebind ? options.expectedPid : state.window_pid,
     expectedHWnd: options.allowWindowRebind ? options.expectedHWnd : state.window_handle,
     allowExactSearchFallback,
+    provenMode: state.conversation_verification_mode,
     titleNearNames: state.title_near_names
   });
   if (!result.ok) return result;
@@ -139,19 +200,14 @@ async function sessionCheckAsync(state, driver = verifyWechatCurrentConversation
   const customer = state.selected_customer;
   if (!customer?.name) return { ok: false, reason: "conversation_not_verified" };
   const expectedAccountId = String(customer.wechatAccountId ?? state.wechat_account_id ?? "").trim();
-  const expectedWechatId = String(customer.wechatId ?? "").trim();
-  const allowExactSearchFallback = !options.allowWindowRebind
-    && state.conversation_verification_mode === "exact_wechat_id_search"
-    && Boolean(expectedWechatId)
-    && state.search_query === expectedWechatId
-    && Boolean(state.window_pid)
-    && Boolean(state.window_handle);
+  const allowExactSearchFallback = !options.allowWindowRebind && provenConversation(state);
   const result = await Promise.resolve(driver(customer.name, {
     wechatRoot: syncedWechatRoot(baseDir),
     expectedAccountId,
     expectedPid: options.allowWindowRebind ? options.expectedPid : state.window_pid,
     expectedHWnd: options.allowWindowRebind ? options.expectedHWnd : state.window_handle,
     allowExactSearchFallback,
+    provenMode: state.conversation_verification_mode,
     titleNearNames: state.title_near_names
   }));
   if (!result.ok) return result;
@@ -924,8 +980,10 @@ async function executeVerifiedContactSendCore(options = {}) {
       openedConversation = await options.runStep("click-search-result-dry-run", searchWindowArgs);
     }
     openedConversation = await visionRescueSearch(options, baseDir, openedConversation, searchWindowArgs);
+    openedConversation = await visionRescueTitle(options, baseDir, openedConversation, searchWindowArgs);
     if (!(await executionMayContinue(options))) {
       discardSearchCapture(openedConversation);
+      discardTitleCapture(openedConversation?.diagnostics?.title_capture_file);
       return withSendAttempted(cancelVerifiedContactSend(baseDir));
     }
     if (!openedConversation?.ok) {
@@ -1136,4 +1194,4 @@ function verifyMessageBubble(baseDir = __dirname, verifier = verifyWechatMessage
   return output(true, "verify-message-bubble", nextState, { baseDir });
 }
 
-module.exports = { executeVerifiedContactSend, visionRescueSearch, executeVerifiedFileHelperSend, failConversation, refreshRealSendSession, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession, verifyRealSendSessionAsync };
+module.exports = { executeVerifiedContactSend, visionRescueSearch, visionRescueTitle, confirmVisionTitle, executeVerifiedFileHelperSend, failConversation, refreshRealSendSession, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession, verifyRealSendSessionAsync };

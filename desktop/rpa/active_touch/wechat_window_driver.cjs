@@ -2816,11 +2816,12 @@ function discardSearchCapture(result) {
   }
 }
 
+// Also the title strips of the AI title check (wechat_title_strip.cjs).
 function cleanupStaleSearchCaptures(now = Date.now()) {
   const directory = os.tmpdir();
   try {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-      if (!entry.isFile() || !/^xiaoxi-search-capture-[a-f0-9]{32}\.png$/u.test(entry.name)) continue;
+      if (!entry.isFile() || !/^xiaoxi-(?:search|title)-capture-[a-f0-9]{32}\.png$/u.test(entry.name)) continue;
       const file = path.join(directory, entry.name);
       try {
         const stat = fs.lstatSync(file);

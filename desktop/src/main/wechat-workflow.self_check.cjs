@@ -987,8 +987,8 @@ async function checkT5FourthReviewRulesAndEvidence() {
 
 async function checkR008EvidencePrivacy(ruleId = "search-r008") {
   const workflowSource = fs.readFileSync(path.join(__dirname, "touch-workflow.cjs"), "utf8");
-  assert.match(workflowSource, /const \{ search_capture_file: _captureFile, \.\.\.safeDiagnostics \} = partOutcome\.diagnostics;\s*partOutcome = \{ \.\.\.partOutcome, diagnostics: safeDiagnostics \};/u,
-    "the consumed temp path must be removed from the workflow result before diagnostics can propagate");
+  assert.match(workflowSource, /const \{ search_capture_file: _captureFile, title_capture_file: _titleFile, \.\.\.safeDiagnostics \} = partOutcome\.diagnostics;\s*partOutcome = \{ \.\.\.partOutcome, diagnostics: safeDiagnostics \};/u,
+    "the consumed temp paths (dropdown or title strip) must be removed from the workflow result before diagnostics can propagate");
   const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-r008-evidence-privacy-"));
   try {
     const secret = "张三客户PLAINTEXT";

@@ -174,7 +174,7 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
   # identify a contact by itself. Only a visible matching title or an upstream
   # frozen exact-WeChat-ID search transaction may bind the conversation.
   $titleOcrVerified = -not $titleVisible -and $verificationMode -eq "conversation_title" -and (Test-WechatHeaderTitle $freshRect $headerDpi $expectedTitle)
-  $visualFallback = -not $titleVisible -and ($verificationMode -eq "exact_wechat_id_search" -or $titleOcrVerified)
+  $visualFallback = -not $titleVisible -and (@("exact_wechat_id_search", "vision_title") -contains $verificationMode -or $titleOcrVerified)
   $visualToken = $(if ([string]::IsNullOrWhiteSpace($visualHash)) { "" } else { "conversation:v2:$($matched.pid):$($matched.hWnd):visual:$visualHash" })
   $verified = (-not [string]::IsNullOrWhiteSpace($titleToken)) -or ($visualFallback -and -not [string]::IsNullOrWhiteSpace($visualToken))
   return @{
@@ -224,7 +224,7 @@ function Get-ComposerObservation([System.Windows.Automation.AutomationElement]$f
     renderSurfaceOwnsComposer = $renderSurfaceOwnsComposer
     verificationMode = $verificationMode
   }
-  $visualConversationMode = @("visual_header", "exact_wechat_id_search") -contains $verificationMode
+  $visualConversationMode = @("visual_header", "exact_wechat_id_search", "vision_title") -contains $verificationMode
   if ($visualConversationMode) {
     if ($pointProcessId -eq [uint32]$matched.pid -and ($renderChildClass -or $wechatQtRootClass) -and $renderSurfaceOwnsComposer) {
       return @{
@@ -667,7 +667,7 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
   }
 } catch { $visualHash = "" }
 $titleOcrVerified = -not $titleVisible -and $verificationMode -eq "conversation_title" -and (Test-WechatHeaderTitle $windowRect $headerDpi $expectedConversation)
-$visualFallback = -not $titleVisible -and ($verificationMode -eq "exact_wechat_id_search" -or $titleOcrVerified)
+$visualFallback = -not $titleVisible -and (@("exact_wechat_id_search", "vision_title") -contains $verificationMode -or $titleOcrVerified)
 $visualToken = $(if ([string]::IsNullOrWhiteSpace($visualHash)) { "" } else { "conversation:v2:$($process.Id):$([int64]$expectedHWnd):visual:$visualHash" })
 $verified = (-not [string]::IsNullOrWhiteSpace($titleToken)) -or ($visualFallback -and -not [string]::IsNullOrWhiteSpace($visualToken))
 $windowText = New-Object System.Text.StringBuilder 512
@@ -863,7 +863,9 @@ function verifyLoggedInWechatAccountAsync(expectedAccountId, wechatRoot = "") {
 
 function verifyWechatCurrentConversation(expectedTitle, context = {}) {
   const expectedWindow = { pid: context.expectedPid, hWnd: context.expectedHWnd, titleNearNames: context.titleNearNames };
-  const verificationMode = context.allowExactSearchFallback === true ? "exact_wechat_id_search" : "conversation_title";
+  // A chat proven when it was opened (exact 微信号 search, AI title check) keeps its mode: only its header must stay the same.
+  const verificationMode = context.allowExactSearchFallback !== true ? "conversation_title"
+    : context.provenMode === "vision_title" ? "vision_title" : "exact_wechat_id_search";
   const observation = observeWechatConversation(expectedTitle, { ...expectedWindow, verificationMode });
   if (!observation.ok || !String(observation.conversationToken ?? "").trim()) return observation;
   const result = {
@@ -890,7 +892,9 @@ function verifyWechatCurrentConversation(expectedTitle, context = {}) {
 
 async function verifyWechatCurrentConversationAsync(expectedTitle, context = {}) {
   const expectedWindow = { pid: context.expectedPid, hWnd: context.expectedHWnd, titleNearNames: context.titleNearNames };
-  const verificationMode = context.allowExactSearchFallback === true ? "exact_wechat_id_search" : "conversation_title";
+  // A chat proven when it was opened (exact 微信号 search, AI title check) keeps its mode: only its header must stay the same.
+  const verificationMode = context.allowExactSearchFallback !== true ? "conversation_title"
+    : context.provenMode === "vision_title" ? "vision_title" : "exact_wechat_id_search";
   const observation = await observeWechatConversationAsync(expectedTitle, { ...expectedWindow, verificationMode });
   if (!observation.ok || !String(observation.conversationToken ?? "").trim()) return observation;
   const result = {

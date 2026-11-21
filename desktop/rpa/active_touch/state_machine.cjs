@@ -14,6 +14,7 @@ const {
 } = require("./wechat_window_driver.cjs");
 const { isVerifiedWechatSearchResultMode } = require("./wechat_search_result_resolver.cjs");
 const { titleNearNames } = require("./wechat_header_title.cjs");
+const { discardTitleCapture } = require("./wechat_title_strip.cjs");
 
 const DEFAULT_STATE = {
   version: 1,
@@ -761,6 +762,7 @@ function clickSearchResultDryRun(
     && searchPlan.queryType === "wechat_id"
     && searchPlan.fallbackQuery && searchPlan.fallbackQuery !== searchQuery) {
     discardSearchCapture(inputResult);
+    discardTitleCapture(nearVerified?.titleCaptureFile);
     nearVerified = null;
     inputResult = openResultDriver(searchPlan.fallbackQuery, {
       ...exactWindow,
@@ -885,6 +887,9 @@ function clickSearchResultDryRun(
         punctuation_whitespace_width_only: title !== customerName && foldTitle(title) === foldTitle(customerName)
       })) };
     const reason = verifiedConversation.reason === "contact_unavailable" ? "contact_unavailable" : "search_result_not_opened";
+    // The top strip of the window, kept for the AI title check (wechat_title_strip.cjs); the caller deletes it.
+    const titleCapture = reason === "search_result_not_opened" ? String(verifiedConversation.titleCaptureFile || "") : "";
+    if (!titleCapture) discardTitleCapture(verifiedConversation.titleCaptureFile);
     const nextState = clearConversationState(state, reason, {
       search_input_done: true,
       search_result_clicked: true,
@@ -900,7 +905,7 @@ function clickSearchResultDryRun(
       nextState,
       reason,
       reason === "contact_unavailable" ? "联系人已停用，自动跳过" : "已阻断：未打开匹配客户会话",
-      { diagnostics: inputResult.searchEvidence }
+      { diagnostics: { ...inputResult.searchEvidence, ...(titleCapture ? { title_capture_file: titleCapture } : {}) } }
     );
   }
   if ((exactWindow.pid && Number(verifiedConversation.pid) !== exactWindow.pid)
@@ -910,24 +915,45 @@ function clickSearchResultDryRun(
   }
   const title = matchedTitle || verifiedConversation.title || customerName;
 
-  const nextState = {
+  const nextState = openedConversationState({
     ...state,
     search_input_done: true,
-    search_result_clicked: true,
     search_query: String(inputResult?.searchQuery || searchQuery),
     search_query_type: String(inputResult?.searchQueryType || searchPlan.queryType),
     search_fallback_reason: String(inputResult?.searchFallbackReason || searchPlan.fallbackReason || ""),
-    search_evidence: inputResult?.searchEvidence || null,
+    search_evidence: inputResult?.searchEvidence || null
+  }, {
+    title,
+    mode: verifiedConversation.verificationMode || "conversation_title",
+    pid: verifiedConversation.pid ?? inputResult.pid,
+    hWnd: verifiedConversation.hWnd ?? inputResult.hWnd,
+    processName: verifiedConversation.processName ?? inputResult.processName
+  });
+  saveState(baseDir, nextState);
+  appendLog(baseDir, "点击搜索结果 dry-run", `已打开并验证：${title}`);
+  timings.total_ms = Date.now() - operationStartedAt;
+  return output(true, "click-search-result-dry-run", nextState, { baseDir, diagnostics: { timings } });
+  } finally {
+    if (!captureHandedOff) discardSearchCapture(inputResult);
+  }
+}
+
+// The chat that the search click opened, verified (by its title, the exact 微信号 search or the AI
+// title check), with everything after it reset.
+function openedConversationState(state, { title, mode, pid, hWnd, processName }) {
+  return {
+    ...state,
+    search_result_clicked: true,
     conversation_located: true,
     conversation_verified: true,
     conversation_title: title,
-    conversation_verification_mode: verifiedConversation.verificationMode || "conversation_title",
+    conversation_verification_mode: mode,
     conversation_token: "",
     conversation_title_mode: "",
     located_window_title: title,
-    window_pid: Number(verifiedConversation.pid ?? inputResult.pid ?? 0),
-    window_handle: String(verifiedConversation.hWnd ?? inputResult.hWnd ?? ""),
-    window_process_name: String(verifiedConversation.processName ?? inputResult.processName ?? ""),
+    window_pid: Number(pid ?? 0),
+    window_handle: String(hWnd ?? ""),
+    window_process_name: String(processName ?? ""),
     send_gate_status: "pending",
     send_gate_reason: "",
     real_send_armed: false,
@@ -944,13 +970,6 @@ function clickSearchResultDryRun(
     last_result: "search_result_opened",
     blocked_reason: ""
   };
-  saveState(baseDir, nextState);
-  appendLog(baseDir, "点击搜索结果 dry-run", `已打开并验证：${title}`);
-  timings.total_ms = Date.now() - operationStartedAt;
-  return output(true, "click-search-result-dry-run", nextState, { baseDir, diagnostics: { timings } });
-  } finally {
-    if (!captureHandedOff) discardSearchCapture(inputResult);
-  }
 }
 
 function inputMessageDryRun(baseDir = __dirname, message = "", inputDriver = inputWechatMessageDraft) {
@@ -1237,6 +1256,8 @@ module.exports = {
   calibrate,
   clickSearchResultDryRun,
   parseVisionPoint,
+  openedConversationState,
+  clearConversationState,
   clearCustomer,
   focusWechatWindowDryRun,
   inputMessageDryRun,
