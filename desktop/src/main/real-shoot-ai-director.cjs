@@ -9,6 +9,7 @@ const catalog = require('./scene-video-catalog.cjs');
 const { SCENES, FACT_LIMIT } = require('./video-directors.cjs');
 const { DIRECT_MODEL } = require('./bailian-video-provider.cjs');
 const { IMAGE_MODEL } = require('./story-video-director.cjs');
+const { FILLERS } = require('./real-shoot-director.cjs');
 
 const VERSION = 'real-2';
 const DIRECTOR_MODEL = 'qwen3-vl-plus';
@@ -30,6 +31,9 @@ const PEOPLE = {
 };
 // Words that made the video model paint brown dirty water out of nothing (第二、三轮付费试拍).
 const LIQUID = /污水|脏水|积水|水渍|水痕|水迹|喷水|洒水|吸水|水花|水流|泡沫/u;
+// 2026-11-21 实拍 60 秒「强力去油污」：导演把油污写成「半透明黏稠状」一滩，视频模型画成液体，机器开过去
+// 拖成一道油印（重拍一次仍一样）。Oil is written as old dark stains soaked into the floor, never as a liquid.
+const OILY_LIQUID = /黏稠|粘稠|半透明|一滩|油洼|油坑|油池/u;
 // Part names and "no water marks" are what a director naturally writes; they are reworded rather than
 // sent back, so only a real description of liquid on the floor makes it write the shot again.
 const REWORD = [[/吸水扒|吸水胶条|刮水胶条|刮水条|刮水板|刮水器/gu, '后部刮条'], [/水箱/gu, '箱体']];
@@ -50,6 +54,8 @@ function reword(text) {
   }).replace(/^[，；]/u, '');
 }
 // Extra cleaning shots when few points were picked; the director decides how each is filmed.
+// 2026-11-21 实拍 45 秒：两个补位清洁镜头字幕一样（「走过的地方 干干净净」连放两遍），显得廉价。
+// Like the fixed planner, each extra cleaning shot takes its own caption and camera from FILLERS.
 const FILLER = { id: 'clean', name: '清洁效果', caption: '走过的地方 干干净净', cleaning: true };
 
 // What the customer can tick: every selling point, whatever the machine (the customer knows what it can do).
@@ -84,12 +90,16 @@ function planDirected(input) {
   const points = [...pointIds.map((id) => allowed.find((point) => point.id === id)),
     ...custom.map((text, i) => ({ id: `custom_${i}`, name: text, caption: width(text) <= catalog.CAPTION_WIDTH ? text : '', custom: true }))];
   if (!points.some((point) => point.cleaning) && points.length < catalog.POINT_LIMIT[seconds]) points.unshift(FILLER);
-  while (points.length < catalog.MIN_SHOTS[seconds]) points.push({ ...FILLER, filler: true });
+  for (let i = 0; points.length < catalog.MIN_SHOTS[seconds]; i += 1) {
+    const { caption, camera } = FILLERS[i % FILLERS.length];
+    points.push({ ...FILLER, caption, camera, filler: true });
+  }
   const lengths = spread(seconds, points.length);
   let cursor = 0;
   const shots = points.map((point, index) => {
     const shot = { index, seconds: lengths[index], startSecond: cursor, endSecond: cursor + lengths[index], pointId: point.id, title: point.name,
-      caption: point.caption || '', narration: '', place: 'venue', cleaning: Boolean(point.cleaning), custom: Boolean(point.custom), filler: Boolean(point.filler), prompt: '' };
+      caption: point.caption || '', narration: '', place: 'venue', cleaning: Boolean(point.cleaning), custom: Boolean(point.custom), filler: Boolean(point.filler), prompt: '',
+      ...(point.filler ? { camera: point.camera } : {}) };
     cursor += shot.seconds; return shot;
   });
   return {
@@ -110,25 +120,25 @@ function pointHint(shot) {
   if (!point) return shot.custom ? '客户自己写的卖点，按字面意思拍出看得见的证明，不夸大' : '';
   const action = point.action.replace('{work}', '机器正常作业');
   const said = point.id === 'water' ? action : action.split(/(?<=[，。；])/u).filter((part) => !LIQUID.test(part)).join('');
-  return `${said}（参考机位：${point.camera}）`;
+  return `${said}（参考机位：${shot.camera || point.camera}）`;
 }
 
 // The vision model's brief. images: data URLs of the product photos followed by the 定妆照.
 function directorMessages({ plan, facts = '', images, feedback = '' }) {
   const detail = catalog.SCENE_DETAIL[plan.sceneIds[0]], scene = SCENES.find((row) => row.id === plan.sceneIds[0]);
   const photos = plan.productImages;
-  const list = plan.shots.map((shot) => `第${shot.index + 1}镜｜${shot.seconds}秒｜${shot.filler || shot.pointId === 'clean' ? '清洁效果（地面由脏变干净）' : `卖点「${shot.title}」`}${shot.caption ? `｜默认字幕：${shot.caption}` : ''}${pointHint(shot) ? `｜常见拍法：${pointHint(shot)}` : ''}`).join('\n');
+  const list = plan.shots.map((shot) => `第${shot.index + 1}镜｜${shot.seconds}秒｜${shot.filler || shot.pointId === 'clean' ? `清洁效果（地面由脏变干净${plan.shots.filter((row) => row.filler || row.pointId === 'clean').length > 1 ? '；几个清洁镜头换不同区域、不同机位和走向，不要拍成一样' : ''}）` : `卖点「${shot.title}」`}${shot.caption ? `｜默认字幕：${shot.caption}` : ''}${pointHint(shot) ? `｜常见拍法：${pointHint(shot)}` : ''}`).join('\n');
   const system = `你是商用清洁设备的实拍导演，同时负责给视频生成模型写提示词。客户没有设备也没有场地，要靠你写的提示词，让模型拍出像在真实现场实拍、看不出是 AI 的设备作业视频。
 先认真看图：前${photos}张是这台机器的真实产品照片，最后一张是根据照片画的四视角定妆图（前侧、正侧、背后、工作部件近景）。判断它是什么设备、怎么移动（自主行驶的机器人 / 人推着走 / 人坐着开）、工作部件在哪、怎样清洁地面。产品名称里有“机器人”，或客户的卖点是自动避障、自动回充、乘电梯、夜间无人作业这类自主功能时，它就是自己行驶的机器人（operator 为 none），即使照片上有座椅或方向盘，座位上也没有人。
 然后为每一镜写一段给视频模型的中文提示词。下面是付费试拍验证过的经验，必须遵守：
 1. 每镜是一个连续镜头，一镜到底，不剪辑不转场；摄影机全程只做一件事（固定不动、或同速平移跟拍、或在后方跟随，三选一），不推拉摇移组合。
 2. 全片只有这一台机器，外观完全照照片和定妆图；照片里有的部件保留，没有的不加。照片里有座椅或方向盘但你判断是无人驾驶机器人时，座位上没有人。
 3. 机器只朝机头方向前进，不倒着走。清洁镜头：开始时地面上的脏污要清楚可见，只有工作部件真正经过的地方才变干净，露出同一块旧地面的本色，机器前方和两侧没经过的地方保持原样作对照，干净的地方到最后一帧都保持干净。
-4. 不要在提示词里写“水、污水、积水、水渍、喷水、泡沫”这类词（视频模型会凭空画出脏水），只写看得见的结果，比如“地面露出本色、立刻变干”。只有冲洗类设备（如高压清洗机）例外，并把 wet 设为 true。
+4. 不要在提示词里写“水、污水、积水、水渍、喷水、泡沫”这类词（视频模型会凭空画出脏水），只写看得见的结果，比如“地面露出本色、立刻变干”。只有冲洗类设备（如高压清洗机）例外，并把 wet 设为 true。油污也一样：写成渗进地面、颜色发暗的旧油斑和拖开的油印，不写黏稠、半透明、一滩这类像液体的词，否则会被画成一滩油、被机器拖开。
 5. 画面要真实：场地原本的照明、纪实摄影机位、日常的脏污量（不是成堆垃圾），没有字幕、文字、商标。具体描述地面材质、脏污的样子、机器的动作速度和摄影机位置，写清楚但不堆形容词。
 6. 只拍客户给的卖点，不添加客户没说的功能，不编数字。
 7. 场景要符合「${scene.name}」：${detail.place}；${detail.light}；环境声：${detail.ambient}。地面材质和脏污由你根据这个场所和这台机器判断（例如工厂常见环氧地坪上的油污、铁屑，纺织车间的线头，写字楼的大理石和泥脚印）。
-8. 字幕每镜一行，最多10个汉字宽（英文和数字算半个），说卖点本身，不夸大。
+8. 字幕每镜一行，最多10个汉字宽（英文和数字算半个），说卖点本身，不夸大；各镜字幕互不相同。
 只输出一个 JSON 对象，不要任何其他文字：
 {"machine":"一句话：这是什么设备、怎么移动、工作部件在哪","operator":"none 或 walk 或 ride","wet":false,"floor":"地面材质和旧化程度","dirt":"地上有什么脏东西、什么样子","plate":"这个场所的空场景照片描述：地点、陈设、地面、脏污、光线，不含机器和人","shots":[{"title":"不超过8字","caption":"一行字幕","venue":true,"prompt":"这一镜给视频模型的提示词，300到900字"}]}
 venue：镜头发生在场所主区域时为 true（会附上场景照片保持一致）；在电梯厅、门口、充电桩、工作站旁等别处时为 false。至少一镜为 true。shots 数量和顺序必须与分镜表完全一致。`;
@@ -165,11 +175,15 @@ function parseDirection(content, plan) {
     const prompt = reword(clean(row.prompt, 2000)), caption = clean(row.caption, 30) || slot.caption, title = clean(row.title, 16) || slot.title;
     if (prompt.length < 80) problems.push(`第${i + 1}镜提示词太短`);
     if (!wet && slot.pointId !== 'water' && LIQUID.test(prompt)) problems.push(`第${i + 1}镜提示词里写了「${prompt.match(LIQUID)[0]}」，不要写和水有关的词，只写看得见的结果`);
+    if (OILY_LIQUID.test(prompt)) problems.push(`第${i + 1}镜提示词里写了「${prompt.match(OILY_LIQUID)[0]}」，油污要写成渗进地面的发暗旧油斑，不写成液体`);
     if (!caption || width(caption) > catalog.CAPTION_WIDTH) problems.push(`第${i + 1}镜字幕「${caption}」超过10个汉字宽`);
     return { title, caption, venue: row.venue !== false, prompt };
   });
   if (!wet && LIQUID.test(plate)) problems.push(`plate 里写了「${plate.match(LIQUID)[0]}」`);
+  for (const [field, text] of [['plate', plate], ['dirt', String(value.dirt || '')]]) if (OILY_LIQUID.test(text)) problems.push(`${field} 里写了「${text.match(OILY_LIQUID)[0]}」，油污要写成渗进地面的发暗旧油斑`);
   if (out.length && !out.some((shot) => shot.venue)) problems.push('至少一镜 venue 为 true');
+  out.forEach((shot, i) => { const first = out.findIndex((row) => row.caption === shot.caption);
+    if (first < i) problems.push(`第${i + 1}镜字幕「${shot.caption}」和第${first + 1}镜重复，每镜字幕要不同`); });
   if (problems.length) throw fail('product_video_direction_invalid', problems.slice(0, 6).join('；'));
   return { machine, operator, wet, floor: clean(value.floor, 200), dirt: clean(value.dirt, 300), plate, shots: out };
 }

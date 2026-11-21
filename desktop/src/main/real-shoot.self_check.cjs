@@ -122,7 +122,7 @@ const base = { mode: 'product', durationSeconds: 30, deviceId: 'robot_scrubber',
 // list is fixed up front so the price holds, and the director's answer is checked before anything is paid for.
 const aiBase = { mode: 'product', durationSeconds: 30, productName: 'DZ95X 洗地机器人', sceneIds: ['factory'] };
 const direction = (plan, overrides = {}) => JSON.stringify({ machine: '自主行驶的洗地机器人，底部滚刷和后部刮条', operator: 'none', wet: false, floor: '旧环氧地坪', dirt: '油污和铁屑',
-  plate: '工厂仓储通道，两侧货架和周转箱，环氧地坪上有油污和铁屑，顶灯偏冷', shots: plan.shots.map((shot, i) => ({ title: shot.title, caption: shot.caption || '自己会干活', venue: shot.pointId !== 'lift',
+  plate: '工厂仓储通道，两侧货架和周转箱，环氧地坪上有油污和铁屑，顶灯偏冷', shots: plan.shots.map((shot, i) => ({ title: shot.title, caption: shot.caption || `自己会干活${i + 1}`, venue: shot.pointId !== 'lift',
     prompt: `第${i + 1}镜：摄影机在机器斜后方同速跟随，机器沿通道匀速前进，滚刷经过的地方油污消失露出环氧地坪本色，没经过的地方保持原样作对照。两侧是蓝色货架和灰色周转箱，地面有黄色地标线，光线是厂房顶上普通的白色工业灯，画面平实，像现场随手拍的设备演示。` })), ...overrides });
 {
   assert.throws(() => ai.planDirected({ ...aiBase, productName: ' ' }), /产品名称/u);
@@ -166,6 +166,20 @@ const direction = (plan, overrides = {}) => JSON.stringify({ machine: '自主行
   assert.doesNotThrow(() => ai.parseDirection(JSON.stringify({ ...wet, wet: true }), plan), 'a washer may show clean water');
   assert.throws(() => ai.parseDirection(direction(plan, { shots: JSON.parse(direction(plan)).shots.slice(1) }), plan), /必须正好 5 镜/u);
   assert.throws(() => ai.parseDirection(direction(plan, { operator: 'robot' }), plan), /operator/u);
+  // 2026-11-21 实拍 45 秒两个清洁镜头字幕相同：补位镜头各有字幕和机位，导演给出重复字幕要重写。
+  for (const [seconds, pointIds] of [[45, ['sweep', 'edge', 'charge']], [60, []], [60, ['wide']], [15, []]]) {
+    const filled = ai.planDirected({ ...aiBase, durationSeconds: seconds, pointIds });
+    assert.equal(new Set(filled.shots.map((shot) => shot.caption)).size, filled.shots.length, `${seconds}秒 ${pointIds.join('+') || '不选卖点'}：每镜默认字幕不同`);
+    const cameras = filled.shots.filter((shot) => shot.filler).map((shot) => shot.camera);
+    assert.ok(cameras.every(Boolean) && new Set(cameras).size === cameras.length, 'each extra cleaning shot has its own camera');
+  }
+  // 2026-11-21 实拍：油污写成「半透明黏稠」一滩，被画成液体、被机器拖开；导演要重写成渗进地面的旧油斑。
+  const oilPuddle = JSON.parse(direction(plan)); oilPuddle.shots[0].prompt += '一块半透明黏稠状的暗褐色油渍。';
+  assert.throws(() => ai.parseDirection(JSON.stringify(oilPuddle), plan), /第1镜提示词里写了「黏稠|第1镜提示词里写了「半透明/u);
+  assert.throws(() => ai.parseDirection(direction(plan, { dirt: '暗褐色半透明黏着斑块' }), plan), /dirt 里写了「半透明」/u);
+  assert.match(ai.directorMessages({ plan, images: ['data:x'] }).map((m) => JSON.stringify(m.content)).join(''), /渗进地面、颜色发暗的旧油斑/u);
+  const twice = JSON.parse(direction(plan)); twice.shots[1].caption = twice.shots[0].caption;
+  assert.throws(() => ai.parseDirection(JSON.stringify(twice), plan), /第2镜字幕「[^」]+」和第1镜重复/u);
   const long = JSON.parse(direction(plan)); long.shots[2].caption = '遇到障碍物会自己绕开走'; assert.throws(() => ai.parseDirection(JSON.stringify(long), plan), /超过10个汉字宽/u);
   assert.throws(() => ai.parseDirection('我觉得可以这样拍', plan), (e) => e.code === 'product_video_direction_invalid');
   // The AI check only reports; anything not clearly a problem counts as fine.
