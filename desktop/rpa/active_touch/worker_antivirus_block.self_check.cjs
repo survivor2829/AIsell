@@ -42,12 +42,12 @@ function fakeSpawn({ stderr, status }) {
   // The worker's error kind travels on every computer (1.2.69: the customer's PowerShell error
   // was never kept). Only exception names, error ids and HRESULTs: no quoted text, no Chinese.
   const { workerErrorKinds } = require("./wechat_window_driver.cjs");
-  const CLIPBOARD_STDERR = "Exception calling \"GetText\" with \"0\" argument(s): \"向锦涛 13800138000\"\r\n"
+  const CLIPBOARD_STDERR = "Exception calling \"GetText\" with \"0\" argument(s): \"李明远 13800138000\"\r\n"
     + "At line:12 char:5\r\n    + CategoryInfo : NotSpecified: (:) [], MethodInvocationException\r\n"
     + "    + FullyQualifiedErrorId : ExternalException\r\nSystem.Runtime.InteropServices.COMException (0x800401D0): 剪贴板打不开";
   const kinds = workerErrorKinds(CLIPBOARD_STDERR);
   assert.deepEqual(kinds, ["MethodInvocationException", "ExternalException", "System.Runtime.InteropServices.COMException", "0x800401D0"]);
-  assert.ok(!/向锦涛|138|GetText|剪贴板/.test(kinds.join(" ")), "no quoted text, number or Chinese leaves the computer");
+  assert.ok(!/李明远|138|GetText|剪贴板/.test(kinds.join(" ")), "no quoted text, number or Chinese leaves the computer");
   // Chinese Windows quotes with “…”; what is inside, even ASCII, stays on the computer.
   const chinese = "使用“0”个参数调用“GetText”时发生异常:“客户 PaymentError 0x1A2B3C4D”\r\n    + CategoryInfo : NotSpecified: (:) [], MethodInvocationException";
   assert.deepEqual(workerErrorKinds(chinese), ["MethodInvocationException"]);

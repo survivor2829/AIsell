@@ -21,7 +21,7 @@ const realLines = () => [
 const observe = (visualCandidates) => ({ uiaCandidates: [], ocrOk: true, captureSource: "popup",
   popupBounds: popup, popupDpi: 96, popupCandidateCount: 1, cropBounds: popup,
   visualCandidates, webSearchCandidates: [], webSearchTop: null });
-const byId = (query) => ({ query, expectedName: "城胜", queryType: "wechat_id" });
+const byId = (query) => ({ query, expectedName: "王成", queryType: "wechat_id" });
 const byName = (query) => ({ query, expectedName: query, queryType: "name_fallback" });
 
 // The exact WeChat ID under 最常使用 is clicked; the old code skipped it (r008).
@@ -103,17 +103,17 @@ assert.equal(captionlessName.diagnostics.prior_rule_id, "search-r022");
 
 // Name search: the name row under 联系人, with one OCR-misread character allowed
 // only for names of three or more characters; the chat title is checked later.
-const nameLines = [line("联 系 人", 92, 83, 140, 95), line("向 锦 涛", 136, 118, 190, 131),
-  line("群 聊", 92, 179, 116, 191), line("包 含 ： 向 锦 涛", 136, 213, 260, 227)];
-const byNameFound = resolveWechatSearchResultObservation(observe(nameLines), byName("向锦涛"));
+const nameLines = [line("联 系 人", 92, 83, 140, 95), line("李 明 远", 136, 118, 190, 131),
+  line("群 聊", 92, 179, 116, 191), line("包 含 ： 李 明 远", 136, 213, 260, 227)];
+const byNameFound = resolveWechatSearchResultObservation(observe(nameLines), byName("李明远"));
 assert.equal(byNameFound.mode, "sectioned_name_visual", JSON.stringify(byNameFound));
-const misread = nameLines.map((item) => item.text === "向 锦 涛" ? line("向 锦 寿", 136, 118, 190, 131) : item);
-assert.equal(resolveWechatSearchResultObservation(observe(misread), byName("向锦涛")).status, "selected");
-const twoChar = [line("联 系 人", 92, 83, 140, 95), line("城 性", 136, 118, 170, 131)];
-assert.notEqual(resolveWechatSearchResultObservation(observe(twoChar), byName("城胜")).status, "selected",
+const misread = nameLines.map((item) => item.text === "李 明 远" ? line("李 明 运", 136, 118, 190, 131) : item);
+assert.equal(resolveWechatSearchResultObservation(observe(misread), byName("李明远")).status, "selected");
+const twoChar = [line("联 系 人", 92, 83, 140, 95), line("王 城", 136, 118, 170, 131)];
+assert.notEqual(resolveWechatSearchResultObservation(observe(twoChar), byName("王成")).status, "selected",
   "two-character names must match exactly");
-const twoNames = [...nameLines, line("向 锦 涛", 136, 150, 190, 163)];
-assert.equal(resolveWechatSearchResultObservation(observe(twoNames), byName("向锦涛")).rule_id, "search-r021");
+const twoNames = [...nameLines, line("李 明 远", 136, 150, 190, 163)];
+assert.equal(resolveWechatSearchResultObservation(observe(twoNames), byName("李明远")).rule_id, "search-r021");
 
 // Customer 4.2.0.8 (2026-11-04, 1.2.51): the popup ended with "搜索网络结果" but
 // no caption was read; every WeChat-ID hit became search-r015.

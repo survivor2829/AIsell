@@ -7,8 +7,8 @@ async function main() {
   if (process.platform !== "win32") { console.log("powershell host self-check skipped (not Windows)"); return; }
   const host = createPowerShellHost();
   try {
-    let answer = await host.run('@{ ok = $true; name = "向锦涛" } | ConvertTo-Json -Compress', {}, 30_000);
-    assert.deepEqual(JSON.parse(answer.stdout), { ok: true, name: "向锦涛" }, "Chinese output survives");
+    let answer = await host.run('@{ ok = $true; name = "李明远" } | ConvertTo-Json -Compress', {}, 30_000);
+    assert.deepEqual(JSON.parse(answer.stdout), { ok: true, name: "李明远" }, "Chinese output survives");
 
     answer = await host.run('$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; @{ ok = $false; reason = "早退" } | ConvertTo-Json -Compress; exit; "after"', {}, 10_000);
     assert.deepEqual(JSON.parse(answer.stdout), { ok: false, reason: "早退" }, "exit ends the script, not the host, even after a script changes the console encoding");
