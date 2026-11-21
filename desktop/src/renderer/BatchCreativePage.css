@@ -465,3 +465,10 @@ html[data-beat="1"] .mix-ring-value.is-waiting { opacity: .5; }
 .is-visual-flow .batch-progress-message { font-size: 17px; font-weight: 800; color: #1f2937; }
 .is-visual-flow .batch-progress-meta { font-size: 15px; font-weight: 700; }
 .is-visual-flow .batch-output-row:not(:has(.batch-notice)) { display: none; }
+/* 混剪第一步（用户 2026-11-19：素材区下面一大段空白）：左栏和右栏一样高，素材区把整栏撑满——
+   没选素材时添加框变高，选了素材时网格占满，“我的素材/导入文件夹”贴在底部。 */
+.is-visual-flow .batch-material-start { display: flex; flex-direction: column; min-height: 0; }
+.is-visual-flow .batch-material-start > .file-drop-zone { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.is-visual-flow .batch-material-start .batch-material-board { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.is-visual-flow .batch-material-board > .batch-upload-empty { flex: 1; }
+.is-visual-flow .batch-material-board > .batch-visual-material-grid { flex: 1; align-content: start; grid-auto-rows: max-content; }
