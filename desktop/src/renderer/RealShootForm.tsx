@@ -107,17 +107,20 @@ function DirectorCard({ task }: { task: ProgressTask }) {
 }
 export type ShotReview = { checkedAt: string; skipped?: boolean; shots: { index: number; ok: boolean; issue: string; redone?: boolean }[] };
 // AI 检查 (user 2026-11-19: check only): which shot looks wrong and why; the customer decides whether to redo one.
-export function ShotReviewPanel({ review, titles, canRedo, busy, onRedo }: { review?: ShotReview | null; titles: string[]; canRedo: boolean; busy: boolean; onRedo: (index: number) => void }) {
+export function ShotReviewPanel({ review, titles, canRedo, busy, finished = true, onRedo }: { review?: ShotReview | null; titles: string[]; canRedo: boolean; busy: boolean; finished?: boolean; onRedo: (index: number) => void }) {
   if (!review) return null;
   if (review.skipped) return <div className="rs-review"><ScanEye size={20} /><p>这次没能自动检查，建议自己看一遍成片。</p></div>;
   const flagged = review.shots.filter((shot) => !shot.ok);
-  // After a redo the heading says so (2026-11-21 实拍：重拍后仍写“可能要重拍”，像没修好).
+  // After a redo the heading says so (2026-11-21 实拍：重拍后仍写“可能要重拍”，像没修好). A shot is marked
+  // redone as soon as its redo is queued, so "已经重拍好了" waits until the video is finished again.
   const open = flagged.filter((shot) => !shot.redone);
+  const redoing = !finished && flagged.some((shot) => shot.redone);
+  const before = (issue: string) => issue.replace(/^第\d+镜(?:第\d+格)?[：:，,\s]*/u, "").replace(/^这一镜/u, "");
   return <div className="rs-review"><ScanEye size={20} /><div>
-    <b>{open.length ? `AI 检查：有 ${open.length} 个镜头可能要重拍` : flagged.length ? "AI 检查发现的镜头已经重拍好了" : "AI 检查：每个镜头都没发现明显问题"}</b>
-    {flagged.map((shot) => <div key={shot.index} className="rs-review-row"><AlertTriangle size={16} /><span>第 {shot.index + 1} 镜「{titles[shot.index] || ""}」：{shot.redone ? `原来${shot.issue.replace(/^第\d+镜(?:第\d+格)?/u, "")}` : shot.issue}</span>
-      {shot.redone ? <em>已重拍</em> : canRedo && <button type="button" className="pv2-btn" data-product-video-action="redo-shot" disabled={busy} onClick={() => onRedo(shot.index)}><RefreshCw size={16} />重拍这一镜</button>}</div>)}
-    {open.length > 0 && <small>每条视频可以重拍一个镜头，只扣这一个镜头的算力；不重拍也能直接用。</small>}
+    <b>{redoing ? "正在重拍 AI 检查发现的镜头" : open.length ? `AI 检查：有 ${open.length} 个镜头可能要重拍` : flagged.length ? "AI 检查发现的镜头已经重拍好了" : "AI 检查：每个镜头都没发现明显问题"}</b>
+    {flagged.map((shot) => <div key={shot.index} className="rs-review-row"><AlertTriangle size={16} /><span>第 {shot.index + 1} 镜「{titles[shot.index] || ""}」：{shot.redone ? `原来${before(shot.issue)}` : shot.issue}</span>
+      {shot.redone ? <em>{redoing ? "重拍中" : "已重拍"}</em> : canRedo && <button type="button" className="pv2-btn" data-product-video-action="redo-shot" disabled={busy} onClick={() => onRedo(shot.index)}><RefreshCw size={16} />重拍这一镜</button>}</div>)}
+    {canRedo && open.length > 0 && <small>每条视频可以重拍一个镜头，只扣这一个镜头的算力；不重拍也能直接用。</small>}
   </div></div>;
 }
 // Only the steps this video really has: no 定妆照 on videos started before it, no scene picture without a venue shot.

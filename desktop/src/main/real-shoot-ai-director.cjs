@@ -19,6 +19,7 @@ const MAX_PRODUCT_IMAGES = 3;
 const CUSTOM_LIMIT = 3, CUSTOM_LENGTH = 30;
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const clean = (value, limit) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, limit);
+const bare = (text) => String(text || '').replace(/\s+/gu, '');
 const width = (text) => [...String(text)].reduce((sum, char) => sum + (char.codePointAt(0) <= 0x7f ? 0.5 : 1), 0);
 
 // The look every shot shares (from real-shoot-director: plain venue light, documentary camera).
@@ -34,6 +35,10 @@ const LIQUID = /污水|脏水|积水|水渍|水痕|湿痕|水迹|喷水|洒水|�
 // 2026-11-21 实拍 60 秒「强力去油污」：导演把油污写成「半透明黏稠状」一滩，视频模型画成液体，机器开过去
 // 拖成一道油印（重拍一次仍一样）。Oil is written as old dark stains soaked into the floor, never as a liquid.
 const OILY_LIQUID = /黏稠|粘稠|半透明|一滩|油洼|油坑|油池/u;
+// Only a clause about oil or stains that says it is there counts (not 半透明门帘, not 「油斑不是黏稠的液体」).
+const oilyWord = (text) => String(text).split(/[，。；,;]/u).map((clause) => clause.trim())
+  .filter((clause) => /油|斑|渍|污/u.test(clause) && !NEGATED.test(clause) && !/不是|并非|而非/u.test(clause))
+  .map((clause) => clause.match(OILY_LIQUID)?.[0]).find(Boolean) || '';
 // Part names and "no water marks" are what a director naturally writes; they are reworded rather than
 // sent back, so only a real description of liquid on the floor makes it write the shot again.
 const REWORD = [[/吸水扒|吸水胶条|刮水胶条|刮水条|刮水板|刮水器/gu, '后部刮条'], [/水箱/gu, '箱体']];
@@ -81,7 +86,7 @@ function planDirected(input) {
   const pointIds = Array.isArray(input.pointIds) ? [...new Set(input.pointIds)] : [];
   const allowed = catalog.POINTS.filter((point) => !point.core);
   if (pointIds.some((id) => !allowed.some((point) => point.id === id))) throw fail('product_video_invalid_option', '有卖点无法识别，请重新勾选。');
-  const custom = (Array.isArray(input.customPoints) ? input.customPoints : []).map((text) => clean(text, CUSTOM_LENGTH)).filter(Boolean);
+  const custom = [...new Set((Array.isArray(input.customPoints) ? input.customPoints : []).map((text) => clean(text, CUSTOM_LENGTH)).filter(Boolean))];
   if (custom.length > CUSTOM_LIMIT) throw fail('product_video_invalid_option', `自己写的卖点最多${CUSTOM_LIMIT}条。`);
   if (pointIds.length + custom.length > catalog.POINT_LIMIT[seconds]) throw fail('product_video_invalid_option', `${seconds}秒最多${catalog.POINT_LIMIT[seconds]}个卖点。`);
   const extra = Array.isArray(input.extraImageIds) ? input.extraImageIds : [];
@@ -90,8 +95,11 @@ function planDirected(input) {
   const points = [...pointIds.map((id) => allowed.find((point) => point.id === id)),
     ...custom.map((text, i) => ({ id: `custom_${i}`, name: text, caption: width(text) <= catalog.CAPTION_WIDTH ? text : '', custom: true }))];
   if (!points.some((point) => point.cleaning) && points.length < catalog.POINT_LIMIT[seconds]) points.unshift(FILLER);
+  // A filler never repeats a caption a selling point already has (captions compared without spaces).
+  const used = new Set(points.map((point) => bare(point.caption)).filter(Boolean));
+  const fillers = [...FILLERS.filter((row) => !used.has(bare(row.caption))), ...FILLERS];
   for (let i = 0; points.length < catalog.MIN_SHOTS[seconds]; i += 1) {
-    const { caption, camera } = FILLERS[i % FILLERS.length];
+    const { caption, camera } = fillers[i % fillers.length];
     points.push({ ...FILLER, caption, camera, filler: true });
   }
   const lengths = spread(seconds, points.length);
@@ -137,7 +145,7 @@ function directorMessages({ plan, facts = '', images, feedback = '' }) {
 4. 不要在提示词里写“水、污水、积水、水渍、喷水、泡沫”这类词（视频模型会凭空画出脏水），只写看得见的结果，比如“地面露出本色、颜色变亮”。只有冲洗类设备（如高压清洗机）例外，并把 wet 设为 true。油污也一样：写成渗进地面、颜色发暗的旧油斑和拖开的油印，不写黏稠、半透明、一滩这类像液体的词，否则会被画成一滩油、被机器拖开。
 5. 画面要真实：场地原本的照明、纪实摄影机位、日常的脏污量（不是成堆垃圾），没有字幕、文字、商标。具体描述地面材质、脏污的样子、机器的动作速度和摄影机位置，写清楚但不堆形容词。
 6. 只拍客户给的卖点，不添加客户没说的功能，不编数字。
-7. 场景要符合「${scene.name}」：${detail.place}；${detail.light}；环境声：${detail.ambient}。场地的大小要配得上机器：大型设备（乘驾式、带座椅或方向盘、机身比人宽的）放在宽阔开敞的大片区域作业，比如宽主通道、车间空地、大堂中间，四周留足空间，不挤在窄过道和货架缝里，plate 也照这个写。地面材质和脏污由你根据这个场所和这台机器判断（例如工厂常见环氧地坪上的油污、铁屑，纺织车间的线头，写字楼的大理石和泥脚印）。
+7. 场景要符合「${scene.name}」：${detail.place}；${detail.light}；环境声：${detail.ambient}。场地的大小要配得上机器：大型设备（乘驾式、带座椅或方向盘、机身比人宽的）放在宽阔开敞的大片区域作业，比如宽主通道、车间空地、大堂中间，四周留足空间，不挤在窄过道和货架缝里，plate 也照这个写；客户选的卖点本身要窄通道或贴边（如窄道灵活、贴边清洁）的那一镜照卖点拍。地面材质和脏污由你根据这个场所和这台机器判断（例如工厂常见环氧地坪上的油污、铁屑，纺织车间的线头，写字楼的大理石和泥脚印）。
 8. 字幕每镜一行，最多10个汉字宽（英文和数字算半个），说卖点本身，不夸大；各镜字幕互不相同。
 只输出一个 JSON 对象，不要任何其他文字：
 {"machine":"一句话：这是什么设备、怎么移动、工作部件在哪、有没有后部刮条","operator":"none 或 walk 或 ride","wet":false,"floor":"地面材质和旧化程度","dirt":"地上有什么脏东西、什么样子","plate":"这个场所的空场景照片描述：地点、陈设、地面、脏污、光线，不含机器和人","shots":[{"title":"不超过8字","caption":"一行字幕","venue":true,"prompt":"这一镜给视频模型的提示词，300到900字"}]}
@@ -175,14 +183,14 @@ function parseDirection(content, plan) {
     const prompt = reword(clean(row.prompt, 2000)), caption = clean(row.caption, 30) || slot.caption, title = clean(row.title, 16) || slot.title;
     if (prompt.length < 80) problems.push(`第${i + 1}镜提示词太短`);
     if (!wet && slot.pointId !== 'water' && LIQUID.test(prompt)) problems.push(`第${i + 1}镜提示词里写了「${prompt.match(LIQUID)[0]}」，不要写和水有关的词，只写看得见的结果`);
-    if (OILY_LIQUID.test(prompt)) problems.push(`第${i + 1}镜提示词里写了「${prompt.match(OILY_LIQUID)[0]}」，油污要写成渗进地面的发暗旧油斑，不写成液体`);
+    if (oilyWord(prompt)) problems.push(`第${i + 1}镜提示词里写了「${oilyWord(prompt)}」，油污要写成渗进地面的发暗旧油斑，不写成液体`);
     if (!caption || width(caption) > catalog.CAPTION_WIDTH) problems.push(`第${i + 1}镜字幕「${caption}」超过10个汉字宽`);
     return { title, caption, venue: row.venue !== false, prompt };
   });
   if (!wet && LIQUID.test(plate)) problems.push(`plate 里写了「${plate.match(LIQUID)[0]}」`);
-  for (const [field, text] of [['plate', plate], ['dirt', String(value.dirt || '')]]) if (OILY_LIQUID.test(text)) problems.push(`${field} 里写了「${text.match(OILY_LIQUID)[0]}」，油污要写成渗进地面的发暗旧油斑`);
+  for (const [field, text] of [['plate', plate], ['dirt', String(value.dirt || '')]]) if (oilyWord(text)) problems.push(`${field} 里写了「${oilyWord(text)}」，油污要写成渗进地面的发暗旧油斑`);
   if (out.length && !out.some((shot) => shot.venue)) problems.push('至少一镜 venue 为 true');
-  out.forEach((shot, i) => { const first = out.findIndex((row) => row.caption === shot.caption);
+  out.forEach((shot, i) => { const first = out.findIndex((row) => bare(row.caption) === bare(shot.caption));
     if (first < i) problems.push(`第${i + 1}镜字幕「${shot.caption}」和第${first + 1}镜重复，每镜字幕要不同`); });
   if (problems.length) throw fail('product_video_direction_invalid', problems.slice(0, 6).join('；'));
   return { machine, operator, wet, floor: clean(value.floor, 200), dirt: clean(value.dirt, 300), plate, shots: out };

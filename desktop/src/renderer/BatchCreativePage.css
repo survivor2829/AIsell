@@ -313,7 +313,7 @@
 .batch-material-start.has-library .batch-upload-empty { min-height:155px;gap:10px; }
 .batch-page .batch-brief-rail .batch-hint { font-size:12px; }.batch-page .batch-step-action>span { font-size:13px; }
 @media(max-width:960px){.batch-page-header{align-items:flex-start;flex-direction:column;gap:16px}.batch-header-actions{max-width:none;justify-content:flex-start}}
-@media(max-width:600px){.batch-library-preview{grid-template-columns:repeat(2,minmax(0,1fr))}.batch-header-actions{gap:7px}.batch-header-actions>button{font-size:12px}}
+@media(max-width:600px){.batch-library-preview{grid-template-columns:repeat(2,minmax(0,1fr))}.batch-library-preview>button:nth-child(n+5){display:none}.batch-header-actions{gap:7px}.batch-header-actions>button{font-size:12px}}
 
 .batch-results { container-type: inline-size; }
 .batch-result-grid.is-single { grid-template-columns: minmax(0, 1fr); }

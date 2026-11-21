@@ -178,6 +178,15 @@ const direction = (plan, overrides = {}) => JSON.stringify({ machine: '自主行
   assert.throws(() => ai.parseDirection(JSON.stringify(oilPuddle), plan), /第1镜提示词里写了「黏稠|第1镜提示词里写了「半透明/u);
   assert.throws(() => ai.parseDirection(direction(plan, { dirt: '暗褐色半透明黏着斑块' }), plan), /dirt 里写了「半透明」/u);
   assert.match(ai.directorMessages({ plan, images: ['data:x'] }).map((m) => JSON.stringify(m.content)).join(''), /渗进地面、颜色发暗的旧油斑/u);
+  // Review of 1.3.50: only a clause that says oil or a stain is liquid is sent back.
+  assert.doesNotThrow(() => ai.parseDirection(direction(plan, { plate: '工厂仓储通道，入口挂着半透明PVC门帘，环氧地坪上有发暗的旧油斑，顶灯偏冷' }), plan), 'a translucent curtain is not oil');
+  const echoed = JSON.parse(direction(plan)); echoed.shots[0].prompt += '油斑不是黏稠的液体，没有一滩油。';
+  assert.doesNotThrow(() => ai.parseDirection(JSON.stringify(echoed), plan), 'saying what the oil is not is fine');
+  // A filler skips a caption the customer already wrote; captions that differ only in spaces count as the same.
+  const ownWords = ai.planDirected({ ...aiBase, durationSeconds: 60, customPoints: ['整片场地 一遍搞定', '整片场地 一遍搞定'] });
+  assert.equal(new Set(ownWords.shots.map((shot) => shot.caption.replace(/\s+/gu, ''))).size, ownWords.shots.length, 'no repeated default caption');
+  const spaced = JSON.parse(direction(plan)); spaced.shots[1].caption = spaced.shots[0].caption.replace(/(.)/u, '$1 ');
+  assert.throws(() => ai.parseDirection(JSON.stringify(spaced), plan), /和第1镜重复/u);
   // 2026-11-21 实拍 60 秒 DZ95X：产品照刮条是收起的，视频照搬成悬空（用户：刮条没放下去就假）。
   assert.match(ai.directorMessages({ plan, images: ['data:x'] })[0].content, /后部刮条整条落地.*柔和的光泽.*宽阔开敞/su, 'director knows squeegee down, sheen, open space');
   assert.match(ai.reviewRequest({ plan: directed, images: ['a'], sheets: ['c'] }).messages[0].content, /刮条或刷子却明显悬空/u);
