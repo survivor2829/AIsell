@@ -178,6 +178,9 @@ const direction = (plan, overrides = {}) => JSON.stringify({ machine: '自主行
   assert.throws(() => ai.parseDirection(JSON.stringify(oilPuddle), plan), /第1镜提示词里写了「黏稠|第1镜提示词里写了「半透明/u);
   assert.throws(() => ai.parseDirection(direction(plan, { dirt: '暗褐色半透明黏着斑块' }), plan), /dirt 里写了「半透明」/u);
   assert.match(ai.directorMessages({ plan, images: ['data:x'] }).map((m) => JSON.stringify(m.content)).join(''), /渗进地面、颜色发暗的旧油斑/u);
+  // 2026-11-21 实拍 60 秒 DZ95X：产品照刮条是收起的，视频照搬成悬空（用户：刮条没放下去就假）。
+  assert.match(ai.directorMessages({ plan, images: ['data:x'] })[0].content, /后部刮条整条落地.*柔和的光泽.*宽阔开敞/su, 'director knows squeegee down, sheen, open space');
+  assert.match(ai.reviewRequest({ plan: directed, images: ['a'], sheets: ['c'] }).messages[0].content, /刮条或刷子却明显悬空/u);
   const twice = JSON.parse(direction(plan)); twice.shots[1].caption = twice.shots[0].caption;
   assert.throws(() => ai.parseDirection(JSON.stringify(twice), plan), /第2镜字幕「[^」]+」和第1镜重复/u);
   const long = JSON.parse(direction(plan)); long.shots[2].caption = '遇到障碍物会自己绕开走'; assert.throws(() => ai.parseDirection(JSON.stringify(long), plan), /超过10个汉字宽/u);
