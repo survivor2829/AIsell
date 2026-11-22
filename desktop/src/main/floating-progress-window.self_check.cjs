@@ -31,4 +31,16 @@ assert.equal(spritePosition(withTaskbar, { x: 300 }).x, 300);
   assert.equal(inside({ x: 2000, y: 100 }, [...big, { workArea: { x: 1920, y: 0, width: 1920, height: 1040 } }], wechat), true, "WeChat may be on another screen");
   assert.equal(inside({ x: 10, y: 10 }, [], wechat), false);
 }
+// 小玺 tucks away during a task only where it covers WeChat (90bd8730: drawn over the send button).
+{
+  const { spriteCoversWechat: covers } = require("./floating-progress-window.cjs");
+  const wechat = { width: 1120, height: 760 };
+  const small = { x: 0, y: 0, width: 1120, height: 720 }, big = { x: 0, y: 0, width: 1920, height: 1040 };
+  assert.equal(covers({ x: 667, y: 460 }, null, false, small, wechat), true, "the 225% laptop: 小玺 stood on the send button");
+  assert.equal(covers({ x: 1514, y: 780 }, null, false, big, wechat), false, "beside WeChat on a big screen: left where it is");
+  assert.equal(covers({ x: 1000, y: 780 }, null, false, big, wechat), false, "below WeChat's 760: free");
+  assert.equal(covers({ x: 1000, y: 700 }, null, false, big, wechat), true);
+  assert.equal(covers({ x: -100, y: 460 }, "left", false, small, wechat), false, "tucked: a strip, no bubble");
+  assert.equal(covers({ x: 0, y: 460 }, "left", true, small, wechat), true, "leaning out over WeChat");
+}
 console.log("sprite floor self-check passed");
