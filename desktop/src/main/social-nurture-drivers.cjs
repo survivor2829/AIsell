@@ -19,6 +19,35 @@ const inActive = (view, node) => view.ancestors(node).some((up) => attr(up, "dat
 const ON_SCREEN_ACTIVE = `[...document.querySelectorAll('${ACTIVE}')].find((el) => { const r = el.getBoundingClientRect();
   return r.width > 2 && r.height > 2 && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth; })`;
 
+// Douyin's follow "+": on the player it is a 24 px icon over the lower edge of the author's
+// avatar, with no name of its own (dev PC, signed in, 2026-11-22). It is found by where it sits.
+const FOLLOW_PLUS = `(() => { const active = ${ON_SCREEN_ACTIVE}; if (!active) return { state: "no_video" };
+  const avatar = [...active.querySelectorAll('[data-e2e="video-avatar"]')].find((el) => el.getClientRects().length);
+  if (!avatar) return { state: "no_avatar" };
+  const a = avatar.getBoundingClientRect();
+  const plus = [...active.querySelectorAll("*")].find((el) => { const r = el.getBoundingClientRect();
+    return r.width >= 12 && r.width <= 36 && r.height >= 12 && r.height <= 36 && r.width < a.width
+      && r.left + r.width / 2 >= a.left + a.width * 0.25 && r.left + r.width / 2 <= a.right - a.width * 0.25
+      && r.top >= a.top + a.height * 0.5 && r.top <= a.bottom + 10; });
+  if (!plus) return { state: "no_plus" };
+  const r = plus.getBoundingClientRect();
+  return { state: "plus", x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`;
+async function clickAt(page, x, y) {
+  for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+    await page.send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: type === "mouseMoved" ? 0 : 1 });
+  }
+}
+// Where the comment panel was opened from: clicking the icon again closes it. Escape is never used here:
+// on a search result it closes the whole player (dev PC 2026-11-22), and every step after it found nothing
+// (field 2026-11-18..20: comments/follows "missing" over the results grid).
+const commentIcon = (page) => page.find((node, view) => attr(node, "data-e2e") === "feed-comment-icon" && inActive(view, node));
+async function closeComments(page) {
+  const open = await page.evaluate(`[...document.querySelectorAll('[data-e2e="comment-list"]')].some((el) => { const r = el.getBoundingClientRect(); return r.width > 50 && r.left < innerWidth && r.right > 0; })`).catch(() => false);
+  if (!open) return;
+  const icon = await commentIcon(page);
+  if (icon) { await page.click(icon); await sleep(1000); }
+}
+
 async function key(page, name, code, keyCode, text) {
   await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: name, code, windowsVirtualKeyCode: keyCode, ...(text ? { text } : {}) });
   await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: name, code, windowsVirtualKeyCode: keyCode });
@@ -27,12 +56,18 @@ async function key(page, name, code, keyCode, text) {
 const DRIVERS = {
   douyin: {
     name: "抖音", host: "douyin.com", home: "https://www.douyin.com/?recommend=1",
-    // Signed in, the header links to the account's own page.
-    signedIn: async (page) => Boolean(await page.evaluate(`Boolean(document.querySelector('a[href*="/user/self"]'))`)),
+    // Signed in, the header's top-right avatar links to the account's own page. The left bar's 我的 links
+    // there too, signed in or not (dev PC 2026-11-22: a signed-out page was taken as signed in).
+    signedIn: async (page) => Boolean(await page.evaluate(`[...document.querySelectorAll('a[href*="/user/self"]')].some((a) => {
+      const r = a.getBoundingClientRect(); return r.width > 2 && r.height > 2 && r.top < 120 && r.left > innerWidth * 0.5; })`)),
     blocked: async (page) => Boolean(await page.evaluate(BLOCKED).catch(() => false)),
     // The site's own prompts over the page, such as 「是否保存登录信息？」 (seen on a customer computer
     // 2026-10-29), are declined so nothing about the account changes.
     async dismissPrompts(page) {
+      // The first player of an account or browser shows a guide over the video (「滚动鼠标…查看更多推荐视频」,
+      // 我知道了) that takes every click until it is closed (dev PC 2026-11-22).
+      const guide = await page.find((node) => (node.children || []).some((child) => child.nodeType === 3 && child.nodeValue.trim() === "我知道了"));
+      if (guide) { await page.click(guide); await sleep(1000); }
       for (let i = 0; i < 3; i++) {
         const prompt = await page.find((node) => /是否保存登录信息/.test(node.children?.filter?.((child) => child.nodeType === 3).map((child) => child.nodeValue).join("") || ""));
         if (!prompt) return;
@@ -62,13 +97,19 @@ const DRIVERS = {
       return true;
     },
     // Search results: the 视频 tab, then the first video, which opens the player.
-    async openFirstResult(page) {
-      const tab = await page.find((node) => attr(node, "data-key") === "video");
-      if (tab) { await page.click(tab); await sleep(4000); }
-      const opened = await page.evaluate(`(() => { const link = [...document.querySelectorAll('ul[data-e2e="scroll-list"] li a, .search-result-card a')].find((el) => el.getClientRects().length);
-        if (!link) return false; link.click(); return true; })()`);
+    // On a slow connection the results take more than ten seconds (dev PC 2026-11-22), so this waits for
+    // them, up to 30 seconds, instead of a fixed few: the tab first, then a result to open.
+    async openFirstResult(page, { waitMs = 30_000 } = {}) {
+      const deadline = Date.now() + waitMs;
+      let tab = null;
+      while (!tab && Date.now() < deadline) { tab = await page.find((node) => attr(node, "data-key") === "video"); if (!tab) await sleep(1000); }
+      if (tab) await page.click(tab);
+      const openFirst = `(() => { const link = [...document.querySelectorAll('ul[data-e2e="scroll-list"] li a, .search-result-card a')].find((el) => el.getClientRects().length);
+        if (!link) return false; link.click(); return true; })()`;
+      let opened = false;
+      while (!opened && Date.now() < deadline) { await sleep(1000); opened = Boolean(await page.evaluate(openFirst).catch(() => false)); }
       if (opened) await sleep(4000);
-      return Boolean(opened);
+      return opened;
     },
     // The video now playing: an id for not interacting twice, its text and its author.
     async current(page) {
@@ -86,26 +127,35 @@ const DRIVERS = {
       const liked = await page.find((node, view) => attr(node, "data-e2e-state") === "video-player-digged" && inActive(view, node));
       return liked ? "done" : "unconfirmed";
     },
+    // The "+" over the author's avatar. No "+" beside an avatar: already followed, nothing to do.
     async follow(page) {
-      const button = await page.find((node, view) => inActive(view, node) && /follow/i.test(attr(node, "data-e2e") || "") && !/已关注|互相关注/.test(node.children?.map?.((child) => child.nodeValue || "").join("") || ""));
-      if (!button) return "missing";
-      await page.click(button); await sleep(1500);
-      return "done";
+      const found = await page.evaluate(FOLLOW_PLUS).catch(() => null);
+      if (found?.state === "no_plus") return "already";
+      if (found?.state !== "plus") return "missing";
+      await clickAt(page, found.x, found.y); await sleep(1500);
+      const after = await page.evaluate(FOLLOW_PLUS).catch(() => null);
+      return after?.state === "no_plus" ? "done" : "unconfirmed";
     },
     // Opens the comment panel, types like a person (one character at a time), sends with Enter,
     // and looks for the comment in the list: a comment the platform hides is not shown back.
     async comment(page, text, delay) {
-      const icon = await page.find((node, view) => attr(node, "data-e2e") === "feed-comment-icon" && inActive(view, node));
+      const icon = await commentIcon(page);
       if (!icon) return "missing";
       await page.click(icon); await sleep(1500);
-      const box = await page.find((node, view) => view.ancestors(node).some((up) => String(attr(up, "class") || "").includes("comment-input-inner-container")) && attr(node, "contenteditable") === "true");
-      if (!box) { await key(page, "Escape", "Escape", 27); return "missing"; }
+      const editor = () => page.find((node, view) => view.ancestors(node).some((up) => String(attr(up, "class") || "").includes("comment-input-inner-container")) && attr(node, "contenteditable") === "true");
+      let box = await editor();
+      // The editor appears only once its placeholder is clicked (dev PC 2026-11-22).
+      if (!box) {
+        const placeholder = await page.find((node) => (node.children || []).some((child) => child.nodeType === 3 && /^留下你的精彩评论/.test(child.nodeValue.trim())));
+        if (placeholder) { await page.click(placeholder); await sleep(1000); box = await editor(); }
+      }
+      if (!box) { await closeComments(page); return "missing"; }
       await page.click(box);
       for (const char of text) { await page.send("Input.insertText", { text: char }); await sleep(delay()); }
       await key(page, "Enter", "Enter", 13, "\r");
       await sleep(3000);
       const shown = await page.evaluate(`[...document.querySelectorAll('[data-e2e="comment-item"]')].some((item) => item.innerText.includes(${JSON.stringify(text)}))`);
-      await key(page, "Escape", "Escape", 27);
+      await closeComments(page);
       return shown ? "done" : "hidden";
     },
     next: (page) => key(page, "ArrowDown", "ArrowDown", 40)
@@ -118,4 +168,4 @@ function nurtureDriverFor(platform) {
   return driver;
 }
 
-module.exports = { DRIVERS, nurtureDriverFor, BLOCKED };
+module.exports = { DRIVERS, nurtureDriverFor, BLOCKED, FOLLOW_PLUS };

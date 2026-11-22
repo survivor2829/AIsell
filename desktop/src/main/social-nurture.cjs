@@ -203,6 +203,7 @@ function createSocialNurture({ dataDir, accounts, launch = launchBrowser, execut
         control.step = "feed"; await report("NURTURE_ELEMENT_MISSING", "feed");
         throw fail("NURTURE_PAGE_CHANGED", "抖音页面上没找到可以逐条刷的视频，页面可能变了，已自动上报。");
       }
+      if (!fromSearch && !stopped()) await driver.dismissPrompts?.(page);
       // A segment run by hand beyond today's planned ones takes a length from the stage table.
       const plannedMinutes = today.minutes[today.segmentsDone] ?? between(stage.minutes);
       const segmentEnd = now() + plannedMinutes * 60_000;
@@ -245,13 +246,15 @@ function createSocialNurture({ dataDir, accounts, launch = launchBrowser, execut
             const result = kind === "likes" ? await driver.like(page) : kind === "follows" ? await driver.follow(page)
               : await driver.comment(page, plan.comments[Math.floor(random() * plan.comments.length)], () => between([wait.typeMin, wait.typeMax]));
             if (result === "missing") { disabled.add(kind); await report("NURTURE_ELEMENT_MISSING", kind); }
+            // Already following this author: nothing done, nothing counted, the next video may be another's.
+            else if (result === "already") { last = ""; control.step = "watch"; await pause(dwell / 2); if (!stopped() && now() < segmentEnd) await driver.next(page); continue; }
             else if (result === "hidden") {
               today.counts.comments += 1; today.commentsOff = true;
               note(plan, "评论发出后在评论区看不到（可能被平台隐藏），今天不再评论。");
               await report("NURTURE_COMMENT_HIDDEN", "comments");
             } else {
               today.counts[kind] += 1;
-              note(plan, `${KIND_NAMES[kind]}：${video.desc.slice(0, 20) || video.author || "当前视频"}${result === "unconfirmed" ? "（页面没有显示已点赞）" : ""}`);
+              note(plan, `${KIND_NAMES[kind]}：${video.desc.slice(0, 20) || video.author || "当前视频"}${result === "unconfirmed" ? (kind === "follows" ? "（页面没有显示已关注）" : "（页面没有显示已点赞）") : ""}`);
               if (result === "unconfirmed") await report("NURTURE_ACTION_UNCONFIRMED", kind);
             }
             last = kind; save(); emit();
