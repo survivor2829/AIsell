@@ -12,6 +12,12 @@ const BLOCKED = `(() => { const shown = (el) => el.getClientRects().length > 0;
     || /接收短信验证码|拖动滑块|完成验证|安全验证/.test(document.body ? document.body.innerText.slice(0, 4000) : ""); })()`;
 const ACTIVE = '[data-e2e="feed-active-video"]';
 const inActive = (view, node) => view.ancestors(node).some((up) => attr(up, "data-e2e") === "feed-active-video");
+// The video on screen. A search result plays in a layer over the results page and the page can keep
+// another "active" video behind it, hidden; the first one in the document was often that hidden one
+// (field 2026-11-18..20: a like already shown red was reported unconfirmed, and steps went on looking
+// for buttons after the player had closed). Only one that is on screen counts.
+const ON_SCREEN_ACTIVE = `[...document.querySelectorAll('${ACTIVE}')].find((el) => { const r = el.getBoundingClientRect();
+  return r.width > 2 && r.height > 2 && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth; })`;
 
 async function key(page, name, code, keyCode, text) {
   await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: name, code, windowsVirtualKeyCode: keyCode, ...(text ? { text } : {}) });
@@ -38,7 +44,7 @@ const DRIVERS = {
     // The home address now lands on 精选, a grid of covers (2026-10-29). The one-by-one player is
     // 推荐 in the left bar; failing that, the first cover opens the player as well.
     async openFeed(page) {
-      const playing = () => page.evaluate(`Boolean(document.querySelector('${ACTIVE}'))`);
+      const playing = () => page.evaluate(`Boolean(${ON_SCREEN_ACTIVE})`);
       if (await playing()) return true;
       const recommend = await page.find((node) => node.localName !== "script" && (node.children || []).some((child) => child.nodeType === 3 && child.nodeValue.trim() === "推荐")
         && !(node.localName === "span" && attr(node, "data-key")));
@@ -66,7 +72,7 @@ const DRIVERS = {
     },
     // The video now playing: an id for not interacting twice, its text and its author.
     async current(page) {
-      return await page.evaluate(`(() => { const active = document.querySelector('${ACTIVE}'); if (!active) return null;
+      return await page.evaluate(`(() => { const active = ${ON_SCREEN_ACTIVE}; if (!active) return null;
         const desc = (active.querySelector('[data-e2e="video-desc"]') || {}).innerText || "";
         const author = ((active.querySelector(".account-name-text") || {}).innerText || "").replace(/^@/, "");
         const id = active.getAttribute("data-e2e-vid") || (location.href.match(/(?:modal_id=|video\\/)(\\d+)/) || [])[1] || "";
@@ -76,7 +82,9 @@ const DRIVERS = {
       const button = await page.find((node, view) => attr(node, "data-e2e-state") === "video-player-no-digged" && inActive(view, node));
       if (!button) return "missing";
       await page.click(button); await sleep(1500);
-      return await page.evaluate(`Boolean(document.querySelector('${ACTIVE} [data-e2e-state="video-player-digged"]'))`) ? "done" : "unconfirmed";
+      // Read back the way the button was found: a liked button on screen, in the video on screen.
+      const liked = await page.find((node, view) => attr(node, "data-e2e-state") === "video-player-digged" && inActive(view, node));
+      return liked ? "done" : "unconfirmed";
     },
     async follow(page) {
       const button = await page.find((node, view) => inActive(view, node) && /follow/i.test(attr(node, "data-e2e") || "") && !/已关注|互相关注/.test(node.children?.map?.((child) => child.nodeValue || "").join("") || ""));

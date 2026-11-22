@@ -80,6 +80,7 @@ const checks = [
   "src/main/geo-workbench.self_check.cjs",
   "src/main/geo-publish-drivers.self_check.cjs",
   "src/main/social-nurture.self_check.cjs",
+  "src/main/social-nurture-drivers.self_check.cjs",
   "src/main/auto-reply-ipc.self_check.cjs",
   "src/main/ai-draft.self_check.cjs",
   "src/main/deepseek-api.self_check.cjs",
