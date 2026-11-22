@@ -1069,6 +1069,17 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       onPause: disarmRealSend || undefined,
       passport: taskPassportStore
     });
+    // A blank-page desktop icon (cfe8221b, 2026-11-21): our own shortcuts are pointed back at this program.
+    // Even a repair goes to the field reports (only error-level entries do): it is how we learn the cause.
+    if (app.isPackaged && process.platform === "win32" && global.__xiaoxiComponents?.mode === "application") setTimeout(() => {
+      try {
+        const found = require("./shortcut-repair.cjs").repairShortcuts({ shell, executable: process.execPath,
+          folders: [app.getPath("desktop"), path.join(app.getPath("appData"), "Microsoft", "Windows", "Start Menu", "Programs")] });
+        for (const item of found.filter((row) => row.state !== "ok")) {
+          logger.event("app", "shortcut_checked", item, { level: "error", code: `shortcut_${item.state}` });
+        }
+      } catch { /* The icon is a convenience; the app runs without it. */ }
+    }, 15_000).unref?.();
     workflowController = registerWechatWorkflowIpc({
       ...runtime,
       logger,
