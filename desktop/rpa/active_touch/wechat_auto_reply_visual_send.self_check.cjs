@@ -39,9 +39,9 @@ const postClickVerification = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.slice(
   WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("function Write-VisualSendDraft")
 );
 assert.doesNotMatch(postClickVerification, /AtomicMouseClick|Write-VisualSendDraft|Clear-VisualSendDraft|Update-VisualSendInputLease/u, "receipt observation cannot resend, clear a draft or reacquire a lost input lease");
-assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$script:VisualSendOcrDownscale = if \(\[double\]\$dpi -ge 240\.0\) \{ 2 \} else \{ 1 \}/u, "only extreme-DPI windows should use adaptive OCR downscaling");
+assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$script:VisualSendOcrFactor = Get-MomentsTextOcrFactor \(\[double\]\$dpi \/ 96\.0\) \(\[double\]\$frame\.width\) \(\[double\]\$frame\.height\)/u, "the send calibrates OCR to the window exactly as the scan does");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Test-VisualSendIncoming[\s\S]*height = \[double\]\(\$frame\.height \* 0\.69\)/u, "incoming verification must include messages immediately above the composer");
-assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendLatestIncomingEvidence[\s\S]*Get-MomentsDownscaledOcrObservation \$frame @\{ left = 0\.0; top = 0\.0; width = \[double\]\$frame\.width; height = \[double\]\$frame\.height \} \$script:VisualSendOcrDownscale/u, "the final incoming guard must reuse full-frame OCR geometry with adaptive high-DPI downscaling");
+assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendLatestIncomingEvidence[\s\S]*Get-MomentsResampledOcrObservation \$frame @\{ left = 0\.0; top = 0\.0; width = \[double\]\$frame\.width; height = \[double\]\$frame\.height \} \$script:VisualSendOcrFactor/u, "the final incoming guard must reuse full-frame OCR geometry at the scan's calibration");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendIncomingEvidenceSignature[\s\S]*visual-message-semantic-v1[\s\S]*Normalize-VisualSendText[\s\S]*\$role[\s\S]*Get-VisualSendSha256/u, "the final guard must reproduce the scanner's semantic bubble identity");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendMessageBlocks[\s\S]*Get-VisualSendMessageRows[\s\S]*Test-VisualSendMessageRowsSameBubble/u, "the final guard must aggregate every OCR line from the latest bubble before comparing it with scanner evidence");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendLatestIncomingEvidence[\s\S]*ocr_unresolved[\s\S]*proven_different/u, "the final guard must distinguish unresolved OCR from a proven different customer occurrence");
@@ -417,7 +417,7 @@ function Get-MomentsOcrObservation($frame, $rect) {
   }
   return @{ ok = $true; lines = @($lines.ToArray()) }
 }
-function Get-MomentsDownscaledOcrObservation($frame, $rect, [int]$factor = 1) {
+function Get-MomentsResampledOcrObservation($frame, $rect, [double]$factor = 1.0) {
   return Get-MomentsOcrObservation $frame $rect
 }
 function Get-VisualSendGreenRatio($frame, [int]$left, [int]$top, [int]$right, [int]$bottom) {

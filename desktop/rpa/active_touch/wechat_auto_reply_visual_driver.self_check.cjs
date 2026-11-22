@@ -44,7 +44,7 @@ const autoReplyEntry = AUTO_REPLY_VISUAL_SCRIPT.slice(AUTO_REPLY_VISUAL_SCRIPT.i
 assert.doesNotMatch(autoReplyEntry, /Get-MomentsRenderPaneEvidence/u, "auto reply must not require the Moments-only MMUIRenderSubWindowHW child pane");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Get-AutoReplyVisualFrame \$hWnd \$windowRect \$expectedProcessId/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Get-MomentsOcrObservation \$frame/u);
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$ocrDownscale = if \(\[double\]\$script:AutoReplyVisualScale -ge 2\.5\) \{ 2 \} else \{ 1 \}[\s\S]*Get-MomentsDownscaledOcrObservation/u, "300% DPI scans should reduce OCR pixels while normal desktop and laptop scaling remains unchanged");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$script:AutoReplyVisualOcrFactor = Get-MomentsTextOcrFactor \(\[double\]\$script:AutoReplyVisualScale\) \(\[double\]\$frame\.width\) \(\[double\]\$frame\.height\)\n\s*\$ocr = Get-MomentsResampledOcrObservation \$frame [^\n]*\$script:AutoReplyVisualOcrFactor/u, "the scan calibrates OCR to the window's text size");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualCurrentConversation/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualAnyHeader/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualUnreadBadges/u);
@@ -2477,7 +2477,9 @@ const minimizedGuard = AUTO_REPLY_VISUAL_SCRIPT.slice(
   AUTO_REPLY_VISUAL_SCRIPT.indexOf("$nativeWindowRect = New-Object Win32WechatAutoReplyVisual+RECT")
 );
 const minimizedObservation = runPowerShellJson(`
-Add-Type -TypeDefinition 'public static class Win32WechatAutoReplyVisual { public static bool IsIconic(System.IntPtr h) { return true; } }'
+# The class that really declares IsIconic (the guard used to call it on Win32WechatAutoReplyVisual, which
+# has none, so a minimized window was never caught; dev PC 2026-11-22).
+Add-Type -TypeDefinition 'public static class Win32WechatMomentsVisualReadOnly { public static bool IsIconic(System.IntPtr h) { return true; } }'
 function Write-AutoReplyVisualResult($value) { $value | ConvertTo-Json -Compress; exit }
 $mode = "observe"; $expectedPid = 141; $expectedHWnd = 142
 $resolvedWindow = @{ process = @{ Id = 141 }; hWnd = 142 }
@@ -2486,6 +2488,7 @@ ${minimizedGuard}
 `);
 assert.equal(minimizedObservation.reason, "foreground_required", "a minimized window must leave observe mode");
 assert.equal(minimizedObservation.trigger, "window_minimized");
+assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /[Win32WechatAutoReplyVisual]::IsIconic/u, "IsIconic is not declared on Win32WechatAutoReplyVisual");
 const observeEnvironments = [];
 const observeDriver = createWechatVisualAutoReplyDriver((_script, env) => {
   observeEnvironments.push(env);

@@ -1,4 +1,5 @@
 const { WECHAT_SCREEN_PIXELS_POWERSHELL } = require("./wechat_screen_pixels.cjs");
+const { WECHAT_SESSION_LIST_EDGE_POWERSHELL } = require("./wechat_session_list_edge.cjs");
 const { createHash } = require("node:crypto");
 const { MOMENTS_VISUAL_READONLY_POWERSHELL } = require("./moments_visual_probe.dev.cjs");
 const { runPowerShellAsync } = require("./wechat_window_driver.cjs");
@@ -8,6 +9,7 @@ $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName UIAutomationClient
 
 ${MOMENTS_VISUAL_READONLY_POWERSHELL}
+${WECHAT_SESSION_LIST_EDGE_POWERSHELL}
 
 $script:AutoReplyVisualScale = 1.0
 $script:AutoReplyVisualWindow = $null
@@ -803,12 +805,15 @@ function Get-AutoReplyVisualBoundaryText($boundaries, [string]$conversation, [st
   return ""
 }
 
-function Get-AutoReplyVisualSidebarRight([double]$windowWidth, [double]$dpi) {
-  # UI Automation and capture coordinates are physical pixels, while WeChat's
-  # sidebar is about 300 device-independent pixels. Scale the boundary using
-  # the actual target-window DPI so 100%, 125% and 150% displays agree.
+function Get-AutoReplyVisualSidebarRight([double]$windowWidth, [double]$dpi, $frame = $null) {
+  # Where the chat list ends, measured from the captured frame (wechat_session_list_edge.cjs). Without a
+  # frame, or when nothing long enough lines up (a popup over the list), the old estimate: about 300
+  # device-independent pixels at the window's DPI.
   if ($dpi -lt 72 -or $dpi -gt 480) { $dpi = 96.0 }
   $scale = $dpi / 96.0
+  $measured = Get-XiaoxiSessionListRight $frame $scale
+  if ($measured -gt 0) { $script:AutoReplyVisualSidebarSource = "measured"; return [double]$measured }
+  $script:AutoReplyVisualSidebarSource = "estimated"
   $expected = 300.0 * $scale
   $compactLimit = [Math]::Max(230.0 * $scale, $windowWidth * 0.45)
   return [Math]::Min($expected, $compactLimit)
@@ -1638,8 +1643,8 @@ function Get-AutoReplyVisualObservation([IntPtr]$hWnd, [int]$expectedProcessId, 
   if (-not $frame.ok) { return @{ ok = $false; reason = [string]$frame.reason } }
   $script:AutoReplyVisualCaptureMethod = [string]$frame.captureMethod
   try {
-    $ocrDownscale = if ([double]$script:AutoReplyVisualScale -ge 2.5) { 2 } else { 1 }
-    $ocr = Get-MomentsDownscaledOcrObservation $frame @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height } $ocrDownscale
+    $script:AutoReplyVisualOcrFactor = Get-MomentsTextOcrFactor ([double]$script:AutoReplyVisualScale) ([double]$frame.width) ([double]$frame.height)
+    $ocr = Get-MomentsResampledOcrObservation $frame @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height } $script:AutoReplyVisualOcrFactor
     if (-not $ocr.ok) {
       Close-MomentsVisualFrame $frame
       return @{ ok = $false; reason = [string]$ocr.reason }
@@ -1744,7 +1749,7 @@ $process = $resolvedWindow.process
 $hWnd = [IntPtr]$resolvedWindow.hWnd
 if ($expectedPid -gt 0 -and $expectedPid -ne [int]$process.Id) { Write-AutoReplyVisualResult @{ ok = $false; reason = "wechat_process_changed"; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
 if ($expectedHWnd -gt 0 -and $expectedHWnd -ne [int64]$hWnd) { Write-AutoReplyVisualResult @{ ok = $false; reason = "wechat_window_changed"; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
-if ($mode -ceq "observe" -and [Win32WechatAutoReplyVisual]::IsIconic($hWnd)) {
+if ($mode -ceq "observe" -and [Win32WechatMomentsVisualReadOnly]::IsIconic($hWnd)) {
   Write-AutoReplyVisualResult @{ ok = $false; reason = "foreground_required"; trigger = "window_minimized"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
 }
 $nativeWindowRect = New-Object Win32WechatAutoReplyVisual+RECT
@@ -1781,6 +1786,9 @@ $allowInitialFocusFallback = $mode -eq "verify" -or $mode -eq "recover" -or
 $observation = Get-AutoReplyVisualObservation $hWnd ([int]$process.Id) $windowRect $allowInitialFocusFallback
 if (-not $observation.ok) { Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$observation.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
 $frame = $observation.frame
+$sidebarRight = Get-AutoReplyVisualSidebarRight ([double]$windowRect.Width) $windowDpi $frame
+$script:AutoReplyVisualWindow.sidebarRight = [int][Math]::Round($sidebarRight)
+$script:AutoReplyVisualWindow.sidebarSource = [string]$script:AutoReplyVisualSidebarSource
 try {
   $sidebar = Get-AutoReplyVisualSidebarRows $frame $observation.lines $allowedSet $sidebarRight
   if (-not $sidebar.ok) { Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$sidebar.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd } }

@@ -22,7 +22,7 @@ try {
     assert(!ids.has(row.id), `duplicate rule ${row.id}`); ids.add(row.id);
     assert(["environment", "recoverable", "blocker"].includes(row.classification), `unclassified rule ${row.id}`);
     const source = fs.readFileSync(path.resolve(__dirname, '../..', row.file.replace(/^desktop\//, '')), 'utf8');
-    const sourceMarker = reasonOnlySourceRules.has(row.id) || row.id.startsWith('image-literal.')
+    const sourceMarker = reasonOnlySourceRules.has(row.id) || row.id.startsWith('image-literal.') || row.id.startsWith('reason-literal.')
       ? row.reason : row.dynamic ? row.condition : row.id;
     assert(source.includes(`"${sourceMarker}"`), `missing source ${row.id}`);
   }
