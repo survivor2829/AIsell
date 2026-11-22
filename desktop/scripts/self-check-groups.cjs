@@ -38,6 +38,7 @@ const checks = [
   "rpa/active_touch/wechat_render_surface.self_check.cjs",
   "rpa/active_touch/self_check.cjs",
   "rpa/active_touch/moments_visual.self_check.cjs",
+  "rpa/active_touch/moments_menu_dots.self_check.cjs",
   "rpa/active_touch/moments_visual_geometry.self_check.cjs",
   "rpa/active_touch/moments_avatar_hash.self_check.cjs",
   "rpa/active_touch/moments_navigation.self_check.cjs",

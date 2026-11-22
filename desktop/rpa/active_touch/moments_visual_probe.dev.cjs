@@ -541,6 +541,10 @@ function Find-MomentsMenuDotsDetailed($frame, $viewportBounds = $null, $avatarCa
   $components = [Win32WechatMomentsVisualReadOnly]::MenuComponents($frame.bytes, $frame.stride, $xStart, $yStart, $xEnd, $yEnd, $bands)
   $ordered = @($components | Sort-Object { [double]$_.centerY }, { [double]$_.centerX })
   $menus = New-Object System.Collections.Generic.List[object]
+  # A dot already in an accepted button belongs to that button. At 200% one 「··」 drew three
+  # components, paired as (1,2) and (2,3) with centres 6-7 px apart, just past the 6 px rule below:
+  # two menus for one button, so neither proved stable and the post read as changed (dev PC 2026-11-22).
+  $usedComponents = New-Object System.Collections.Generic.HashSet[int]
   $rawCandidateCount = 0
   $rejectedWhitespaceCount = 0
   $rejectedAvatarLaneCount = 0
@@ -578,11 +582,12 @@ function Find-MomentsMenuDotsDetailed($frame, $viewportBounds = $null, $avatarCa
         })
         if ($laneMatches.Count -eq 0) { $rejectedAvatarLaneCount += 1; continue }
       }
-      $duplicate = $false
+      $duplicate = $usedComponents.Contains($firstIndex) -or $usedComponents.Contains($secondIndex)
       foreach ($existing in $menus) {
         if ([Math]::Abs($existing.centerX - $centerX) -le 6 -and [Math]::Abs($existing.centerY - $centerY) -le 10) { $duplicate = $true; break }
       }
       if (-not $duplicate) {
+        [void]$usedComponents.Add($firstIndex); [void]$usedComponents.Add($secondIndex)
         [void]$menus.Add(@{
           centerX = $centerX
           centerY = $centerY
