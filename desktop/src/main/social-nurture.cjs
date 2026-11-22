@@ -210,6 +210,9 @@ function createSocialNurture({ dataDir, accounts, launch = launchBrowser, execut
       const segmentsLeft = () => today.segments - today.segmentsDone - 1;
       const meanDwell = (stage.dwellSeconds[0] + stage.dwellSeconds[1]) / 2 * 1000, meanSegment = (stage.minutes[0] + stage.minutes[1]) / 2 * 60_000;
       const disabled = new Set();
+      // Authors in a row the follow "+" was absent beside: past a handful it is the button that went
+      // missing (Douyin redrew it), not that every one is already followed (review 2026-11-22).
+      const alreadyAuthors = new Set();
       let last = "";
       control.step = "watch";
       control.phase = "watching"; emit();
@@ -247,12 +250,17 @@ function createSocialNurture({ dataDir, accounts, launch = launchBrowser, execut
               : await driver.comment(page, plan.comments[Math.floor(random() * plan.comments.length)], () => between([wait.typeMin, wait.typeMax]));
             if (result === "missing") { disabled.add(kind); await report("NURTURE_ELEMENT_MISSING", kind); }
             // Already following this author: nothing done, nothing counted, the next video may be another's.
-            else if (result === "already") { last = ""; control.step = "watch"; await pause(dwell / 2); if (!stopped() && now() < segmentEnd) await driver.next(page); continue; }
+            else if (result === "already") {
+              alreadyAuthors.add(video.author || video.id);
+              if (alreadyAuthors.size >= 5) { disabled.add(kind); await report("NURTURE_ELEMENT_MISSING", kind); }
+              last = ""; control.step = "watch"; await pause(dwell / 2); if (!stopped() && now() < segmentEnd) await driver.next(page); continue;
+            }
             else if (result === "hidden") {
               today.counts.comments += 1; today.commentsOff = true;
               note(plan, "评论发出后在评论区看不到（可能被平台隐藏），今天不再评论。");
               await report("NURTURE_COMMENT_HIDDEN", "comments");
             } else {
+              if (kind === "follows") alreadyAuthors.clear();
               today.counts[kind] += 1;
               note(plan, `${KIND_NAMES[kind]}：${video.desc.slice(0, 20) || video.author || "当前视频"}${result === "unconfirmed" ? (kind === "follows" ? "（页面没有显示已关注）" : "（页面没有显示已点赞）") : ""}`);
               if (result === "unconfirmed") await report("NURTURE_ACTION_UNCONFIRMED", kind);

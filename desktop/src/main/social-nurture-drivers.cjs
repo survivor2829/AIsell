@@ -101,13 +101,16 @@ const DRIVERS = {
     // them, up to 45 seconds (24 s seen), instead of a fixed few: the tab first, then a result to open.
     async openFirstResult(page, { waitMs = 45_000 } = {}) {
       const deadline = Date.now() + waitMs;
+      // The tab gets a part of the wait: a page without it (already on videos, or laid out anew) still has
+      // results to open, and they are tried at least once (review 2026-11-22).
+      const tabDeadline = Date.now() + Math.min(15_000, waitMs / 3);
       let tab = null;
-      while (!tab && Date.now() < deadline) { tab = await page.find((node) => attr(node, "data-key") === "video"); if (!tab) await sleep(1000); }
+      while (!tab && Date.now() < tabDeadline) { tab = await page.find((node) => attr(node, "data-key") === "video"); if (!tab) await sleep(1000); }
       if (tab) await page.click(tab);
       const openFirst = `(() => { const link = [...document.querySelectorAll('ul[data-e2e="scroll-list"] li a, .search-result-card a')].find((el) => el.getClientRects().length);
         if (!link) return false; link.click(); return true; })()`;
       let opened = false;
-      while (!opened && Date.now() < deadline) { await sleep(1000); opened = Boolean(await page.evaluate(openFirst).catch(() => false)); }
+      do { await sleep(1000); opened = Boolean(await page.evaluate(openFirst).catch(() => false)); } while (!opened && Date.now() < deadline);
       if (opened) await sleep(4000);
       return opened;
     },

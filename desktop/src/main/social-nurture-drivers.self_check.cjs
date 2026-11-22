@@ -67,6 +67,9 @@ const offScreen = element("333", { width: 600, height: 760, top: -900, left: 340
   assert.equal(await douyin.openFirstResult(slow.page, { waitMs: 10_000 }), true, "results that come late are waited for");
   assert.equal(slow.clicks(), 1, "the 视频 tab was clicked once it showed");
   assert.equal(await douyin.openFirstResult(slowResults(0, 99).page, { waitMs: 2_500 }), false, "results that never come: given up at the limit");
+  const noTab = slowResults(999, 1);
+  assert.equal(await douyin.openFirstResult(noTab.page, { waitMs: 6_000 }), true, "no 视频 tab: the results on screen are still opened");
+  assert.equal(noTab.clicks(), 0);
 
   const source = fs.readFileSync(path.join(__dirname, "social-nurture-drivers.cjs"), "utf8");
   assert.doesNotMatch(source, /key\(page, "Escape"/u, "Escape closes the whole player on a search result: never pressed");
