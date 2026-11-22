@@ -963,15 +963,17 @@ function createTouchWorkflow(options = {}) {
               persist();
             }
           });
-          const captureFile = String(partOutcome?.diagnostics?.search_capture_file || "");
+          // The dropdown the search could not read, or the window's top strip when the opened chat's
+          // title could not be confirmed (AI title check included): the picture for the field report.
+          const captureFile = String(partOutcome?.diagnostics?.search_capture_file || partOutcome?.diagnostics?.title_capture_file || "");
           if (captureFile) {
             const resolved = path.resolve(captureFile);
             if (path.dirname(resolved) === path.resolve(os.tmpdir())
-              && /^xiaoxi-search-capture-[a-f0-9]{32}\.png$/u.test(path.basename(resolved))) {
+              && /^xiaoxi-(?:search|title)-capture-[a-f0-9]{32}\.png$/u.test(path.basename(resolved))) {
               try { searchCaptureBytes = fs.readFileSync(resolved); } catch { searchCaptureBytes = null; }
               try { fs.unlinkSync(resolved); } catch {}
             }
-            const { search_capture_file: _captureFile, ...safeDiagnostics } = partOutcome.diagnostics;
+            const { search_capture_file: _captureFile, title_capture_file: _titleFile, ...safeDiagnostics } = partOutcome.diagnostics;
             partOutcome = { ...partOutcome, diagnostics: safeDiagnostics };
           }
           if (partOutcome?.ok === true && partOutcome?.state?.real_send_status === "sent_verified") lastSentWindow = sentWindow(executionDir) || lastSentWindow;

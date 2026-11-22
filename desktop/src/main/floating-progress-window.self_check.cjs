@@ -18,4 +18,29 @@ assert.equal(spriteGround({ x: 0, y: 0, width: 1920, height: 1032 }), 1032 - SPR
 assert.equal(spriteGround({ bounds: { x: 0, y: 0, width: 800, height: 300 }, workArea: { x: 0, y: 0, width: 800, height: 300 } }), 0);
 assert.deepEqual(spritePosition(hidden, { x: 5000 }), { x: 1920 - SPRITE_WINDOW.width - SPRITE_WINDOW.rightGap, y: spriteGround(hidden) }, "a saved place off this screen is not used");
 assert.equal(spritePosition(withTaskbar, { x: 300 }).x, 300);
+// During a task 小玺 lets the pointer through where WeChat is put: the work area's top-left 1120×760, or the
+// whole work area on a small screen (a 225% laptop, 1120×720 logical: WeChat filled it, 小玺 stood on its input box).
+{
+  const { insideWechatAutomationArea: inside } = require("./floating-progress-window.cjs");
+  const wechat = { width: 1120, height: 760 };
+  const big = [{ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }], small = [{ workArea: { x: 0, y: 0, width: 1120, height: 720 } }];
+  assert.equal(inside({ x: 728, y: 684 }, small, wechat), true, "the input box of a full-screen WeChat (5a711219)");
+  assert.equal(inside({ x: 1500, y: 900 }, big, wechat), false, "beside WeChat on a big screen 小玺 stays clickable");
+  assert.equal(inside({ x: 1119, y: 759 }, big, wechat), true);
+  assert.equal(inside({ x: 1120, y: 100 }, big, wechat), false);
+  assert.equal(inside({ x: 2000, y: 100 }, [...big, { workArea: { x: 1920, y: 0, width: 1920, height: 1040 } }], wechat), true, "WeChat may be on another screen");
+  assert.equal(inside({ x: 10, y: 10 }, [], wechat), false);
+}
+// 小玺 tucks away during a task only where it covers WeChat (90bd8730: drawn over the send button).
+{
+  const { spriteCoversWechat: covers } = require("./floating-progress-window.cjs");
+  const wechat = { width: 1120, height: 760 };
+  const small = { x: 0, y: 0, width: 1120, height: 720 }, big = { x: 0, y: 0, width: 1920, height: 1040 };
+  assert.equal(covers({ x: 667, y: 460 }, null, false, small, wechat), true, "the 225% laptop: 小玺 stood on the send button");
+  assert.equal(covers({ x: 1514, y: 780 }, null, false, big, wechat), false, "beside WeChat on a big screen: left where it is");
+  assert.equal(covers({ x: 1000, y: 780 }, null, false, big, wechat), false, "below WeChat's 760: free");
+  assert.equal(covers({ x: 1000, y: 700 }, null, false, big, wechat), true);
+  assert.equal(covers({ x: -100, y: 460 }, "left", false, small, wechat), false, "tucked: a strip, no bubble");
+  assert.equal(covers({ x: 0, y: 460 }, "left", true, small, wechat), true, "leaning out over WeChat");
+}
 console.log("sprite floor self-check passed");

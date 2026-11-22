@@ -5,6 +5,8 @@ const {
 } = require("./wechat_window_driver.cjs");
 const { WECHAT_CLIPBOARD_POWERSHELL } = require("./wechat_clipboard.cjs");
 const { WECHAT_HEADER_TITLE_POWERSHELL, titleNearNamesEnvironment } = require("./wechat_header_title.cjs");
+const { WECHAT_CHAT_EDGE_POWERSHELL } = require("./wechat_chat_edge.cjs");
+const { HEADER_BAND_POWERSHELL, headerBandEnvironment } = require("./wechat_title_strip.cjs");
 
 const WECHAT_SEND_BUTTON_OFFSETS = { right: 64, bottom: 42 };
 const CLIPBOARD_TEXT_RETRY_POWERSHELL = `
@@ -150,8 +152,20 @@ function Get-ConversationObservation([IntPtr]$hWnd, [string]$expectedTitle, [str
     $headerDpi = [Win32WechatSendMessage]::GetDpiForWindow($hWnd)
     if ($headerDpi -le 0) { $headerDpi = 96 }
     $captureTop = [int]($freshRect.Top + ${WECHAT_HEADER_CAPTURE.top} * $headerDpi / 96.0)
-    $captureRight = [int]($freshRect.Left + ($freshRect.Width * 0.78))
     $captureBottom = [int][Math]::Min($freshRect.Bottom - 1, $freshRect.Top + ${WECHAT_HEADER_CAPTURE.bottom} * $headerDpi / 96.0)
+${WECHAT_CHAT_EDGE_POWERSHELL}
+    # Up to 78% of the window, or where WeChat's chat ends if its 搜一搜 side panel is open (wechat_chat_edge.cjs).
+    $captureRight = [XiaoxiChatEdge]::Right($hWnd, [uint32]$matched.pid, [int]($freshRect.Left + ($freshRect.Width * 0.78)), [int](($captureTop + $captureBottom) / 2), $captureLeft + 120)
+${HEADER_BAND_POWERSHELL}
+    # A chat the AI title check confirmed is fingerprinted where its title is (wechat_title_strip.cjs);
+    # without that place there is no fingerprint, and the chat cannot be re-verified.
+    if ([string]$expectedConversationMode -ceq "vision_title") {
+      $band = Get-XiaoxiHeaderBand $freshRect ([double]$headerDpi)
+      if ($band -eq $null) { $captureRight = $captureLeft } else {
+        $captureLeft = $band.left; $captureTop = $band.top; $captureBottom = $band.bottom
+        $captureRight = [XiaoxiChatEdge]::Right($hWnd, [uint32]$matched.pid, $band.right, [int](($band.top + $band.bottom) / 2), $band.left + 120)
+      }
+    }
     $captureWidth = $captureRight - $captureLeft
     $captureHeight = $captureBottom - $captureTop
     if ($captureWidth -ge 120 -and $captureHeight -ge 40) {
@@ -174,7 +188,7 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
   # identify a contact by itself. Only a visible matching title or an upstream
   # frozen exact-WeChat-ID search transaction may bind the conversation.
   $titleOcrVerified = -not $titleVisible -and $verificationMode -eq "conversation_title" -and (Test-WechatHeaderTitle $freshRect $headerDpi $expectedTitle)
-  $visualFallback = -not $titleVisible -and ($verificationMode -eq "exact_wechat_id_search" -or $titleOcrVerified)
+  $visualFallback = -not $titleVisible -and (@("exact_wechat_id_search", "vision_title") -contains $verificationMode -or $titleOcrVerified)
   $visualToken = $(if ([string]::IsNullOrWhiteSpace($visualHash)) { "" } else { "conversation:v2:$($matched.pid):$($matched.hWnd):visual:$visualHash" })
   $verified = (-not [string]::IsNullOrWhiteSpace($titleToken)) -or ($visualFallback -and -not [string]::IsNullOrWhiteSpace($visualToken))
   return @{
@@ -224,7 +238,7 @@ function Get-ComposerObservation([System.Windows.Automation.AutomationElement]$f
     renderSurfaceOwnsComposer = $renderSurfaceOwnsComposer
     verificationMode = $verificationMode
   }
-  $visualConversationMode = @("visual_header", "exact_wechat_id_search") -contains $verificationMode
+  $visualConversationMode = @("visual_header", "exact_wechat_id_search", "vision_title") -contains $verificationMode
   if ($visualConversationMode) {
     if ($pointProcessId -eq [uint32]$matched.pid -and ($renderChildClass -or $wechatQtRootClass) -and $renderSurfaceOwnsComposer) {
       return @{
@@ -647,8 +661,18 @@ try {
   $headerDpi = [Win32WechatConversationObservation]::GetDpiForWindow($expectedHWnd)
   if ($headerDpi -le 0) { $headerDpi = 96 }
   $captureTop = [int]($windowRect.Top + ${WECHAT_HEADER_CAPTURE.top} * $headerDpi / 96.0)
-  $captureRight = [int]($windowRect.Left + ($windowRect.Width * 0.78))
   $captureBottom = [int][Math]::Min($windowRect.Bottom - 1, $windowRect.Top + ${WECHAT_HEADER_CAPTURE.bottom} * $headerDpi / 96.0)
+${WECHAT_CHAT_EDGE_POWERSHELL}
+  # Up to 78% of the window, or where WeChat's chat ends if its 搜一搜 side panel is open (wechat_chat_edge.cjs).
+  $captureRight = [XiaoxiChatEdge]::Right($expectedHWnd, [uint32]$process.Id, [int]($windowRect.Left + ($windowRect.Width * 0.78)), [int](($captureTop + $captureBottom) / 2), $captureLeft + 120)
+${HEADER_BAND_POWERSHELL}
+  if ([string]$verificationMode -ceq "vision_title") {
+    $band = Get-XiaoxiHeaderBand $windowRect ([double]$headerDpi)
+    if ($band -eq $null) { $captureRight = $captureLeft } else {
+      $captureLeft = $band.left; $captureTop = $band.top; $captureBottom = $band.bottom
+      $captureRight = [XiaoxiChatEdge]::Right($expectedHWnd, [uint32]$process.Id, $band.right, [int](($band.top + $band.bottom) / 2), $band.left + 120)
+    }
+  }
   $captureWidth = $captureRight - $captureLeft
   $captureHeight = $captureBottom - $captureTop
   if ($captureWidth -ge 120 -and $captureHeight -ge 40) {
@@ -667,7 +691,7 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
   }
 } catch { $visualHash = "" }
 $titleOcrVerified = -not $titleVisible -and $verificationMode -eq "conversation_title" -and (Test-WechatHeaderTitle $windowRect $headerDpi $expectedConversation)
-$visualFallback = -not $titleVisible -and ($verificationMode -eq "exact_wechat_id_search" -or $titleOcrVerified)
+$visualFallback = -not $titleVisible -and (@("exact_wechat_id_search", "vision_title") -contains $verificationMode -or $titleOcrVerified)
 $visualToken = $(if ([string]::IsNullOrWhiteSpace($visualHash)) { "" } else { "conversation:v2:$($process.Id):$([int64]$expectedHWnd):visual:$visualHash" })
 $verified = (-not [string]::IsNullOrWhiteSpace($titleToken)) -or ($visualFallback -and -not [string]::IsNullOrWhiteSpace($visualToken))
 $windowText = New-Object System.Text.StringBuilder 512
@@ -693,6 +717,7 @@ function observationEnvironment(expectedTitle, context = {}) {
     XIAOXI_EXPECTED_HWND: String(context.expectedHWnd ?? context.hWnd ?? ""),
     XIAOXI_EXPECTED_CONVERSATION: String(expectedTitle ?? ""),
     XIAOXI_EXPECTED_CONVERSATION_MODE: String(context.verificationMode ?? "conversation_title"),
+    XIAOXI_HEADER_BAND: headerBandEnvironment(context.titleBand),
     XIAOXI_TITLE_NEAR_NAMES: titleNearNamesEnvironment(context.titleNearNames)
   };
 }
@@ -722,6 +747,7 @@ function sendMessageEnvironment(context = {}) {
     XIAOXI_EXPECTED_HWND: String(context.hWnd ?? ""),
     XIAOXI_EXPECTED_CONVERSATION: String(context.expectedConversation ?? ""),
     XIAOXI_EXPECTED_CONVERSATION_MODE: String(context.expectedConversationMode ?? "conversation_title"),
+    XIAOXI_HEADER_BAND: headerBandEnvironment(context.titleBand),
     XIAOXI_EXPECTED_CONVERSATION_TOKEN: String(context.expectedConversationToken ?? ""),
     XIAOXI_EXPECTED_MESSAGE: String(context.expectedMessage ?? ""),
     XIAOXI_EXPECTED_INCOMING_MESSAGE: String(context.expectedIncomingMessage ?? ""),
@@ -863,8 +889,10 @@ function verifyLoggedInWechatAccountAsync(expectedAccountId, wechatRoot = "") {
 
 function verifyWechatCurrentConversation(expectedTitle, context = {}) {
   const expectedWindow = { pid: context.expectedPid, hWnd: context.expectedHWnd, titleNearNames: context.titleNearNames };
-  const verificationMode = context.allowExactSearchFallback === true ? "exact_wechat_id_search" : "conversation_title";
-  const observation = observeWechatConversation(expectedTitle, { ...expectedWindow, verificationMode });
+  // A chat proven when it was opened (exact 微信号 search, AI title check) keeps its mode: only its header must stay the same.
+  const verificationMode = context.allowExactSearchFallback !== true ? "conversation_title"
+    : context.provenMode === "vision_title" ? "vision_title" : "exact_wechat_id_search";
+  const observation = observeWechatConversation(expectedTitle, { ...expectedWindow, verificationMode, titleBand: context.titleBand });
   if (!observation.ok || !String(observation.conversationToken ?? "").trim()) return observation;
   const result = {
     ...observation,
@@ -890,8 +918,10 @@ function verifyWechatCurrentConversation(expectedTitle, context = {}) {
 
 async function verifyWechatCurrentConversationAsync(expectedTitle, context = {}) {
   const expectedWindow = { pid: context.expectedPid, hWnd: context.expectedHWnd, titleNearNames: context.titleNearNames };
-  const verificationMode = context.allowExactSearchFallback === true ? "exact_wechat_id_search" : "conversation_title";
-  const observation = await observeWechatConversationAsync(expectedTitle, { ...expectedWindow, verificationMode });
+  // A chat proven when it was opened (exact 微信号 search, AI title check) keeps its mode: only its header must stay the same.
+  const verificationMode = context.allowExactSearchFallback !== true ? "conversation_title"
+    : context.provenMode === "vision_title" ? "vision_title" : "exact_wechat_id_search";
+  const observation = await observeWechatConversationAsync(expectedTitle, { ...expectedWindow, verificationMode, titleBand: context.titleBand });
   if (!observation.ok || !String(observation.conversationToken ?? "").trim()) return observation;
   const result = {
     ...observation,

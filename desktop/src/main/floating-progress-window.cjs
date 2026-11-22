@@ -72,8 +72,27 @@ function spriteWalkRange(workArea, currentX) {
   const area = spriteArea(workArea);
   return { min: Math.min(Math.round(currentX), area.x + Math.round(area.width / 2)), max: area.x + area.width - SPRITE_WINDOW.width - SPRITE_WINDOW.rightGap };
 }
+// True when the point is where the automation puts WeChat's main window: the top-left of a display's
+// work area, at most wechatArea (logical pixels) in size. 小玺 lets the pointer through there during a task.
+function insideWechatAutomationArea(point, displays, wechatArea) {
+  return (displays || []).some((display) => {
+    const area = display?.workArea;
+    return Boolean(area) && point.x >= area.x && point.x < area.x + Math.min(area.width, wechatArea.width)
+      && point.y >= area.y && point.y < area.y + Math.min(area.height, wechatArea.height);
+  });
+}
+// Whether 小玺's window at (x, y) covers the place WeChat is put for automation on that display. Tucked
+// against a side only a strip of 小玺 shows and its bubble is hidden: that never covers WeChat's chat.
+function spriteCoversWechat({ x, y }, dock, revealed, workArea, wechatArea) {
+  if (dock && !revealed) return false;
+  const area = spriteArea(workArea);
+  const right = area.x + Math.min(area.width, wechatArea.width), bottom = area.y + Math.min(area.height, wechatArea.height);
+  return x < right && x + SPRITE_WINDOW.width > area.x && y < bottom && y + SPRITE_WINDOW.height > area.y;
+}
 
 module.exports = {
+  insideWechatAutomationArea,
+  spriteCoversWechat,
   FLOATING_PROGRESS_WINDOW,
   floatingProgressPosition,
   SPRITE_WINDOW,

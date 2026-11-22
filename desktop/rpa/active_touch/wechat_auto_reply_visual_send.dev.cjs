@@ -1,4 +1,5 @@
 const { MOMENTS_VISUAL_READONLY_POWERSHELL } = require("./moments_visual_probe.dev.cjs");
+const { WECHAT_SESSION_LIST_EDGE_POWERSHELL } = require("./wechat_session_list_edge.cjs");
 const { runPowerShellAsync } = require("./wechat_window_driver.cjs");
 const { createHash } = require("node:crypto");
 const { scrubInternalDetails } = require("../../src/shared/internal-diagnostics.cjs");
@@ -59,6 +60,7 @@ public static class Win32WechatVisualAutoReply {
 "@
 
 ${MOMENTS_VISUAL_READONLY_POWERSHELL}
+${WECHAT_SESSION_LIST_EDGE_POWERSHELL}
 
 $expectedPidText = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_PID")
 $expectedHWndText = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_HWND")
@@ -84,7 +86,7 @@ $expectedIncomingSignature = ([string][Environment]::GetEnvironmentVariable("XIA
 $expectedReply = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_REPLY")
 $phase = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_PHASE")
 $expectedInputTickText = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_EXPECTED_INPUT_TICK")
-$script:VisualSendOcrDownscale = 1
+$script:VisualSendOcrFactor = 1.0
 $script:VisualSendExpectedInputTick = [uint32]::MaxValue
 
 function Write-VisualSendResult($value) {
@@ -306,7 +308,7 @@ function Test-VisualSendIncoming($frame) {
     width = [double]($frame.width * 0.75)
     height = [double]($frame.height * 0.69)
   }
-  $ocr = Get-MomentsDownscaledOcrObservation $frame $bodyRect $script:VisualSendOcrDownscale
+  $ocr = Get-MomentsResampledOcrObservation $frame $bodyRect $script:VisualSendOcrFactor
   if (-not $ocr.ok) { return $false }
   $wanted = Normalize-VisualSendText $expectedIncoming
   $observed = Normalize-VisualSendText ([string]$ocr.text)
@@ -404,9 +406,12 @@ function Test-VisualSendSelectedSidebarPreview($frame, $lines, [double]$sidebarR
   return (Normalize-VisualSendText ([string]$previewCandidates[0].text)) -ceq $expected
 }
 
-function Get-VisualSendSidebarRight([double]$windowWidth, [double]$dpi) {
+function Get-VisualSendSidebarRight([double]$windowWidth, [double]$dpi, $frame = $null) {
+  # Measured from the frame when the list edge shows (wechat_session_list_edge.cjs); else about 300 dp.
   if ($dpi -lt 72 -or $dpi -gt 480) { $dpi = 96.0 }
   $scale = $dpi / 96.0
+  $measured = Get-XiaoxiSessionListRight $frame $scale
+  if ($measured -gt 0) { return [double]$measured }
   $expected = 300.0 * $scale
   $compactLimit = [Math]::Max(230.0 * $scale, $windowWidth * 0.45)
   return [Math]::Min($expected, $compactLimit)
@@ -691,7 +696,7 @@ function Get-VisualSendLatestIncomingEvidence($frame, [double]$sidebarRight, [do
   # Use the same full-frame OCR geometry as the scanner. A cropped OCR pass can
   # recognize the same Chinese line differently, while draft input can move the
   # line without changing its identity.
-  $ocr = Get-MomentsDownscaledOcrObservation $frame @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height } $script:VisualSendOcrDownscale
+  $ocr = Get-MomentsResampledOcrObservation $frame @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height } $script:VisualSendOcrFactor
   if (-not $ocr.ok) { return @{ state = "ocr_unresolved" } }
   $logicalScale = [Math]::Max(0.5, [Math]::Min(4.0, $dpi / 96.0))
   $chatBottom = Get-VisualSendChatBottom $frame $sidebarRight $logicalScale
@@ -782,12 +787,12 @@ function Test-VisualSendSelectedSidebarConversation($frame, [double]$sidebarRigh
   # selected. Message preview text is deliberately not part of the identity:
   # two contacts can send the same words and preview OCR may be empty.
   $logicalScale = [Math]::Max(0.5, [Math]::Min(4.0, $dpi / 96.0))
-  $ocr = Get-MomentsDownscaledOcrObservation $frame @{
+  $ocr = Get-MomentsResampledOcrObservation $frame @{
     left = 0.0
     top = 0.0
     width = [double]$frame.width
     height = [double]$frame.height
-  } $script:VisualSendOcrDownscale
+  } $script:VisualSendOcrFactor
   if (-not $ocr.ok) {
     return @{ ok = $false; reason = "visual_send_sidebar_ocr_unresolved"; matches = 0 }
   }
@@ -1241,7 +1246,7 @@ function Confirm-VisualSendReceipt {
       if ($verifyFrame.ok) {
         try {
           $verifyDpi = Get-VisualSendWindowDpi $postLock.hWnd
-          $verifySidebarRight = Get-VisualSendSidebarRight ([double]$verifyFrame.width) $verifyDpi
+          $verifySidebarRight = Get-VisualSendSidebarRight ([double]$verifyFrame.width) $verifyDpi $verifyFrame
           $receipt.input_lease_valid = [bool](Test-VisualSendInputLease)
           $receipt.conversation_verified = $receipt.input_lease_valid
           if (-not $receipt.conversation_verified) {
@@ -1350,7 +1355,7 @@ function Clear-VisualSendDraft($lock) {
 
 function Get-VisualSendOutgoingBubbleEvidence($frame, [double]$sidebarRight) {
   $chatBottom = Get-VisualSendChatBottom $frame $sidebarRight
-  $ocr = Get-MomentsDownscaledOcrObservation $frame @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height } $script:VisualSendOcrDownscale
+  $ocr = Get-MomentsResampledOcrObservation $frame @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height } $script:VisualSendOcrFactor
   if (-not $ocr.ok) { return @{ ok = $false; observed_text = ""; match_mode = "ocr_unavailable"; edit_distance = -1; maximum_length = 0 } }
   $messageLines = New-Object System.Collections.Generic.List[object]
   foreach ($line in @($ocr.lines)) {
@@ -1397,8 +1402,9 @@ if (-not $frame.ok) {
 }
 try {
   $dpi = Get-VisualSendWindowDpi $lock.hWnd
-  $script:VisualSendOcrDownscale = if ([double]$dpi -ge 240.0) { 2 } else { 1 }
-  $sidebarRight = Get-VisualSendSidebarRight ([double]$frame.width) $dpi
+  # The same OCR calibration as the scan that found the message, so it reads the same here.
+  $script:VisualSendOcrFactor = Get-MomentsTextOcrFactor ([double]$dpi / 96.0) ([double]$frame.width) ([double]$frame.height)
+  $sidebarRight = Get-VisualSendSidebarRight ([double]$frame.width) $dpi $frame
   $binding = Get-VisualSendConversationBinding $frame $sidebarRight $dpi
   if (-not $binding.ok) {
     Write-VisualSendResult @{ ok = $false; reason = $binding.reason; sendAttempted = $false; conversationVerified = $false; conversationState = [string]$binding.headerState; draftVerified = $false; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
@@ -1447,7 +1453,7 @@ if (-not $fresh.ok) {
 $button = $null
 try {
   $freshDpi = Get-VisualSendWindowDpi $lock.hWnd
-  $freshSidebarRight = Get-VisualSendSidebarRight ([double]$fresh.width) $freshDpi
+  $freshSidebarRight = Get-VisualSendSidebarRight ([double]$fresh.width) $freshDpi $fresh
   $freshBinding = Get-VisualSendConversationBinding $fresh $freshSidebarRight $freshDpi
   if (-not $freshBinding.ok) {
     [void](Clear-VisualSendDraft $lock)

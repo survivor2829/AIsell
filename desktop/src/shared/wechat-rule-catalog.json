@@ -2951,5 +2951,21 @@
     "condition": "unsafe_local_visual_text",
     "line": 674,
     "classification": "recoverable"
+  },
+  {
+    "id": "reason-literal.moments_visual_ocr_failed",
+    "file": "desktop/rpa/active_touch/moments_visual_probe.dev.cjs",
+    "reason": "moments_visual_ocr_failed",
+    "condition": "windows_ocr_threw",
+    "line": 893,
+    "classification": "recoverable"
+  },
+  {
+    "id": "reason-literal.moments_visual_ocr_region_invalid",
+    "file": "desktop/rpa/active_touch/moments_visual_probe.dev.cjs",
+    "reason": "moments_visual_ocr_region_invalid",
+    "condition": "empty_or_outside_crop",
+    "line": 903,
+    "classification": "recoverable"
   }
 ]

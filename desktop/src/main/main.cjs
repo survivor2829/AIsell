@@ -1061,12 +1061,29 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       buildCommit: build.buildCommit || process.env.XIAOXI_BUILD_COMMIT || "",
       executionMode: "real_send",
       realSendExecutor: internalRealSend.executeVerifiedContactSend,
+      // AI 看图兜底 (微信之眼): what the rules could not read goes to the vision model through the account's gateway.
+      wechatEyes: require("./wechat-vision-check.cjs").createWechatEyes({ gatewayClient: providerGatewayClient, logger }),
       verifyRealSendSession: internalRealSend.refreshRealSendSession,
       verifyMessageBubble: internalRealSend.verifyMessageBubble,
       detectDeliveryNotice: internalRealSend ? require("../../rpa/active_touch/wechat_delivery_notice.cjs").detectWechatDeliveryNoticeAsync : undefined,
       onPause: disarmRealSend || undefined,
       passport: taskPassportStore
     });
+    // A blank-page desktop icon (cfe8221b, 2026-11-21): our own shortcuts are pointed back at this program.
+    // Even a repair goes to the field reports (only error-level entries do): it is how we learn the cause.
+    if (app.isPackaged && process.platform === "win32" && global.__xiaoxiComponents?.mode === "application") setTimeout(() => {
+      try {
+        const found = require("./shortcut-repair.cjs").repairShortcuts({ shell, executable: process.execPath,
+          folders: [app.getPath("desktop"), path.join(app.getPath("appData"), "Microsoft", "Windows", "Start Menu", "Programs")] });
+        // Each place and kind once: a shortcut that cannot be fixed would otherwise report on every start.
+        const seenFile = path.join(app.getPath("userData"), "shortcut-reports.json");
+        let seen = [];
+        try { seen = JSON.parse(fs.readFileSync(seenFile, "utf8")); } catch { seen = []; }
+        const fresh = found.filter((row) => row.state !== "ok" && !seen.includes(`${row.place}:${row.state}:${row.missing || ""}`));
+        for (const item of fresh) logger.event("app", "shortcut_checked", item, { level: "error", code: `shortcut_${item.state}` });
+        if (fresh.length) fs.writeFileSync(seenFile, JSON.stringify([...seen, ...fresh.map((row) => `${row.place}:${row.state}:${row.missing || ""}`)].slice(-50)));
+      } catch { /* The icon is a convenience; the app runs without it. */ }
+    }, 15_000).unref?.();
     workflowController = registerWechatWorkflowIpc({
       ...runtime,
       logger,
@@ -1275,6 +1292,15 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       components.markHealthy(); cloudMaintenance?.refreshLocalState();
       // Retry only previously registered retirement, after the real page works.
       // Unclassified historical backups and current/candidate versions stay protected.
+      // An update helper that failed after the app had exited left its reason only in its status file.
+      try {
+        const userData = app.getPath("userData");
+        require("./update-failure-report.cjs").reportHelperFailures({
+          jobsDir: components.updatePaths(userData).jobs,
+          roots: { profile: userData, install: path.dirname(process.execPath), temp: require("node:os").tmpdir() },
+          log: (details) => logger.event("update", "update.helper_failed", details, { level: "error", code: details.error_code, phase: details.failure_phase })
+        });
+      } catch { /* Reporting never blocks the started app. */ }
       if (app.isPackaged) {
         await require("./update-startup-maintenance.cjs").maintainAfterStartup(components.updatePaths(app.getPath("userData")).directory,
           { profile: app.getPath("userData"), version: components.businessVersion(app), runtimeRoot: components.currentRoot() })

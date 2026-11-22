@@ -147,6 +147,10 @@ function sanitizeStructuredScanDiagnostics(value) {
       const number = Number(rawWindow[field]);
       if (Number.isFinite(number) && Math.abs(number) <= 10_000_000) window[field] = number;
     }
+    // Where the chat list was taken to end, and whether it was measured from the frame or estimated.
+    const sidebarRight = Number(rawWindow.sidebarRight);
+    if (Number.isFinite(sidebarRight) && sidebarRight >= 0 && sidebarRight <= 100_000) window.sidebar_right = sidebarRight;
+    if (rawWindow.sidebarSource === "measured" || rawWindow.sidebarSource === "estimated") window.sidebar_source = rawWindow.sidebarSource;
     return Object.keys(window).length ? window : null;
   };
   const sanitizeCounts = (rawCounts) => {

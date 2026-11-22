@@ -541,6 +541,10 @@ function Find-MomentsMenuDotsDetailed($frame, $viewportBounds = $null, $avatarCa
   $components = [Win32WechatMomentsVisualReadOnly]::MenuComponents($frame.bytes, $frame.stride, $xStart, $yStart, $xEnd, $yEnd, $bands)
   $ordered = @($components | Sort-Object { [double]$_.centerY }, { [double]$_.centerX })
   $menus = New-Object System.Collections.Generic.List[object]
+  # A dot already in an accepted button belongs to that button. At 200% one 「··」 drew three
+  # components, paired as (1,2) and (2,3) with centres 6-7 px apart, just past the 6 px rule below:
+  # two menus for one button, so neither proved stable and the post read as changed (dev PC 2026-11-22).
+  $usedComponents = New-Object System.Collections.Generic.HashSet[int]
   $rawCandidateCount = 0
   $rejectedWhitespaceCount = 0
   $rejectedAvatarLaneCount = 0
@@ -578,11 +582,12 @@ function Find-MomentsMenuDotsDetailed($frame, $viewportBounds = $null, $avatarCa
         })
         if ($laneMatches.Count -eq 0) { $rejectedAvatarLaneCount += 1; continue }
       }
-      $duplicate = $false
+      $duplicate = $usedComponents.Contains($firstIndex) -or $usedComponents.Contains($secondIndex)
       foreach ($existing in $menus) {
         if ([Math]::Abs($existing.centerX - $centerX) -le 6 -and [Math]::Abs($existing.centerY - $centerY) -le 10) { $duplicate = $true; break }
       }
       if (-not $duplicate) {
+        [void]$usedComponents.Add($firstIndex); [void]$usedComponents.Add($secondIndex)
         [void]$menus.Add(@{
           centerX = $centerX
           centerY = $centerY
@@ -909,6 +914,58 @@ function Get-MomentsOcrObservation($frame, $rect) {
     }
     return $observation
   } finally {
+    $crop.Dispose()
+  }
+}
+
+# Calibrating OCR to the PC it runs on. Windows OCR misreads Chinese drawn small: WeChat's 14 dp list text
+# at 100% is about 14 px and a contact's name came back with two of three characters wrong (dev PC,
+# 2026-11-22), read right at twice the size. It also refuses images larger than MaxImageDimension. So the
+# text is resampled to about 28 px from the window's DPI, never past that limit for the whole window, and
+# left alone when it is already close. Every reader of the same chat uses the same factor, so a message
+# read in one step reads the same in the next.
+function Get-MomentsTextOcrFactor([double]$dpiScale, [double]$frameWidth, [double]$frameHeight) {
+  $glyph = 14.0 * [Math]::Max(0.5, [Math]::Min(4.0, $dpiScale))
+  $factor = [Math]::Max(0.5, [Math]::Min(2.0, 28.0 / $glyph))
+  $limit = 2600.0
+  try { $limit = [double][Windows.Media.Ocr.OcrEngine]::MaxImageDimension } catch {}
+  $longest = [Math]::Max(1.0, [Math]::Max($frameWidth, $frameHeight))
+  if ($longest * $factor -gt $limit) { $factor = $limit / $longest }
+  if ([Math]::Abs($factor - 1.0) -lt 0.15 -and $longest -le $limit) { $factor = 1.0 }
+  return [Math]::Round($factor, 3)
+}
+
+function Get-MomentsResampledOcrObservation($frame, $rect, [double]$factor = 1.0) {
+  if ([Math]::Abs($factor - 1.0) -lt 0.001) { return Get-MomentsOcrObservation $frame $rect }
+  $crop = ConvertTo-MomentsOcrBitmap $frame $rect
+  if ($crop -eq $null) { return @{ ok = $false; reason = "moments_visual_ocr_region_invalid" } }
+  $scaled = $null
+  $graphics = $null
+  try {
+    $scaledWidth = [Math]::Max(1, [int][Math]::Round($crop.Width * $factor))
+    $scaledHeight = [Math]::Max(1, [int][Math]::Round($crop.Height * $factor))
+    $scaled = [System.Drawing.Bitmap]::new($scaledWidth, $scaledHeight, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $graphics = [System.Drawing.Graphics]::FromImage($scaled)
+    $graphics.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
+    $graphics.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
+    $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+    $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+    $graphics.DrawImage($crop, [System.Drawing.Rectangle]::new(0, 0, $scaledWidth, $scaledHeight), 0, 0, $crop.Width, $crop.Height, [System.Drawing.GraphicsUnit]::Pixel)
+    $graphics.Dispose()
+    $graphics = $null
+    $ocr = Get-MomentsOcrObservationFromBitmap $scaled
+    if (-not $ocr.ok) { return $ocr }
+    foreach ($item in @(@($ocr.lines) + @($ocr.words))) {
+      if ($item -eq $null) { continue }
+      foreach ($name in @("left", "top", "width", "height")) { $item.bounds.$name = [double]$item.bounds.$name / $factor }
+    }
+    $ocr["ocrFactor"] = $factor
+    return $ocr
+  } catch {
+    return @{ ok = $false; reason = "moments_visual_ocr_failed"; detail = [string]$_.Exception.Message }
+  } finally {
+    if ($graphics) { $graphics.Dispose() }
+    if ($scaled) { $scaled.Dispose() }
     $crop.Dispose()
   }
 }

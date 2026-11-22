@@ -1,8 +1,10 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { createWechatWorkflowController, workflowFailureReason } = require("./wechat-workflow.cjs");
-const { SPRITE_WINDOW, spriteGround, spritePosition, spriteWalkRange, spriteDockX, spriteDockSide, spritePetSpan } = require("./floating-progress-window.cjs");
+const { SPRITE_WINDOW, insideWechatAutomationArea, spriteCoversWechat, spriteGround, spritePosition, spriteWalkRange, spriteDockX, spriteDockSide, spritePetSpan } = require("./floating-progress-window.cjs");
 const SPRITE_PET_LEFT = spritePetSpan(0).left;
+// Where the automation puts WeChat's main window (wechat_window_driver.cjs WECHAT_RPA_WINDOW_LAYOUTS.main, logical pixels).
+const WECHAT_AUTOMATION_AREA = require("../../rpa/active_touch/wechat_window_driver.cjs").WECHAT_RPA_WINDOW_LAYOUTS.main;
 
 function registerWechatWorkflowIpc(options) {
   const { ipcMain, BrowserWindow, screen, Menu } = options.electron || require("electron");
@@ -15,6 +17,9 @@ function registerWechatWorkflowIpc(options) {
   let disposed = false;
   // 小玺 hidden from its right-click menu until the next launch, and the screen side it is tucked into (or null).
   let spriteHidden = false, spriteDock = null;
+  // Where 小玺 was before tucking away from WeChat for a task, and whether the yield guard (not the
+  // renderer) last made it click-through; the renderer's own wish is restored when the guard lets go.
+  let spriteParked = null, spriteYieldForced = false, spriteWantsInteractive = false;
   // 小玺 also shows the automation that runs outside this app: 养号 and 一键分发 in Chrome
   // (user decision 2026-10-30). kind -> { title, detail, done, total }.
   const external = new Map();
@@ -131,6 +136,8 @@ function registerWechatWorkflowIpc(options) {
         clearInterval(progressTimer); progressTimer = null;
         clearInterval(spriteCursorTimer); spriteCursorTimer = null;
         stopSpriteWalk();
+        // A new window starts where the user last left it, not at a place saved before the task.
+        spriteParked = null; spriteYieldForced = false;
       });
       // Above the taskbar and other always-on-top windows, so nothing on the desktop can hide 小玺.
       target.setAlwaysOnTop?.(true, "screen-saver");
@@ -395,6 +402,7 @@ function registerWechatWorkflowIpc(options) {
   }
   function peekSprite(out) {
     if (!spriteDock || spriteDrag || !floatingWindow || floatingWindow.isDestroyed()) return;
+    if (out && spriteYieldsToWechat()) return; // During a task it does not lean out over WeChat.
     clearTimeout(spritePeekTimer);
     const move = (revealed) => {
       const [x, y] = floatingWindow.getPosition();
@@ -444,7 +452,49 @@ function registerWechatWorkflowIpc(options) {
   // 省电 (2026-11-19): on a computer with four cores or fewer, or 8 GB memory or less, it does not follow the pointer.
   let spriteCursorTimer = null, spriteCursorLast = "";
   const lowPowerComputer = (require("node:os").cpus()?.length || 8) <= 4 || require("node:os").totalmem() <= 8.5 * 1024 ** 3;
+  // During a WeChat task 小玺 never takes the pointer inside the place WeChat is put for automation (the
+  // work area's top-left WECHAT_AUTOMATION_AREA). On a 225% laptop WeChat filled the screen and 小玺 stood
+  // on its input box: the automation's click there left the pointer on 小玺's bubble, 小玺 took the
+  // mouse, and every next contact found the input point "not WeChat's" (5a711219 and 11 more PCs,
+  // message_input_target_not_owned, 217 in a row on one). It still shows; clicks go through to WeChat.
+  const spriteYieldsToWechat = () => {
+    if (!active() || !screen.getCursorScreenPoint) return false;
+    return insideWechatAutomationArea(screen.getCursorScreenPoint(), screen.getAllDisplays?.() || [screen.getPrimaryDisplay()], WECHAT_AUTOMATION_AREA);
+  };
+  // Nor does 小玺 stand on WeChat while a task runs: the automation judges a pasted picture by the send
+  // button turning green, and on the same laptop 小玺 was drawn over that button, so every picture was
+  // "not accepted" and left behind as a draft (90bd8730, image_paste_not_accepted, 1.3.35–1.3.50).
+  // Covering WeChat when a task starts, 小玺 tucks into the left edge (a strip over WeChat's unused
+  // bottom-left corner, no bubble) and goes back to its place when the task ends. Not saved.
+  function parkSpriteForWechat() {
+    if (!floatingWindow || floatingWindow.isDestroyed() || spriteDrag || spriteFall) return;
+    const [x, y] = floatingWindow.getPosition();
+    if (active()) {
+      const display = spriteDisplay(x, y);
+      if (spriteParked || !spriteCoversWechat({ x, y }, spriteDock, spriteRevealed, display.workArea, WECHAT_AUTOMATION_AREA)) return;
+      spriteParked = { x, dock: spriteDock };
+      stopSpriteWalk(); clearTimeout(spritePeekTimer); clearInterval(spriteSlide);
+      spriteDock = "left"; spriteRevealed = false;
+      placeSprite(spriteDockX(display.workArea, "left"), spriteGround(display)); tellDock();
+    } else if (spriteParked) {
+      const back = spriteParked, display = spriteDisplay(back.x, y);
+      spriteParked = null; spriteDock = back.dock; spriteRevealed = false;
+      placeSprite(back.dock ? spriteDockX(display.workArea, back.dock) : back.x, spriteGround(display)); tellDock();
+    }
+  }
+  let spriteYieldTimer = null;
+  function startSpriteYield() {
+    clearInterval(spriteYieldTimer);
+    spriteYieldTimer = setInterval(() => {
+      if (!floatingWindow || floatingWindow.isDestroyed()) { clearInterval(spriteYieldTimer); spriteYieldTimer = null; return; }
+      if (spriteYieldsToWechat()) { floatingWindow.setIgnoreMouseEvents?.(true, { forward: true }); spriteYieldForced = true; }
+      else if (spriteYieldForced) { floatingWindow.setIgnoreMouseEvents?.(!spriteWantsInteractive, { forward: true }); spriteYieldForced = false; }
+      parkSpriteForWechat();
+    }, 200);
+    spriteYieldTimer.unref?.();
+  }
   function startSpriteCursor() {
+    startSpriteYield();
     clearInterval(spriteCursorTimer);
     if (lowPowerComputer) return;
     spriteCursorTimer = setInterval(() => {
@@ -501,13 +551,17 @@ function registerWechatWorkflowIpc(options) {
   for (const event of ["display-metrics-changed", "display-removed"]) screen.on?.(event, regroundSprite);
   ipcMain.on?.("wechat-workflow:sprite-walk-stop", (event) => { if (fromSprite(event)) stopSpriteWalk(); });
   ipcMain.on?.("wechat-workflow:sprite-interactive", (event, interactive) => {
-    if (fromSprite(event)) floatingWindow.setIgnoreMouseEvents?.(interactive !== true, { forward: true });
+    if (!fromSprite(event)) return;
+    spriteWantsInteractive = interactive === true;
+    floatingWindow.setIgnoreMouseEvents?.(!spriteWantsInteractive || spriteYieldsToWechat(), { forward: true });
   });
   // While 小玺 is held, the window follows the pointer from here (a relayed move fell behind a quick
   // drag and lost it, 2026-10-30). Letting go without moving is a click.
   let spriteDrag = null, spriteFall = null;
   ipcMain.on?.("wechat-workflow:sprite-drag-start", (event) => {
     if (!fromSprite(event)) return;
+    // Moved by hand during a task: that is its place now, not the one saved when it tucked away.
+    spriteParked = null;
     clearInterval(spriteDrag?.timer);
     stopSpriteWalk();
     clearTimeout(spritePeekTimer);

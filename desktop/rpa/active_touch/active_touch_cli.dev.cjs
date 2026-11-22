@@ -3,6 +3,7 @@
 const safe = require("./state_machine.cjs");
 const development = require("./state_machine.dev.cjs");
 const { observeWechatConversation } = require("./wechat_window_driver.dev.cjs");
+const { captureWechatTitleStrip, parseVisionTitle } = require("./wechat_title_strip.cjs");
 const { absoluteDataDirError } = require("./active_touch_data_dir.cjs");
 
 const STATEFUL_COMMANDS = new Set([
@@ -24,7 +25,8 @@ const STATEFUL_COMMANDS = new Set([
   "set-real-send-arm",
   "verify-real-send-session",
   "fail-conversation",
-  "verify-message-bubble"
+  "verify-message-bubble",
+  "confirm-vision-title"
 ]);
 
 function valueAfter(args, flag) {
@@ -37,8 +39,14 @@ function optionalValueAfter(args, flag) {
   return index === -1 || index === args.length - 1 ? undefined : args[index + 1];
 }
 
+// A title the rules could not read: on a real send the top strip of the window is kept for the AI
+// title check (state_machine.dev.cjs visionRescueTitle); a window that is gone or behind is not.
+const TITLE_UNREAD_REASONS = new Set(["atomic_conversation_changed", "conversation_visual_token_unavailable"]);
 function verifyOpenedConversation(title, context = {}) {
-  return observeWechatConversation(title, { pid: context.pid, hWnd: context.hWnd, verificationMode: "conversation_title" });
+  const observed = observeWechatConversation(title, { pid: context.pid, hWnd: context.hWnd, verificationMode: "conversation_title" });
+  if (observed?.ok || context.captureSearchFailure !== true || !TITLE_UNREAD_REASONS.has(String(observed?.reason || ""))) return observed;
+  const strip = captureWechatTitleStrip({ pid: observed.pid ?? context.pid, hWnd: observed.hWnd ?? context.hWnd });
+  return strip.ok ? { ...observed, titleCaptureFile: strip.file } : observed;
 }
 
 function main(argv) {
@@ -51,8 +59,10 @@ function main(argv) {
   if (command === "verify-real-send-session") return development.verifyRealSendSession(baseDir);
   if (command === "fail-conversation") return development.failConversation(baseDir);
   if (command === "verify-message-bubble") return development.verifyMessageBubble(baseDir);
+  if (command === "confirm-vision-title") return development.confirmVisionTitle(baseDir, { pid: optionalValueAfter(args, "--expected-pid"),
+    hWnd: optionalValueAfter(args, "--expected-hwnd"), visionTitle: parseVisionTitle(optionalValueAfter(args, "--vision-title")) });
   const handlers = {
-    status: () => safe.status(baseDir), calibrate: () => safe.calibrate(baseDir), "focus-wechat-window": () => safe.focusWechatWindowDryRun(baseDir), "clear-customer": () => safe.clearCustomer(baseDir), "select-customer": () => safe.selectCustomer(baseDir, valueAfter(args, "--id"), contactsDir), "verify-conversation": () => safe.verifyConversation(baseDir, valueAfter(args, "--title")), "locate-conversation": () => safe.locateConversation(baseDir), "open-conversation-dry-run": () => safe.openConversationDryRun(baseDir), "search-conversation-dry-run": () => safe.searchConversationDryRun(baseDir), "click-search-result-dry-run": () => safe.clickSearchResultDryRun(baseDir, undefined, undefined, verifyOpenedConversation, { pid: optionalValueAfter(args, "--expected-pid"), hWnd: optionalValueAfter(args, "--expected-hwnd"), minIdleMs: optionalValueAfter(args, "--min-idle-ms"), captureSearchFailure: args.includes("--capture-search-failure") }), "input-message-dry-run": () => safe.inputMessageDryRun(baseDir, valueAfter(args, "--message")), "queue-dry-run": () => safe.queueDryRun(baseDir, valueAfter(args, "--ids").split(",").filter(Boolean), valueAfter(args, "--message")), "verify-send-result-dry-run": () => safe.verifySendResultDryRun(baseDir), "verify-window-title": () => safe.verifyWindowTitle(baseDir), send: () => safe.send(baseDir, { dryRun: true, message: args.includes("--message") ? valueAfter(args, "--message") : undefined })
+    status: () => safe.status(baseDir), calibrate: () => safe.calibrate(baseDir), "focus-wechat-window": () => safe.focusWechatWindowDryRun(baseDir), "clear-customer": () => safe.clearCustomer(baseDir), "select-customer": () => safe.selectCustomer(baseDir, valueAfter(args, "--id"), contactsDir), "verify-conversation": () => safe.verifyConversation(baseDir, valueAfter(args, "--title")), "locate-conversation": () => safe.locateConversation(baseDir), "open-conversation-dry-run": () => safe.openConversationDryRun(baseDir), "search-conversation-dry-run": () => safe.searchConversationDryRun(baseDir), "click-search-result-dry-run": () => safe.clickSearchResultDryRun(baseDir, undefined, undefined, verifyOpenedConversation, { pid: optionalValueAfter(args, "--expected-pid"), hWnd: optionalValueAfter(args, "--expected-hwnd"), minIdleMs: optionalValueAfter(args, "--min-idle-ms"), captureSearchFailure: args.includes("--capture-search-failure"), visionPoint: safe.parseVisionPoint(optionalValueAfter(args, "--vision-point")) }), "input-message-dry-run": () => safe.inputMessageDryRun(baseDir, valueAfter(args, "--message")), "queue-dry-run": () => safe.queueDryRun(baseDir, valueAfter(args, "--ids").split(",").filter(Boolean), valueAfter(args, "--message")), "verify-send-result-dry-run": () => safe.verifySendResultDryRun(baseDir), "verify-window-title": () => safe.verifyWindowTitle(baseDir), send: () => safe.send(baseDir, { dryRun: true, message: args.includes("--message") ? valueAfter(args, "--message") : undefined })
   };
   return handlers[command] ? handlers[command]() : { ok: false, action: command, error: `Unknown command: ${command}`, logs: [] };
 }
