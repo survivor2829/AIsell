@@ -98,8 +98,8 @@ const DRIVERS = {
     },
     // Search results: the 视频 tab, then the first video, which opens the player.
     // On a slow connection the results take more than ten seconds (dev PC 2026-11-22), so this waits for
-    // them, up to 30 seconds, instead of a fixed few: the tab first, then a result to open.
-    async openFirstResult(page, { waitMs = 30_000 } = {}) {
+    // them, up to 45 seconds (24 s seen), instead of a fixed few: the tab first, then a result to open.
+    async openFirstResult(page, { waitMs = 45_000 } = {}) {
       const deadline = Date.now() + waitMs;
       let tab = null;
       while (!tab && Date.now() < deadline) { tab = await page.find((node) => attr(node, "data-key") === "video"); if (!tab) await sleep(1000); }
