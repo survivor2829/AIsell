@@ -20,7 +20,7 @@ const {
   prepareWechatRpaWindowAsync,
   verifyWechatCurrentConversationAsync: verifyWechatConversationTitleAsync
 } = require("./wechat_window_driver.cjs");
-const { captureWechatTitleStrip, discardTitleCapture, sameTitleStrip, titleCaptureSha256 } = require("./wechat_title_strip.cjs");
+const { captureWechatTitleStrip, discardTitleCapture, sameTitleStrip, titleCaptureSha256, visionTitleBand } = require("./wechat_title_strip.cjs");
 const { appendLog, block, blockMessageBubble, blockSendGate, loadState, openedConversationState, output, readContacts, saveState, wechatWindowBlockText } = require("./state_machine.cjs");
 const { contactIdentityError, identityKey } = require("./touch_task_state.cjs");
 
@@ -54,7 +54,9 @@ async function visionRescueSearch(options, baseDir, opened, windowArgs) {
   if (!answer?.ok) return note(String(answer?.reason || "vision_not_found"));
   const capture = searchCaptureSha256(file);
   if (!capture || !(await executionMayContinue(options))) return note("vision_cancelled");
-  const point = `${Number(answer.x).toFixed(4)},${Number(answer.y).toFixed(4)},${capture},${path.basename(file)}`;
+  // Kept inside (0, 1): x = 0.99996 would print as 1.0000, which the point parser refuses.
+  const fraction = (value) => Math.min(0.9999, Math.max(0.0001, Number(value))).toFixed(4);
+  const point = `${fraction(answer.x)},${fraction(answer.y)},${capture},${path.basename(file)}`;
   const retried = await options.runStep("click-search-result-dry-run", [...windowArgs, "--vision-point", point]);
   if (retried?.ok) {
     discardSearchCapture(opened);
@@ -67,7 +69,14 @@ async function visionRescueSearch(options, baseDir, opened, windowArgs) {
     discardSearchCapture(opened);
     return { ...retried, diagnostics: { ...retried.diagnostics, vision_outcome: "vision_clicked", vision_ms: Date.now() - started } };
   }
-  return note(`vision_retry_${String(retried?.blocked_reason || retried?.reason || "failed").slice(0, 60)}`);
+  // The retry still found no such contact: the first result stands. Anything else the retry ran into
+  // (a misclick onto 网络查找, the user at the keyboard, the window lost) is its own result, with its
+  // landing_recovered and poisoned_candidate, so the workflow pauses or records it as it would.
+  const retryReason = String(retried?.blocked_reason || retried?.reason || "failed");
+  if (!VISION_RESCUE_REASONS.has(retryReason) && retryReason !== "search_result_not_opened") {
+    return { ...retried, diagnostics: { ...(retried?.diagnostics || {}), vision_outcome: `vision_retry_${retryReason.slice(0, 60)}`, vision_ms: Date.now() - started } };
+  }
+  return note(`vision_retry_${retryReason.slice(0, 60)}`);
 }
 
 // AI 看图 for the chat title (wechat_title_strip.cjs): the click opened a chat whose title the rules
@@ -108,12 +117,15 @@ function confirmVisionTitle(baseDir = __dirname, context = {}, capture = capture
   if (!context.visionTitle || !(pid > 0) || !/^\d+$/u.test(hWnd)) return refuse("context_missing");
   const strip = capture({ pid, hWnd });
   if (!strip?.ok) return refuse(String(strip?.outcome || "title_strip_capture_failed"));
+  // Without the title's place the chat could only be fingerprinted in the fixed band, which can miss the title.
+  const titleBand = visionTitleBand(context.visionTitle, strip);
+  if (!titleBand) { discardTitleCapture(strip.file); return refuse("title_band_unknown"); }
   try {
     if (Number(strip.pid) !== pid || String(strip.hWnd) !== hWnd) return refuse("window_changed");
     if (!sameTitleStrip(context.visionTitle, strip.file)) return refuse("title_strip_changed");
   } finally { discardTitleCapture(strip.file); }
   const nextState = openedConversationState({ ...state, search_input_done: true },
-    { title: name, mode: "vision_title", pid: strip.pid, hWnd: strip.hWnd, processName: strip.processName });
+    { title: name, mode: "vision_title", pid: strip.pid, hWnd: strip.hWnd, processName: strip.processName, titleBand });
   saveState(baseDir, nextState);
   appendLog(baseDir, "AI 核对会话标题", `已打开并验证：${name}`);
   return output(true, "confirm-vision-title", nextState, { baseDir });
@@ -168,6 +180,7 @@ function sessionCheck(state, driver = verifyWechatCurrentConversation, baseDir =
     expectedHWnd: options.allowWindowRebind ? options.expectedHWnd : state.window_handle,
     allowExactSearchFallback,
     provenMode: state.conversation_verification_mode,
+    titleBand: state.vision_title_band,
     titleNearNames: state.title_near_names
   });
   if (!result.ok) return result;
@@ -208,6 +221,7 @@ async function sessionCheckAsync(state, driver = verifyWechatCurrentConversation
     expectedHWnd: options.allowWindowRebind ? options.expectedHWnd : state.window_handle,
     allowExactSearchFallback,
     provenMode: state.conversation_verification_mode,
+    titleBand: state.vision_title_band,
     titleNearNames: state.title_near_names
   }));
   if (!result.ok) return result;
@@ -551,6 +565,7 @@ async function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWec
     expectedConversation: state.selected_customer?.name,
     expectedConversationMode: state.conversation_verification_mode,
     expectedConversationToken: state.conversation_token,
+    titleBand: state.vision_title_band,
     titleNearNames: state.title_near_names,
     expectedMessage: message,
     expectedIncomingMessage: String(options.expectedIncomingMessage || "").trim(),
@@ -1012,7 +1027,7 @@ async function executeVerifiedContactSendCore(options = {}) {
       image: options.image, onTransition: options.onTransition, isExecutionAllowed: options.isExecutionAllowed,
       onDiagnostic: options.onDiagnostic,
       context: { pid: state.window_pid, hWnd: state.window_handle, expectedConversation: state.selected_customer?.name,
-        expectedConversationMode: state.conversation_verification_mode, expectedConversationToken: state.conversation_token,
+        expectedConversationMode: state.conversation_verification_mode, expectedConversationToken: state.conversation_token, titleBand: state.vision_title_band,
         inputPoint: state.message_input_point, titleNearNames: state.title_near_names }
     }));
     return withSessionAnchor(imageOutcome, options, baseDir);

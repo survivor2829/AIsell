@@ -131,6 +131,46 @@ function sameTitleStrip(visionTitle, currentFile) {
   } catch { return false; }
 }
 
+// Where the title the model read sits in the window: its share of the window's width and its distance
+// from the window's top in dp (the strip is the window's full width, min(30% of the height, 200 dp)).
+// A chat confirmed this way is from then on fingerprinted there, not in the fixed 34-74 dp band: at 225%
+// the title was drawn below that band, the band was plain grey for every chat, and a switch to another
+// chat before the send would have gone unnoticed (review 2026-11-22).
+function visionTitleBand(visionTitle, strip) {
+  const box = visionTitle?.box, rect = strip?.rect;
+  const dpi = Number(strip?.dpi) >= 72 && Number(strip?.dpi) <= 480 ? Number(strip.dpi) : 96;
+  const height = Number(rect?.bottom) - Number(rect?.top);
+  if (!box || !(height > 0)) return null;
+  const stripDp = Math.min(height * 0.3, 200 * dpi / 96) * 96 / dpi;
+  const band = { left: box.left, right: box.right, top_dp: box.top * stripDp, bottom_dp: box.bottom * stripDp };
+  const valid = [band.left, band.right, band.top_dp, band.bottom_dp].every(Number.isFinite)
+    && band.left >= 0 && band.right <= 1 && band.right > band.left && band.top_dp >= 0 && band.bottom_dp > band.top_dp && band.bottom_dp <= 400;
+  return valid ? Object.fromEntries(Object.entries(band).map(([key, value]) => [key, Math.round(value * 10000) / 10000])) : null;
+}
+function headerBandEnvironment(band) {
+  return band && typeof band === "object" ? [band.left, band.right, band.top_dp, band.bottom_dp].map((value) => String(Number(value))).join(",") : "";
+}
+// The PowerShell side: the capture rectangle for that band, in screen pixels, or $null.
+const HEADER_BAND_POWERSHELL = String.raw`
+function Get-XiaoxiHeaderBand($rect, [double]$dpi) {
+  $parts = @(([string][Environment]::GetEnvironmentVariable("XIAOXI_HEADER_BAND")) -split ",")
+  if ($parts.Count -ne 4) { return $null }
+  $values = @()
+  foreach ($part in $parts) { $value = 0.0; if (-not [double]::TryParse($part, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$value)) { return $null }; $values += $value }
+  $l = $values[0]; $r = $values[1]; $t = $values[2]; $b = $values[3]
+  if (-not ($l -ge 0 -and $r -le 1 -and $r -gt $l -and $t -ge 0 -and $b -gt $t -and $b -le 400)) { return $null }
+  if ($dpi -lt 72 -or $dpi -gt 480) { $dpi = 96 }
+  $scale = $dpi / 96.0; $padV = [Math]::Max(6.0, ($b - $t) * 0.3); $padH = 24.0
+  $left = [int]([double]$rect.Left + $l * [double]$rect.Width - $padH * $scale)
+  $right = [int]([double]$rect.Left + $r * [double]$rect.Width + $padH * $scale)
+  $top = [int]([double]$rect.Top + ($t - $padV) * $scale)
+  $bottom = [int][Math]::Min([double]$rect.Bottom - 1, [double]$rect.Top + ($b + $padV) * $scale)
+  if ($right - $left -lt 120) { $right = $left + 120 }
+  if ($bottom - $top -lt 40) { $bottom = $top + 40 }
+  return @{ left = $left; right = $right; top = $top; bottom = $bottom }
+}
+`;
+
 // Old strips left by a crash are swept with the search captures (cleanupStaleSearchCaptures).
-module.exports = { TITLE_STRIP_SCRIPT, captureWechatTitleStrip, discardTitleCapture, ownTitleCapture,
-  parseVisionTitle, sameTitleStrip, titleCaptureSha256 };
+module.exports = { TITLE_STRIP_SCRIPT, HEADER_BAND_POWERSHELL, captureWechatTitleStrip, discardTitleCapture, headerBandEnvironment,
+  ownTitleCapture, parseVisionTitle, sameTitleStrip, titleCaptureSha256, visionTitleBand };

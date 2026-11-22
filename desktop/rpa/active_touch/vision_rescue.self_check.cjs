@@ -74,6 +74,18 @@ fs.unlinkSync(path.join(os.tmpdir(), reference));
     const retryFails = await visionRescueSearch({ isExecutionAllowed: () => true, runStep: async () => ({ ok: false, blocked_reason: "search_result_not_opened" }),
       visionRescue: async () => ({ ok: true, x: 0.25, y: 0.1 }) }, root, failed(), args);
     assert.equal(retryFails.ok, false); assert.equal(retryFails.diagnostics.vision_outcome, "vision_retry_search_result_not_opened");
+    // A retry that ran into something else (here a misclick onto 网络查找 the user's typing kept from
+    // being undone) is its own result: the workflow pauses on it and records the bad candidate.
+    const misclick = await visionRescueSearch({ isExecutionAllowed: () => true, visionRescue: async () => ({ ok: true, x: 0.25, y: 0.1 }),
+      runStep: async () => ({ ok: false, blocked_reason: "wechat_search_network_lookup_misclick", landing_recovered: false, poisoned_candidate: "row-2", diagnostics: {} }) }, root, failed(), args);
+    assert.equal(misclick.blocked_reason, "wechat_search_network_lookup_misclick");
+    assert.equal(misclick.landing_recovered, false); assert.equal(misclick.poisoned_candidate, "row-2");
+    assert.equal(misclick.diagnostics.vision_outcome, "vision_retry_wechat_search_network_lookup_misclick");
+    // A point at the very edge stays a valid fraction (x = 0.99997 is not printed as 1.0000).
+    const edgeSteps = [];
+    await visionRescueSearch({ isExecutionAllowed: () => true, visionRescue: async () => ({ ok: true, x: 0.99997, y: 0 }),
+      runStep: async (...step) => { edgeSteps.push(step); return { ok: true, diagnostics: {} }; } }, root, failed(), args);
+    assert.match(edgeSteps[0][1].at(-1), /^0.9999,0.0001,/u);
 
     // Other failures, no capture, no rescue wired in, or a paused task: nothing is asked.
     let calls = 0; const count = async () => { calls += 1; return { ok: true, x: 0.5, y: 0.5 }; };

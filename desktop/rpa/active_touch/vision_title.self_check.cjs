@@ -4,7 +4,33 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const zlib = require("node:zlib");
-const { parseVisionTitle, sameTitleStrip, titleCaptureSha256 } = require("./wechat_title_strip.cjs");
+const { HEADER_BAND_POWERSHELL, headerBandEnvironment, parseVisionTitle, sameTitleStrip, titleCaptureSha256, visionTitleBand } = require("./wechat_title_strip.cjs");
+const { spawnSync } = require("node:child_process");
+
+// A chat confirmed by the AI title check is fingerprinted where its title is, not in the fixed
+// 34-74 dp band that missed it at 225% (review 2026-11-22). The band: share of the width and dp from the top.
+const band225 = visionTitleBand({ box: { left: 0.64, right: 0.8, top: 0.45, bottom: 0.62 } }, { dpi: 216, rect: { top: 0, bottom: 1600 } });
+assert.deepEqual(band225, { left: 0.64, right: 0.8, top_dp: 90, bottom_dp: 124 }, "225%: the title 90-124 dp down, under the fixed band");
+assert.equal(visionTitleBand({ box: { left: 0.5, right: 0.4, top: 0.1, bottom: 0.2 } }, { dpi: 96, rect: { top: 0, bottom: 760 } }), null);
+assert.equal(visionTitleBand(null, { dpi: 96, rect: { top: 0, bottom: 760 } }), null);
+assert.equal(headerBandEnvironment(band225), "0.64,0.8,90,124"); assert.equal(headerBandEnvironment(null), "");
+const bandRun = spawnSync("powershell.exe", ["-NoProfile", "-Command", `${HEADER_BAND_POWERSHELL}
+$env:XIAOXI_HEADER_BAND = "0.64,0.8,90,124"
+$a = Get-XiaoxiHeaderBand ([pscustomobject]@{ Left = 0; Top = 0; Width = 2400; Bottom = 1600 }) 216
+$env:XIAOXI_HEADER_BAND = "1.2,0.8,90,124"
+$b = Get-XiaoxiHeaderBand ([pscustomobject]@{ Left = 0; Top = 0; Width = 2400; Bottom = 1600 }) 216
+@{ a = $a; b = ($b -eq $null) } | ConvertTo-Json -Compress`], { encoding: "utf8", timeout: 60000 });
+assert.equal(bandRun.status, 0, bandRun.stderr);
+const bandOut = JSON.parse(bandRun.stdout.trim().split(/\r?\n/u).at(-1));
+// 90 dp minus a 10.2 dp margin at 2.25 = 179.55, rounded 180 px; 124 + 10.2 dp = 302 px; 0.64 × 2400 − 24 dp = 1482 px.
+assert.deepEqual({ ...bandOut.a }, { left: 1482, right: 1974, top: 180, bottom: 302 }, "the capture box around the title, at 225%");
+assert.equal(bandOut.b, true, "a band that is not a place in the window: none");
+const driverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.dev.cjs"), "utf8");
+const count = (text) => driverSource.split(text).length - 1;
+assert.equal(count(`-ceq "vision_title") {`), 2, "both header fingerprints use the title's place");
+assert.equal(count("Get-XiaoxiHeaderBand $"), 2);
+assert.equal(count("if ($band -eq $null) { $captureRight = $captureLeft }"), 2, "without the place, no fingerprint");
+assert.equal(count("XIAOXI_HEADER_BAND: headerBandEnvironment(context.titleBand)"), 2);
 const { saveState, loadState } = require("./state_machine.cjs");
 const { visionRescueTitle, confirmVisionTitle, verifyRealSendSessionAsync } = require("./state_machine.dev.cjs");
 
@@ -55,7 +81,8 @@ assert.equal(compare(strip(), { ...seen, reference: "xiaoxi-title-capture-" + "0
       search_result_clicked: true, last_result: "blocked", blocked_reason: "search_result_not_opened", conversation_verified: false });
 
     // Confirm step: a new strip of the same window, same pixels around the title → opened, vision_title.
-    const capturer = (bytes, more = {}) => (context) => ({ ok: true, pid: context.pid, hWnd: context.hWnd, processName: "Weixin", file: temp(bytes), ...more });
+    const capturer = (bytes, more = {}) => (context) => ({ ok: true, pid: context.pid, hWnd: context.hWnd, processName: "Weixin", file: temp(bytes),
+      dpi: 216, rect: { left: 0, top: 0, right: 2400, bottom: 1600 }, ...more });
     failedState();
     const confirmed = confirmVisionTitle(root, { pid: "41", hWnd: "77", visionTitle: seen }, capturer(strip()));
     assert.equal(confirmed.ok, true);
@@ -63,12 +90,16 @@ assert.equal(compare(strip(), { ...seen, reference: "xiaoxi-title-capture-" + "0
     assert.equal(opened.conversation_verified, true); assert.equal(opened.conversation_verification_mode, "vision_title");
     assert.equal(opened.conversation_title, "测试联系人甲"); assert.equal(opened.window_pid, 41); assert.equal(opened.window_handle, "77");
     assert.equal(opened.blocked_reason, ""); assert.equal(opened.conversation_token, "", "the token is bound by the session check");
+    // The title's place is kept: from now on the chat is fingerprinted there (225%: strip 200 dp).
+    assert.deepEqual(opened.vision_title_band, visionTitleBand(seen, { dpi: 216, rect: { top: 0, bottom: 1600 } }));
+    assert.ok(opened.vision_title_band.top_dp > 0 && opened.vision_title_band.bottom_dp <= 200);
     // Anything else keeps the skip.
     const refused = (context, capture) => { failedState(); const out = confirmVisionTitle(root, context, capture); assert.equal(out.ok, false);
       assert.equal(out.blocked_reason, "search_result_not_opened"); assert.equal(loadState(root).conversation_verified, false); return out.diagnostics.vision_title_outcome; };
     const ctx = { pid: "41", hWnd: "77", visionTitle: seen };
     assert.equal(refused(ctx, capturer(strip({ title: 90 }))), "title_strip_changed");
     assert.equal(refused(ctx, capturer(strip(), { hWnd: "78" })), "window_changed");
+    assert.equal(refused(ctx, capturer(strip(), { rect: undefined })), "title_band_unknown", "no place for the title: not confirmed");
     assert.equal(refused(ctx, () => ({ ok: false, outcome: "wechat_window_not_foreground" })), "wechat_window_not_foreground");
     assert.equal(refused({ ...ctx, visionTitle: undefined }, capturer(strip())), "context_missing");
     assert.equal(refused({ ...ctx, hWnd: "7 7" }, capturer(strip())), "context_missing");

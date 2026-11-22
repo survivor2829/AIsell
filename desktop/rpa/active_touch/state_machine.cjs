@@ -27,6 +27,7 @@ const DEFAULT_STATE = {
   task_context: null,
   conversation_title: "",
   conversation_verification_mode: "",
+  vision_title_band: null,
   conversation_token: "",
   conversation_title_mode: "",
   located_window_title: "",
@@ -288,6 +289,7 @@ function clearConversationState(state, reason, extra = {}) {
     conversation_verified: false,
     conversation_title: "",
     conversation_verification_mode: "",
+    vision_title_band: null,
     conversation_token: "",
     conversation_title_mode: "",
     located_window_title: "",
@@ -443,6 +445,7 @@ function selectCustomer(baseDir = __dirname, customerId = "", contactsDir = base
     title_near_names: titleNearNames(contacts, customer),
     conversation_title: "",
     conversation_verification_mode: "",
+    vision_title_band: null,
     conversation_token: "",
     conversation_title_mode: "",
     located_window_title: "",
@@ -940,7 +943,7 @@ function clickSearchResultDryRun(
 
 // The chat that the search click opened, verified (by its title, the exact 微信号 search or the AI
 // title check), with everything after it reset.
-function openedConversationState(state, { title, mode, pid, hWnd, processName }) {
+function openedConversationState(state, { title, mode, pid, hWnd, processName, titleBand = null }) {
   return {
     ...state,
     search_result_clicked: true,
@@ -948,6 +951,8 @@ function openedConversationState(state, { title, mode, pid, hWnd, processName })
     conversation_verified: true,
     conversation_title: title,
     conversation_verification_mode: mode,
+    // Where the AI-read title sits (vision_title only): the chat is fingerprinted there from now on.
+    vision_title_band: mode === "vision_title" ? titleBand : null,
     conversation_token: "",
     conversation_title_mode: "",
     located_window_title: title,
