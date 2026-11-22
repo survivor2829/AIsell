@@ -5,6 +5,7 @@ const {
 } = require("./wechat_window_driver.cjs");
 const { WECHAT_CLIPBOARD_POWERSHELL } = require("./wechat_clipboard.cjs");
 const { WECHAT_HEADER_TITLE_POWERSHELL, titleNearNamesEnvironment } = require("./wechat_header_title.cjs");
+const { WECHAT_CHAT_EDGE_POWERSHELL } = require("./wechat_chat_edge.cjs");
 
 const WECHAT_SEND_BUTTON_OFFSETS = { right: 64, bottom: 42 };
 const CLIPBOARD_TEXT_RETRY_POWERSHELL = `
@@ -150,8 +151,10 @@ function Get-ConversationObservation([IntPtr]$hWnd, [string]$expectedTitle, [str
     $headerDpi = [Win32WechatSendMessage]::GetDpiForWindow($hWnd)
     if ($headerDpi -le 0) { $headerDpi = 96 }
     $captureTop = [int]($freshRect.Top + ${WECHAT_HEADER_CAPTURE.top} * $headerDpi / 96.0)
-    $captureRight = [int]($freshRect.Left + ($freshRect.Width * 0.78))
     $captureBottom = [int][Math]::Min($freshRect.Bottom - 1, $freshRect.Top + ${WECHAT_HEADER_CAPTURE.bottom} * $headerDpi / 96.0)
+${WECHAT_CHAT_EDGE_POWERSHELL}
+    # Up to 78% of the window, or where WeChat's chat ends if its 搜一搜 side panel is open (wechat_chat_edge.cjs).
+    $captureRight = [XiaoxiChatEdge]::Right($hWnd, [uint32]$matched.pid, [int]($freshRect.Left + ($freshRect.Width * 0.78)), [int](($captureTop + $captureBottom) / 2), $captureLeft + 120)
     $captureWidth = $captureRight - $captureLeft
     $captureHeight = $captureBottom - $captureTop
     if ($captureWidth -ge 120 -and $captureHeight -ge 40) {
@@ -647,8 +650,10 @@ try {
   $headerDpi = [Win32WechatConversationObservation]::GetDpiForWindow($expectedHWnd)
   if ($headerDpi -le 0) { $headerDpi = 96 }
   $captureTop = [int]($windowRect.Top + ${WECHAT_HEADER_CAPTURE.top} * $headerDpi / 96.0)
-  $captureRight = [int]($windowRect.Left + ($windowRect.Width * 0.78))
   $captureBottom = [int][Math]::Min($windowRect.Bottom - 1, $windowRect.Top + ${WECHAT_HEADER_CAPTURE.bottom} * $headerDpi / 96.0)
+${WECHAT_CHAT_EDGE_POWERSHELL}
+  # Up to 78% of the window, or where WeChat's chat ends if its 搜一搜 side panel is open (wechat_chat_edge.cjs).
+  $captureRight = [XiaoxiChatEdge]::Right($expectedHWnd, [uint32]$process.Id, [int]($windowRect.Left + ($windowRect.Width * 0.78)), [int](($captureTop + $captureBottom) / 2), $captureLeft + 120)
   $captureWidth = $captureRight - $captureLeft
   $captureHeight = $captureBottom - $captureTop
   if ($captureWidth -ge 120 -and $captureHeight -ge 40) {
