@@ -195,6 +195,12 @@ async function main() {
   assert.equal(releases, 1);
   assert.equal(events.includes("moments:campaign.completed"), true);
   assert.deepEqual(openOptions, [{ allowIntegrated: true, minIdleMs: 0 }]);
+  // Every open, the recovery after a lost foreground included, finds WeChat 4's 朋友圈 entry by reading the
+  // sidebar; none falls back to WeChat 3's fixed sidebar spot.
+  const campaignSource = fs.readFileSync(path.join(__dirname, "moments-campaign-ipc.cjs"), "utf8");
+  const openCalls = [...campaignSource.matchAll(/await openMoments\(\{([^}]*)\}\)/gu)].map((match) => match[1]);
+  assert.ok(openCalls.length >= 2, "the first open and the recovery");
+  for (const call of openCalls) assert.match(call, /allowIntegrated: true/u, "every 朋友圈 open reads the sidebar");
   assert.deepEqual(expectedSurfaces, [INTEGRATED_EXPECTED_SURFACE, INTEGRATED_EXPECTED_SURFACE]);
   assert.equal(scrollOptions.length, 1);
   assert.deepEqual(

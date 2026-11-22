@@ -536,8 +536,12 @@ function createMomentsCampaignController(options = {}) {
           pid: openedSurface.pid,
           hWnd: openedSurface.hWnd
         }, "warn");
+        // The same entry as the first open: WeChat 4 shows 朋友圈 inside the main window, found by reading its
+        // sidebar. Without this, a chat switched away from 朋友圈 was reopened by clicking WeChat 3's fixed
+        // sidebar spot (26, 248 dp), which on WeChat 4 is beside the icon (dev PC 2026-11-22: open timed out).
         const recovered = await openMoments({
           expectedWindow: opened,
+          allowIntegrated: true,
           minIdleMs: 0
         });
         const recoveredSurface = normalizeExpectedMomentsSurface(recovered);
