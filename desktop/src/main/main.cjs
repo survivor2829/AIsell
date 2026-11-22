@@ -1075,9 +1075,13 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       try {
         const found = require("./shortcut-repair.cjs").repairShortcuts({ shell, executable: process.execPath,
           folders: [app.getPath("desktop"), path.join(app.getPath("appData"), "Microsoft", "Windows", "Start Menu", "Programs")] });
-        for (const item of found.filter((row) => row.state !== "ok")) {
-          logger.event("app", "shortcut_checked", item, { level: "error", code: `shortcut_${item.state}` });
-        }
+        // Each place and kind once: a shortcut that cannot be fixed would otherwise report on every start.
+        const seenFile = path.join(app.getPath("userData"), "shortcut-reports.json");
+        let seen = [];
+        try { seen = JSON.parse(fs.readFileSync(seenFile, "utf8")); } catch { seen = []; }
+        const fresh = found.filter((row) => row.state !== "ok" && !seen.includes(`${row.place}:${row.state}:${row.missing || ""}`));
+        for (const item of fresh) logger.event("app", "shortcut_checked", item, { level: "error", code: `shortcut_${item.state}` });
+        if (fresh.length) fs.writeFileSync(seenFile, JSON.stringify([...seen, ...fresh.map((row) => `${row.place}:${row.state}:${row.missing || ""}`)].slice(-50)));
       } catch { /* The icon is a convenience; the app runs without it. */ }
     }, 15_000).unref?.();
     workflowController = registerWechatWorkflowIpc({
