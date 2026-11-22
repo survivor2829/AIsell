@@ -1,8 +1,10 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { createWechatWorkflowController, workflowFailureReason } = require("./wechat-workflow.cjs");
-const { SPRITE_WINDOW, spriteGround, spritePosition, spriteWalkRange, spriteDockX, spriteDockSide, spritePetSpan } = require("./floating-progress-window.cjs");
+const { SPRITE_WINDOW, insideWechatAutomationArea, spriteGround, spritePosition, spriteWalkRange, spriteDockX, spriteDockSide, spritePetSpan } = require("./floating-progress-window.cjs");
 const SPRITE_PET_LEFT = spritePetSpan(0).left;
+// Where the automation puts WeChat's main window (wechat_window_driver.cjs WECHAT_RPA_WINDOW_LAYOUTS.main, logical pixels).
+const WECHAT_AUTOMATION_AREA = require("../../rpa/active_touch/wechat_window_driver.cjs").WECHAT_RPA_WINDOW_LAYOUTS.main;
 
 function registerWechatWorkflowIpc(options) {
   const { ipcMain, BrowserWindow, screen, Menu } = options.electron || require("electron");
@@ -444,7 +446,26 @@ function registerWechatWorkflowIpc(options) {
   // 省电 (2026-11-19): on a computer with four cores or fewer, or 8 GB memory or less, it does not follow the pointer.
   let spriteCursorTimer = null, spriteCursorLast = "";
   const lowPowerComputer = (require("node:os").cpus()?.length || 8) <= 4 || require("node:os").totalmem() <= 8.5 * 1024 ** 3;
+  // During a WeChat task 小玺 never takes the pointer inside the place WeChat is put for automation (the
+  // work area's top-left WECHAT_AUTOMATION_AREA). On a 225% laptop WeChat filled the screen and 小玺 stood
+  // on its input box: the automation's click there left the pointer on 小玺's bubble, 小玺 took the
+  // mouse, and every next contact found the input point "not WeChat's" (5a711219 and 11 more PCs,
+  // message_input_target_not_owned, 217 in a row on one). It still shows; clicks go through to WeChat.
+  const spriteYieldsToWechat = () => {
+    if (!active() || !screen.getCursorScreenPoint) return false;
+    return insideWechatAutomationArea(screen.getCursorScreenPoint(), screen.getAllDisplays?.() || [screen.getPrimaryDisplay()], WECHAT_AUTOMATION_AREA);
+  };
+  let spriteYieldTimer = null;
+  function startSpriteYield() {
+    clearInterval(spriteYieldTimer);
+    spriteYieldTimer = setInterval(() => {
+      if (!floatingWindow || floatingWindow.isDestroyed()) { clearInterval(spriteYieldTimer); spriteYieldTimer = null; return; }
+      if (spriteYieldsToWechat()) floatingWindow.setIgnoreMouseEvents?.(true, { forward: true });
+    }, 200);
+    spriteYieldTimer.unref?.();
+  }
   function startSpriteCursor() {
+    startSpriteYield();
     clearInterval(spriteCursorTimer);
     if (lowPowerComputer) return;
     spriteCursorTimer = setInterval(() => {
@@ -501,7 +522,7 @@ function registerWechatWorkflowIpc(options) {
   for (const event of ["display-metrics-changed", "display-removed"]) screen.on?.(event, regroundSprite);
   ipcMain.on?.("wechat-workflow:sprite-walk-stop", (event) => { if (fromSprite(event)) stopSpriteWalk(); });
   ipcMain.on?.("wechat-workflow:sprite-interactive", (event, interactive) => {
-    if (fromSprite(event)) floatingWindow.setIgnoreMouseEvents?.(interactive !== true, { forward: true });
+    if (fromSprite(event)) floatingWindow.setIgnoreMouseEvents?.(interactive !== true || spriteYieldsToWechat(), { forward: true });
   });
   // While 小玺 is held, the window follows the pointer from here (a relayed move fell behind a quick
   // drag and lost it, 2026-10-30). Letting go without moving is a click.
