@@ -5,11 +5,20 @@
 const { attr, sleep } = require("./social-page.cjs");
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
-// A verification shown on the page: a captcha frame or panel, or an SMS check.
+// A verification shown on the page: a captcha frame or panel, or an SMS check. The words are looked for at
+// the start of the page and in any dialog on screen: the SMS check after a comment (test account,
+// 2026-11-22) came as a dialog over a page whose text ran far past the start, comments included.
 const BLOCKED = `(() => { const shown = (el) => el.getClientRects().length > 0;
+  const words = /接收短信验证码|拖动滑块|完成验证|安全验证/;
   return [...document.querySelectorAll("iframe")].some((frame) => /captcha|verify/i.test(frame.src) && shown(frame))
     || [...document.querySelectorAll('[class*="captcha" i],[id*="captcha" i],[class*="verify-" i]')].some(shown)
-    || /接收短信验证码|拖动滑块|完成验证|安全验证/.test(document.body ? document.body.innerText.slice(0, 4000) : ""); })()`;
+    || words.test(document.body ? document.body.innerText.slice(0, 4000) : "")
+    || [...document.querySelectorAll('[role="dialog"],[aria-modal="true"],[class*="modal" i],[class*="dialog" i],[class*="popup" i]')]
+      .some((el) => shown(el) && words.test(el.innerText || ""))
+    // Whatever its markup, such a check sits in the middle of the screen, over everything.
+    || (() => { let el = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
+      for (let up = 0; el && up < 8; up++, el = el.parentElement) { const text = el.innerText || ""; if (text.length < 600 && words.test(text)) return true; }
+      return false; })(); })()`;
 const ACTIVE = '[data-e2e="feed-active-video"]';
 const inActive = (view, node) => view.ancestors(node).some((up) => attr(up, "data-e2e") === "feed-active-video");
 // The video on screen. A search result plays in a layer over the results page and the page can keep
@@ -25,10 +34,14 @@ const FOLLOW_PLUS = `(() => { const active = ${ON_SCREEN_ACTIVE}; if (!active) r
   const avatar = [...active.querySelectorAll('[data-e2e="video-avatar"]')].find((el) => el.getClientRects().length);
   if (!avatar) return { state: "no_avatar" };
   const a = avatar.getBoundingClientRect();
+  // Drawn, not only laid out: once followed the "+" fades to nothing but stays in the page (test account,
+  // 2026-11-22: gone on screen, still found, the follow reported unconfirmed).
+  const drawn = (el) => { for (let e = el; e && e !== active; e = e.parentElement) { const s = getComputedStyle(e);
+    if (s.display === "none" || s.visibility === "hidden" || Number(s.opacity) < 0.1) return false; } return true; };
   const plus = [...active.querySelectorAll("*")].find((el) => { const r = el.getBoundingClientRect();
     return r.width >= 12 && r.width <= 36 && r.height >= 12 && r.height <= 36 && r.width < a.width
       && r.left + r.width / 2 >= a.left + a.width * 0.25 && r.left + r.width / 2 <= a.right - a.width * 0.25
-      && r.top >= a.top + a.height * 0.5 && r.top <= a.bottom + 10; });
+      && r.top >= a.top + a.height * 0.5 && r.top <= a.bottom + 10 && drawn(el); });
   if (!plus) return { state: "no_plus" };
   const r = plus.getBoundingClientRect();
   return { state: "plus", x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`;
@@ -41,12 +54,6 @@ async function clickAt(page, x, y) {
 // on a search result it closes the whole player (dev PC 2026-11-22), and every step after it found nothing
 // (field 2026-11-18..20: comments/follows "missing" over the results grid).
 const commentIcon = (page) => page.find((node, view) => attr(node, "data-e2e") === "feed-comment-icon" && inActive(view, node));
-async function closeComments(page) {
-  const open = await page.evaluate(`[...document.querySelectorAll('[data-e2e="comment-list"]')].some((el) => { const r = el.getBoundingClientRect(); return r.width > 50 && r.left < innerWidth && r.right > 0; })`).catch(() => false);
-  if (!open) return;
-  const icon = await commentIcon(page);
-  if (icon) { await page.click(icon); await sleep(1000); }
-}
 
 async function key(page, name, code, keyCode, text) {
   await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: name, code, windowsVirtualKeyCode: keyCode, ...(text ? { text } : {}) });
@@ -89,30 +96,53 @@ const DRIVERS = {
       if (opened) { await sleep(4000); return Boolean(await playing()); }
       return false;
     },
+    // A search counts once the page has gone to the results. Typed while the page was still settling,
+    // the words were wiped and Enter searched nothing (test account, 2026-11-22): tried again, three times.
     async search(page, keyword) {
-      const box = await page.find((node) => (node.localName === "input" && attr(node, "data-e2e") === "searchbar-input") || (node.localName === "textarea" && attr(node, "data-e2e") !== "comment-input"));
-      if (!box) return false;
-      await page.type(box, keyword);
-      await key(page, "Enter", "Enter", 13, "\r");
-      return true;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const box = await page.find((node) => (node.localName === "input" && attr(node, "data-e2e") === "searchbar-input") || (node.localName === "textarea" && attr(node, "data-e2e") !== "comment-input"));
+        if (!box) { await sleep(2000); continue; }
+        await page.type(box, keyword);
+        await key(page, "Enter", "Enter", 13, "\r");
+        for (let wait = 0; wait < 8; wait++) {
+          await sleep(1000);
+          if (/\/search\//u.test(String(await page.url().catch(() => "")))) return true;
+        }
+      }
+      return false;
     },
     // Search results: the 视频 tab, then the first video, which opens the player.
-    // On a slow connection the results take more than ten seconds (dev PC 2026-11-22), so this waits for
-    // them, up to 45 seconds (24 s seen), instead of a fixed few: the tab first, then a result to open.
-    async openFirstResult(page, { waitMs = 45_000 } = {}) {
+    // On a slow connection the results came after 24 s, and the tab row itself after more than 15 s; the
+    // 综合 page then showed no results at all in 75 s while 视频 did (test account, 2026-11-22). So within
+    // one wait the tab is clicked whenever it shows, and a result is opened once one shows; a page without
+    // the tab still has its results tried.
+    async openFirstResult(page, { waitMs = 60_000 } = {}) {
       const deadline = Date.now() + waitMs;
-      // The tab gets a part of the wait: a page without it (already on videos, or laid out anew) still has
-      // results to open, and they are tried at least once (review 2026-11-22).
-      const tabDeadline = Date.now() + Math.min(15_000, waitMs / 3);
-      let tab = null;
-      while (!tab && Date.now() < tabDeadline) { tab = await page.find((node) => attr(node, "data-key") === "video"); if (!tab) await sleep(1000); }
-      if (tab) await page.click(tab);
-      const openFirst = `(() => { const link = [...document.querySelectorAll('ul[data-e2e="scroll-list"] li a, .search-result-card a')].find((el) => el.getClientRects().length);
+      // Opened means the player is on screen, not that a click was sent: a script click on the first card
+      // while the results were still settling opened nothing (test account, 2026-11-22). The card is clicked
+      // like a person would, the player waited for, and once more as a script click if it did not come.
+      const playing = () => page.evaluate(`Boolean(${ON_SCREEN_ACTIVE})`).catch(() => false);
+      // A result card is a link to a video (/video/<id>); the older list markup is kept as a second way.
+      const firstCard = () => page.find((node, view) => node.localName === "a" && (/\/video\/\d/u.test(String(attr(node, "href") || ""))
+        || view.ancestors(node).some((up) => (up.localName === "ul" && attr(up, "data-e2e") === "scroll-list")
+          || String(attr(up, "class") || "").split(/\s+/u).includes("search-result-card"))));
+      const scriptClick = `(() => { const link = [...document.querySelectorAll('a[href*="/video/"], ul[data-e2e="scroll-list"] li a, .search-result-card a')].find((el) => el.getClientRects().length);
         if (!link) return false; link.click(); return true; })()`;
-      let opened = false;
-      do { await sleep(1000); opened = Boolean(await page.evaluate(openFirst).catch(() => false)); } while (!opened && Date.now() < deadline);
-      if (opened) await sleep(4000);
-      return opened;
+      let mouseClicks = 0, tabClicked = false;
+      for (let attempt = 0; Date.now() < deadline || attempt === 0; attempt++) {
+        await sleep(1000);
+        if (!tabClicked) {
+          const tab = await page.find((node) => attr(node, "data-key") === "video");
+          if (tab) { tabClicked = await page.click(tab); await sleep(2000); }
+        }
+        let clicked = false;
+        // Two real clicks on the card once it is there, then script clicks.
+        if (mouseClicks < 2) { const card = await firstCard(); clicked = card ? await page.click(card) : false; if (clicked) mouseClicks += 1; }
+        else clicked = Boolean(await page.evaluate(scriptClick).catch(() => false));
+        if (!clicked) continue;
+        for (let wait = 0; wait < 8; wait++) { await sleep(1000); if (await playing()) return true; }
+      }
+      return false;
     },
     // The video now playing: an id for not interacting twice, its text and its author.
     async current(page) {
@@ -135,30 +165,48 @@ const DRIVERS = {
       const found = await page.evaluate(FOLLOW_PLUS).catch(() => null);
       if (found?.state === "no_plus") return "already";
       if (found?.state !== "plus") return "missing";
-      await clickAt(page, found.x, found.y); await sleep(1500);
-      const after = await page.evaluate(FOLLOW_PLUS).catch(() => null);
-      return after?.state === "no_plus" ? "done" : "unconfirmed";
+      await clickAt(page, found.x, found.y);
+      // The "+" fades out after the follow is made: 1.5 s was too early on a slow connection, it went later
+      // (test account, 2026-11-22). Looked at for up to 6 s.
+      for (let wait = 0; wait < 12; wait++) {
+        await sleep(500);
+        if ((await page.evaluate(FOLLOW_PLUS).catch(() => null))?.state === "no_plus") return "done";
+      }
+      return "unconfirmed";
     },
     // Opens the comment panel, types like a person (one character at a time), sends with Enter,
     // and looks for the comment in the list: a comment the platform hides is not shown back.
     async comment(page, text, delay) {
       const icon = await commentIcon(page);
       if (!icon) return "missing";
-      await page.click(icon); await sleep(1500);
+      await page.click(icon);
+      // The panel opened ours: closed again the same way however far it loaded (a blank, still-loading
+      // panel was left open on a slow connection, test account 2026-11-22).
+      const close = async () => { const again = await commentIcon(page); if (again) { await page.click(again); await sleep(1000); } };
       const editor = () => page.find((node, view) => view.ancestors(node).some((up) => String(attr(up, "class") || "").includes("comment-input-inner-container")) && attr(node, "contenteditable") === "true");
-      let box = await editor();
-      // The editor appears only once its placeholder is clicked (dev PC 2026-11-22).
-      if (!box) {
-        const placeholder = await page.find((node) => (node.children || []).some((child) => child.nodeType === 3 && /^留下你的精彩评论/.test(child.nodeValue.trim())));
-        if (placeholder) { await page.click(placeholder); await sleep(1000); box = await editor(); }
+      const placeholder = () => page.find((node) => (node.children || []).some((child) => child.nodeType === 3 && /^留下你的精彩评论/.test(child.nodeValue.trim())));
+      // The panel loads slowly on a slow connection: its editor, or the placeholder that opens it
+      // (dev PC 2026-11-22), is waited for up to 12 s.
+      let box = null;
+      for (let wait = 0; wait < 12 && !box; wait++) {
+        await sleep(1000);
+        box = await editor();
+        if (!box) { const shown = await placeholder(); if (shown) { await page.click(shown); await sleep(1000); box = await editor(); } }
       }
-      if (!box) { await closeComments(page); return "missing"; }
+      if (!box) { await close(); return "missing"; }
       await page.click(box);
       for (const char of text) { await page.send("Input.insertText", { text: char }); await sleep(delay()); }
       await key(page, "Enter", "Enter", 13, "\r");
-      await sleep(3000);
-      const shown = await page.evaluate(`[...document.querySelectorAll('[data-e2e="comment-item"]')].some((item) => item.innerText.includes(${JSON.stringify(text)}))`);
-      await closeComments(page);
+      // Read back for up to 12 s: a comment that is still sending is not one the platform hid.
+      // A comment Douyin stops for a check of the account (an SMS code, test account 2026-11-22) was not
+      // posted and not hidden: the check is left for the person, and the run stops on it.
+      let shown = false;
+      for (let wait = 0; wait < 12 && !shown; wait++) {
+        await sleep(1000);
+        if (await page.evaluate(BLOCKED).catch(() => false)) return "verification";
+        shown = Boolean(await page.evaluate(`[...document.querySelectorAll('[data-e2e="comment-item"]')].some((item) => item.innerText.includes(${JSON.stringify(text)}))`).catch(() => false));
+      }
+      await close();
       return shown ? "done" : "hidden";
     },
     next: (page) => key(page, "ArrowDown", "ArrowDown", 40)

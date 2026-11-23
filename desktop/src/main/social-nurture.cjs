@@ -255,6 +255,9 @@ function createSocialNurture({ dataDir, accounts, launch = launchBrowser, execut
               if (alreadyAuthors.size >= 5) { disabled.add(kind); await report("NURTURE_ELEMENT_MISSING", kind); }
               last = ""; control.step = "watch"; await pause(dwell / 2); if (!stopped() && now() < segmentEnd) await driver.next(page); continue;
             }
+            // Douyin asked to check the account before the comment went out: nothing counted, and the next
+            // turn of the loop stops this run on the verification as for any other.
+            else if (result === "verification") { control.step = "watch"; continue; }
             else if (result === "hidden") {
               today.counts.comments += 1; today.commentsOff = true;
               note(plan, "评论发出后在评论区看不到（可能被平台隐藏），今天不再评论。");
