@@ -108,14 +108,15 @@ function createProductVideoService(options = {}) {
     if (!crew?.inventory) return null;
     const { sides, parts, size, sizeNote, sheetIssues } = crew.inventory;
     return { sides: sides.map((side) => crewRoles.SIDES[side]), hiddenSides: task.plan.hiddenSides || '', parts, size, sizeNote, sheetIssues,
-      survey: crew.survey || null, venuePhoto: Boolean(task.plan.venuePhoto), risks: (crew.risks || []).filter((row) => !row.ok && !(crew.fallback || []).includes(row.index)),
-      rewritten: Boolean(crew.riskRounds), fallback: crew.fallback || [] };
+      survey: crew.survey || null, venuePhoto: Boolean(task.plan.venuePhoto),
+      risks: crew.risksRound === (crew.riskRounds || 0) ? (crew.risks || []).filter((row) => !row.ok && !(crew.fallback || []).includes(row.index)) : [],
+      rewritten: Boolean(crew.riskRounds), fallback: crew.fallback || [], safeMove: crewRoles.safeMove(crew) };
   }
   function publicTask(task, timings = readTimings(root)) {
     const eta = estimateTask(task, timings, { shotSlots: SHOT_SLOTS, imageSlots: IMAGE_SLOTS });
     const shotsDone = task.shots.filter((shot) => shot.file).length;
     return { id: task.id, mode: task.mode, version: task.version, status: task.status,
-      statusLabel: task.plan.pipelineVersion === 6 && task.status === 'imaging' ? (task.plan.sheet && !task.sheetConfirmedAt ? '出定妆照' : '画拍摄场地') : task.status === 'directing' ? 'AI 导演在看图写分镜' : task.plan.pipelineVersion === 6 && task.status === 'uploading' ? '准备产品图'
+      statusLabel: task.plan.pipelineVersion === 6 && task.status === 'imaging' ? (task.plan.sheet && !task.sheetConfirmedAt ? '出定妆照' : task.plan.venuePhoto || task.images?.plate?.file ? '导演组审查分镜' : '画拍摄场地') : task.status === 'directing' ? 'AI 导演在看图写分镜' : task.plan.pipelineVersion === 6 && task.status === 'uploading' ? '准备产品图'
         : task.plan.pipelineVersion === 6 && ['submitting', 'generating'].includes(task.status) ? `拍镜头（${shotsDone}/${task.shots.length} 好了）`
         : task.plan.pipelineVersion === 6 && task.status === 'assembling' ? '拼接镜头' : task.plan.pipelineVersion === 6 && task.status === 'packaging' ? '加字幕'
         : task.plan.pipelineVersion === 5 && task.status === 'imaging' ? (task.story ? '画场景、人物和分镜' : '出定妆照') : task.plan.pipelineVersion === 5 && task.status === 'uploading' ? '准备产品图'
@@ -195,7 +196,8 @@ function createProductVideoService(options = {}) {
       asset(input.imageId);
       if (realStyle) {
         const extra = input.extraImageIds ?? [];
-        if (!Array.isArray(extra) || extra.length > real.MAX_PRODUCT_IMAGES - 1 || new Set([input.imageId, ...extra]).size !== extra.length + 1) throw fail('product_video_invalid_input', `产品图最多${real.MAX_PRODUCT_IMAGES}张，且不能重复。`);
+        const most = input.deviceId === undefined ? aiDirector.MAX_PRODUCT_IMAGES : real.MAX_PRODUCT_IMAGES;
+        if (!Array.isArray(extra) || extra.length > most - 1 || new Set([input.imageId, ...extra]).size !== extra.length + 1) throw fail('product_video_invalid_input', `产品图最多${most}张，且不能重复。`);
         extra.forEach((id) => asset(id));
         if (input.venueImageId !== undefined) {
           if (typeof input.venueImageId !== 'string' || [input.imageId, ...extra].includes(input.venueImageId)) throw fail('product_video_invalid_input', '现场照片不能和产品图是同一张。');
@@ -270,7 +272,7 @@ function createProductVideoService(options = {}) {
       task.plan.shots.forEach((shot, index) => { if (!task.shots[index].file && !task.operations[`shot_${index}`] && exclude !== `shot_${index}`) total += videoReserve(task, shot); });
       if (task.plan.director === 'ai') {
         const directs = Object.keys(task.operations).filter((key) => /^direct(?:_\d+)?$/u.test(key)).length;
-        if (!task.plan.directed) total += Math.max(0, 3 - directs - (/^direct(?:_\d+)?$/u.test(String(exclude || '')) ? 1 : 0)) * DIRECTOR_RESERVE_CNY;
+        if (!task.plan.directed && !task.crew?.riskFeedback) total += Math.max(0, 3 - directs - (/^direct(?:_\d+)?$/u.test(String(exclude || '')) ? 1 : 0)) * DIRECTOR_RESERVE_CNY;
         if (!task.operations.review && exclude !== 'review') total += DIRECTOR_RESERVE_CNY;
         if (task.plan.crew) total += Math.max(0, crewReserveCalls(task.plan) - Object.keys(task.operations).filter((key) => CREW_OPERATION.test(key)).length - (CREW_OPERATION.test(String(exclude || '')) ? 1 : 0)) * DIRECTOR_RESERVE_CNY;
       }
@@ -703,7 +705,7 @@ function createProductVideoService(options = {}) {
     images.push(await storyReference(task, 'sheet'));
     if (task.plan.venuePhoto) images.push(await productReference(task, task.venueImageId));
     const response = await operation(task, name, aiDirector.DIRECTOR_ROUTE,
-      aiDirector.directorRequest({ plan: task.plan, facts: task.facts, images, feedback: attempts.at(-1) || risk, crew: crewRoles.briefing(task.crew) }), DIRECTOR_RESERVE_CNY);
+      aiDirector.directorRequest({ plan: task.plan, facts: task.facts, images, feedback: [risk, attempts.at(-1)].filter(Boolean).join('；'), crew: crewRoles.briefing(task.crew) }), DIRECTOR_RESERVE_CNY);
     try {
       task.plan = aiDirector.applyDirection(task.plan, aiDirector.parseDirection(String(response?.choices?.[0]?.message?.content || ''), task.plan));
     } catch (error) {
@@ -800,7 +802,12 @@ function createProductVideoService(options = {}) {
       }
     } catch (error) {
       if (error.code === 'product_video_update_pending' || error.outcomeUnknown) throw error;
-      task.crew.preflightSkipped = String(error.code || 'failed'); save(task);
+      task.crew.preflightSkipped = String(error.code || 'failed');
+      if (maxRounds > 1 && (task.crew.riskRounds || 0) > 0 && !task.crew.fallback) {
+        const safe = crewRoles.applySafeShots(task.plan, task.crew);
+        task.plan = safe.plan; task.crew.fallback = safe.fallback; task.crew.risksRound = task.crew.riskRounds; checkPlan(task);
+      }
+      save(task);
     }
     return true;
   }
@@ -1080,7 +1087,7 @@ function createProductVideoService(options = {}) {
         delete task.failedImageKey;
         task.resumeStatus = 'imaging';
       } else if (task.plan.pipelineVersion === 6 && task.errorCode === 'product_video_direction_invalid') {
-        for (const key of Object.keys(task.operations).filter((k) => /^direct(?:_\d+)?$/u.test(k))) { (task.archivedOperations ||= []).push(task.operations[key]); delete task.operations[key]; }
+        for (const key of Object.keys(task.operations).filter((k) => /^direct(?:_risk\d*)?(?:_\d+)?$/u.test(k))) { (task.archivedOperations ||= []).push(task.operations[key]); delete task.operations[key]; }
         task.resumeStatus = 'directing'; task.directAttempts = [];
       } else if (task.plan.pipelineVersion === 5 && task.errorCode === 'product_video_story_invalid') {
         for (const key of Object.keys(task.operations).filter((k) => /^story(?:_\d+)?$/u.test(k))) { (task.archivedOperations ||= []).push(task.operations[key]); delete task.operations[key]; }

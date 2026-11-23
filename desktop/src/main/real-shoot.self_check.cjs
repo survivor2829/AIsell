@@ -237,7 +237,7 @@ async function run() {
   const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
   const clip = Buffer.alloc(2048); clip.write('ftyp', 4, 'ascii');
   const posts = [], videoTasks = new Map();
-  let maxRunning = 0, failVideo = '', throttleOnce = false, unknownBusyOnce = false, badCaptionsOnce = false, failSheetOnce = false, riskCalls = 0, riskAlways = false;
+  let maxRunning = 0, failVideo = '', throttleOnce = false, unknownBusyOnce = false, badCaptionsOnce = false, failSheetOnce = false, riskCalls = 0, riskAlways = false, riskBadSecond = false;
   // 导演组 (crew-2): the analyst, the site survey and the risk review answer on the director's route.
   const CREW_SYSTEM = /^你是(?:商用清洁设备的产品分析师|拍摄前的场地勘察|视频开拍前的风险审查)/u;
   const isDirect = (p) => p.route === ai.DIRECTOR_ROUTE && !/视频质检员/u.test(p.body.messages[0].content) && !CREW_SYSTEM.test(p.body.messages[0].content);
@@ -264,7 +264,7 @@ async function run() {
           if (/视频质检员/u.test(system)) return { choices: [{ message: { content: '{"shots":[{"index":3,"ok":false,"issue":"第4格出现两台机器"}]}' } }] };
           if (/产品分析师/u.test(system) && !/风险审查/u.test(system)) return { choices: [{ message: { content: JSON.stringify({ sides: ['front', 'left', 'nonsense'], parts: [{ name: '轮子', count: '左侧2个（前1后1）', where: '车身下方' }], size: 'large', sizeNote: '约长1.6米、宽0.9米', turning: '掉头需要约3米宽', sheetIssues: ['背面为 AI 推测'] }) } }] };
           if (/场地勘察/u.test(system)) return { choices: [{ message: { content: '{"widthM":12,"floor":"环氧地坪","dirt":"施工灰尘","zone":"中央通道直行","canTurn":false,"fits":true,"note":"只直行"}' } }] };
-          if (/风险审查/u.test(system)) { riskCalls += 1; return { choices: [{ message: { content: riskCalls === 1 || riskAlways ? '{"shots":[{"index":2,"ok":false,"risk":"要从后方跟拍，会露出没拍到的车尾","fix":"改成机器朝镜头直行"}]}' : '{"shots":[]}' } }] }; }
+          if (/风险审查/u.test(system)) { riskCalls += 1; if (riskBadSecond && riskCalls === 2) return { choices: [{ message: { content: '不是 JSON' } }] }; return { choices: [{ message: { content: riskCalls === 1 || riskAlways ? '{"shots":[{"index":2,"ok":false,"risk":"要从后方跟拍，会露出没拍到的车尾","fix":"改成机器朝镜头直行"}]}' : '{"shots":[]}' } }] }; }
           const count = (text.match(/第\d+镜｜/gu) || []).length, plan = { shots: Array.from({ length: count }, (_, i) => ({ index: i, title: `镜${i + 1}`, caption: '', pointId: i === 1 ? 'lift' : 'x' })) };
           const answer = JSON.parse(direction(plan));
           if (!/上一次的结果不合格/u.test(text)) answer.shots[0].prompt += '地上的污水被吸走。';
@@ -446,7 +446,7 @@ async function run() {
     await assert.rejects(service.create({ mode: 'product', style: 'real', durationSeconds: 15, productName: 'X', sceneText: '仓库', imageId: front.id, venueImageId: front.id }),
       (e) => e.code === 'product_video_invalid_input', 'the site photo is not one of the product photos');
     const ownDraft = await service.create({ mode: 'product', style: 'real', durationSeconds: 15, productName: 'SIBEN 无人驾驶洗地机', sceneText: '新建的物流仓库', venueImageId: site.id,
-      imageId: front.id, extraImageIds: [side.id], pointIds: ['lift'], customPoints: ['开荒保洁'] });
+      imageId: front.id, extraImageIds: [side.id, photo('back.png').id, photo('top.png').id, photo('close.png').id], pointIds: ['lift'], customPoints: ['开荒保洁'] });
     assert.equal(ownDraft.plan.scene, '新建的物流仓库'); assert.deepEqual(ownDraft.plan.sceneIds, []); assert.equal(ownDraft.plan.venuePhoto, true); assert.equal(ownDraft.plan.imageCount, 1);
     const ownBefore = posts.length;
     riskCalls = 0; riskAlways = true;
@@ -458,7 +458,7 @@ async function run() {
     assert.ok(surveyAt >= 0 && surveyAt < own.indexOf(ownDirects[0]), 'the real site is surveyed before the director writes');
     assert.match(system(own[surveyAt]), /客户在真实现场拍的照片/u);
     assert.match(ownDirects[0].body.messages[1].content.at(-1).text, /新建的物流仓库（客户自己写的）[\s\S]*【场景勘察】客户现场照片/u, 'the director gets the written place and the survey');
-    assert.equal(ownDirects[0].body.messages[1].content.filter((part) => part.type === 'image_url').length, 4, 'two product photos, the 定妆照 and the site photo');
+    assert.equal(ownDirects[0].body.messages[1].content.filter((part) => part.type === 'image_url').length, 7, 'five product photos (the AI director takes five), the 定妆照 and the site photo');
     assert.match(system(ownDirects[0]), /最后一张是客户在自己的真实现场拍的照片/u);
     assert.equal(own.filter((p) => p.route.includes('/images/generations') && !/产品定妆设定图/u.test(p.body.prompt || '')).length, 0, 'nothing is drawn for the site');
     assert.equal(own.filter((p) => /风险审查/u.test(system(p))).length, 3, 'reviewed after each of the two rewrites');
@@ -469,9 +469,18 @@ async function run() {
     const ownVideos = own.filter((p) => p.route.includes('video-synthesis'));
     assert.equal(ownVideos.length, 3);
     assert.equal(ownVideos.filter((p) => /同速平移跟拍。机器从画面左侧沿一条直线匀速驶向右侧，全程只露出侧面[\s\S]*干净带/u.test(p.body.input.prompt)).length, 1, 'the still-risky shot (and only it) is filmed the safe way');
-    assert.ok(ownVideos.every((p) => p.body.input.media.length === 4), 'two photos, the 定妆照 and the site photo on every venue shot');
+    assert.ok(ownVideos.every((p) => p.body.input.media.length === 7), 'five photos, the 定妆照 and the site photo on every venue shot');
     assert.deepEqual(ownDone.crew.fallback, [1]); assert.deepEqual(ownDone.crew.risks, []); assert.equal(ownDone.crew.venuePhoto, true);
     assert.ok(ownDone.quote.reservedCny <= ownDone.quote.budgetCny + 1e-9);
+    // Review: a re-review that cannot be read never lets the rewritten plan through unchecked — the shot flagged
+    // before is filmed the safe way.
+    const blind = await service.create({ mode: 'product', style: 'real', durationSeconds: 15, productName: 'DZ95X 洗地机器人', sceneIds: ['factory'], imageId: front.id, pointIds: ['lift'] });
+    riskCalls = 0; riskBadSecond = true;
+    await service.start(blind.id); await until(blind.id, (t) => t.status === 'awaiting_sheet'); await service.confirmSheet(blind.id);
+    const blindDone = await until(blind.id, (t) => t.status === 'completed');
+    riskBadSecond = false;
+    assert.equal(riskCalls, 2); assert.deepEqual(blindDone.crew.fallback, [1]); assert.deepEqual(blindDone.crew.risks, []);
+    assert.equal(blindDone.crew.safeMove, 'side');
     // Review of #313: after three bad answers the retry asks again three times instead of reusing old answers.
     let alwaysBad = true;
     provider.request = ((original) => async (route, request = {}) => {

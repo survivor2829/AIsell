@@ -109,8 +109,10 @@ export function ProductPhotos({ images, disabled, onAdd, onRemove }: { images: P
 export type Crew = {
   sides: string[]; hiddenSides: string; parts: { name: string; count: string; where: string }[]; size: string; sizeNote: string; sheetIssues: string[];
   survey: { widthM: number | null; zone: string; canTurn: boolean; fits: boolean; dirtVisible?: boolean; note: string } | null;
-  risks: { index: number; risk: string; fix: string }[]; rewritten: boolean; fallback?: number[]; venuePhoto?: boolean;
+  risks: { index: number; risk: string; fix: string }[]; rewritten: boolean; fallback?: number[]; venuePhoto?: boolean; safeMove?: "side" | "front" | "back";
 };
+// The safe move a still-risky shot was filmed with, from the sides really photographed.
+const SAFE_MOVE = { side: "侧面平移跟拍", front: "高处固定机位、机器迎面直行", back: "后方跟随直行" } as const;
 export function CrewCard({ crew, atSheet = false }: { crew?: Crew | null; atSheet?: boolean }) {
   if (!crew) return null;
   return <div className="rs-director"><ScanEye size={22} /><div><b>导演组看到的</b>
@@ -120,7 +122,7 @@ export function CrewCard({ crew, atSheet = false }: { crew?: Crew | null; atShee
     {atSheet && crew.sheetIssues.length > 0 && <span className="rs-crew-warn"><AlertTriangle size={15} />定妆照可能不对：{crew.sheetIssues.join("；")}。不对的话点“重出”。</span>}
     {crew.survey && <span>{crew.venuePhoto ? "您的现场" : "场地"}：可作业宽度约 {crew.survey.widthM ?? "?"} 米，{crew.survey.canTurn ? "能转弯" : "只直行，不安排转弯"}{crew.survey.note ? `；${crew.survey.note}` : ""}</span>}
     {crew.rewritten && <span>风险审查让导演改过分镜{crew.risks.length || crew.fallback?.length ? "" : "，现在没有发现穿帮风险"}</span>}
-    {(crew.fallback || []).map((index) => <span key={`safe-${index}`}>第 {index + 1} 镜改了两次仍有风险，已换成最稳的拍法（侧面平移，看得见清洁后的地面），字幕不变</span>)}
+    {(crew.fallback || []).map((index) => <span key={`safe-${index}`}>第 {index + 1} 镜改了两次仍有风险，已换成最稳的拍法（{SAFE_MOVE[crew.safeMove || "side"]}，看得见清洁后的地面），字幕不变</span>)}
     {crew.risks.map((row) => <span key={row.index} className="rs-crew-warn"><AlertTriangle size={15} />第 {row.index + 1} 镜仍有风险：{row.risk}</span>)}
   </div></div>;
 }

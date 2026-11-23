@@ -121,18 +121,22 @@ const riskFeedback = (risks) => risks.filter((row) => !row.ok).map((row) => `风
 // rewrites becomes the one camera move these models have never got wrong for us — a fixed, slightly raised
 // camera beside a machine driving straight past (or towards the camera when no side was photographed),
 // so only photographed sides show and the cleaned strip stays in view. Its caption stays.
-function safeShotText({ plan, crew, shot }) {
+// Which safe move a shot gets, from the sides really photographed: beside it, towards the camera, or behind it.
+function safeMove(crew) {
   const sides = crew?.inventory?.sides || [];
-  const side = sides.includes('left') || sides.includes('right'), front = sides.includes('front');
+  return sides.includes('left') || sides.includes('right') ? 'side' : sides.includes('front') ? 'front' : 'back';
+}
+function safeShotText({ plan, crew, shot }) {
+  const move = safeMove(crew), side = move === 'side', front = move === 'front';
   const zone = crew?.survey?.zone ? `作业区：${crew.survey.zone}。` : '';
   const floor = `地面是${plan.surface || '这个场所常见的旧地面'}，开拍时地上看得见${plan.dirt || '日常的浮灰和脏污'}。`;
   const work = '工作部件放下贴着地面作业，只有它经过的地方变干净、露出地面本色、颜色明显变亮，没经过的地方保持原样。';
-  const move = side
+  const camera = side
     ? '摄影机固定在场地一侧约1.8米高处、略向下俯视，和机器同速平移跟拍。机器从画面左侧沿一条直线匀速驶向右侧，全程只露出侧面，车头一直朝着行进方向，不转弯、不掉头、不倒车。机器身后留下一条笔直的干净带，和两侧没清洁的地面分界清楚，到最后一帧都留在画面里。'
     : front
       ? '摄影机固定在约2米高处、向下俯视约30°，不移动。机器从画面远处沿一条直线匀速朝镜头方向驶来，车头始终朝向镜头，在画面中下部之前结束，不转弯、不掉头、不倒车。俯视下能看到机器身后一条笔直的干净带从远处一直延伸到机器，和两侧没清洁的地面分界清楚。'
       : '摄影机在机器正后方约3米、略高处同速跟随，只拍到车尾，不绕到侧面和前面。机器沿一条直线匀速向前，不转弯、不掉头。镜头和机器之间是它刚留下的干净带，和两侧没清洁的地面分界清楚。';
-  return `${zone}${floor}${move}${work}`;
+  return `${zone}${floor}${camera}${work}`;
 }
 function applySafeShots(plan, crew) {
   const flagged = new Set((crew?.risks || []).filter((row) => !row.ok).map((row) => row.index));
@@ -143,4 +147,4 @@ function applySafeShots(plan, crew) {
   return { plan: { ...plan, shots }, fallback: [...flagged] };
 }
 
-module.exports = { VERSION, SIDES, hiddenSides, analystRequest, parseAnalyst, surveyRequest, parseSurvey, briefing, riskRequest, parseRisk, riskFeedback, safeShotText, applySafeShots };
+module.exports = { VERSION, SIDES, hiddenSides, analystRequest, parseAnalyst, surveyRequest, parseSurvey, briefing, riskRequest, parseRisk, riskFeedback, safeMove, safeShotText, applySafeShots };
