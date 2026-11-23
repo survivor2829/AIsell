@@ -216,16 +216,18 @@ function createSocialNurture({ dataDir, accounts, launch = launchBrowser, execut
       let last = "";
       control.step = "watch";
       control.phase = "watching"; emit();
+      // A check Douyin puts up: this run stops on it, wherever it was met (the loop's own look, or a step
+      // that ran into it), and a second one today rests the account until tomorrow.
+      const stopOnVerification = async () => {
+        today.anomalies += 1;
+        await page.front?.();
+        note(plan, `平台要求验证（今天第 ${today.anomalies} 次），这一段先停下。请在弹出的 Chrome 窗口里完成验证。`);
+        await report("NURTURE_VERIFICATION", control.step);
+        if (today.anomalies >= 2) { today.restUntil = nextMidnight(now()); note(plan, "今天已经出现 2 次验证，为了账号安全，养号停到明天。"); }
+        end("verification", today.anomalies >= 2 ? "抖音要求验证，今天第 2 次，停到明天。" : "抖音要求验证，这一段停下了；请在 Chrome 窗口里完成验证。");
+      };
       while (now() < segmentEnd && !stopped()) {
-        if (await driver.blocked(page)) {
-          today.anomalies += 1;
-          await page.front?.();
-          note(plan, `平台要求验证（今天第 ${today.anomalies} 次），这一段先停下。请在弹出的 Chrome 窗口里完成验证。`);
-          await report("NURTURE_VERIFICATION", control.step);
-          if (today.anomalies >= 2) { today.restUntil = nextMidnight(now()); note(plan, "今天已经出现 2 次验证，为了账号安全，养号停到明天。"); }
-          end("verification", today.anomalies >= 2 ? "抖音要求验证，今天第 2 次，停到明天。" : "抖音要求验证，这一段停下了；请在 Chrome 窗口里完成验证。");
-          break;
-        }
+        if (await driver.blocked(page)) { await stopOnVerification(); break; }
         // A live room or an ad in the feed is not a playing video: move on to the next one
         // instead of ending the run (field capsule 68fd8773, 2026-10-30: a live room stopped it).
         let video = await driver.current(page);
@@ -255,6 +257,10 @@ function createSocialNurture({ dataDir, accounts, launch = launchBrowser, execut
               if (alreadyAuthors.size >= 5) { disabled.add(kind); await report("NURTURE_ELEMENT_MISSING", kind); }
               last = ""; control.step = "watch"; await pause(dwell / 2); if (!stopped() && now() < segmentEnd) await driver.next(page); continue;
             }
+            // Douyin asked to check the account before the comment went out: nothing counted.
+            // Stopped where it was met, with the step that met it: not left to the next turn, which the
+            // segment's end or a closed dialog could skip (review 2026-11-22).
+            else if (result === "verification") { await stopOnVerification(); break; }
             else if (result === "hidden") {
               today.counts.comments += 1; today.commentsOff = true;
               note(plan, "评论发出后在评论区看不到（可能被平台隐藏），今天不再评论。");
