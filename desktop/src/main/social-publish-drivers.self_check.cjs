@@ -62,5 +62,39 @@ assert.equal(DRIVERS.douyin.titleLimit, 30); assert.equal(DRIVERS.xiaohongshu.ti
   assert.equal(good.ui.image, "blob:cover");
   // 平台没接这张图：预览没变，报错不发。
   await assert.rejects(DRIVERS.channels.setCover(coverPage({ acceptsFile: false }), "C:/covers/a.jpg"), { code: "SOCIAL_COVER_FAILED" });
+  // 2026-11 起的视频号（客户现场包 6ef139e3）：上传后「编辑封面」框里直接选中这张图，没有裁剪框，按钮是「确认」；
+  // 图要过一会儿才出现在框里，关框后表单预览也要过一会儿才换。旧代码只认「确定」，框关不掉，客户只能盯着手动点。
+  const currentPage = () => {
+    const ui = { editor: false, upload: "", image: "frame.jpg", clicks: [], uploadShownAtConfirm: null, uploadIn: -1, previewIn: -1 };
+    const el = (localName, text, attributes, visible) => ({ nodeType: 1, localName, attributes, children: text ? [{ nodeType: 3, nodeValue: text }] : [], visible });
+    const tick = () => {
+      if (ui.uploadIn > 0 && --ui.uploadIn === 0) ui.upload = "blob:upload";
+      if (ui.previewIn > 0 && --ui.previewIn === 0) ui.image = "https://finder.video.qq.com/cover.jpg";
+    };
+    const nodes = () => [
+      el("div", "个人主页和分享卡片(3:4)", [], true), el("h3", "编辑封面", [], ui.editor), el("div", "从视频中选择封面", [], ui.editor), el("div", "上传封面", [], ui.editor),
+      el("img", "", ["src", "frame-1.jpg"], ui.editor), el("img", "", ["src", ui.upload], ui.editor && Boolean(ui.upload)),
+      el("input", "", ["type", "file", "accept", "image/jpeg,image/jpg,image/png"], false),
+      el("span", "取消", [], ui.editor), el("span", "确认", [], ui.editor), el("img", "", ["src", ui.image], true)];
+    const page = {
+      ui, evaluate: async () => "", tree: async () => { tick(); return { nodes: nodes() }; }, visible: async (node) => node.visible,
+      byText: (text) => (node) => (node.children || []).filter((child) => child.nodeType === 3).map((child) => child.nodeValue).join("") === text,
+      find: async (match) => { tick(); return nodes().find((node) => node.visible && match(node)) || null; },
+      click: async (node) => {
+        if (!node) return false;
+        const text = node.children[0]?.nodeValue; ui.clicks.push(text);
+        if (text === "个人主页和分享卡片(3:4)") ui.editor = true;
+        if (text === "确认") { ui.uploadShownAtConfirm = Boolean(ui.upload); ui.editor = false; if (ui.upload) ui.previewIn = 4; }
+        return true;
+      },
+      setFile: async () => { ui.uploadIn = 3; }
+    };
+    return page;
+  };
+  const current = currentPage();
+  await DRIVERS.channels.setCover(current, "C:/covers/a.jpg");
+  assert.deepEqual(current.ui.clicks, ["个人主页和分享卡片(3:4)", "上传封面", "确认"], "新版编辑框点「确认」关掉，不用人盯着");
+  assert.equal(current.ui.uploadShownAtConfirm, true, "上传的图出现在框里之后才确认，不会把视频帧当封面确认掉");
+  assert.equal(current.ui.image, "https://finder.video.qq.com/cover.jpg", "表单预览晚一点才换，也算换成功");
   console.log("social publish drivers self-check passed");
 })().catch((error) => { console.error(error); process.exit(1); });

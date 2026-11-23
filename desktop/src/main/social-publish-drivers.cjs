@@ -25,6 +25,21 @@ async function visibleImages(page) {
   return sources;
 }
 const COVER_DIALOG = (node) => node.localName === "h3" && /^(裁剪封面图|编辑封面)$/.test(ownText(node));
+const CROP_DIALOG = (node) => node.localName === "h3" && ownText(node) === "裁剪封面图";
+// The editor's own confirm button. It read 确定 (2026-10-29); since 2026-11 the 编辑封面 box selects the
+// uploaded picture itself and closes with 确认 (客户现场包 6ef139e3, 2026-11-23). The last one shown is the
+// open box's footer button.
+const CONFIRM = /^(确定|确认)$/;
+async function confirmButton(page) {
+  const view = await page.tree();
+  let last = null;
+  for (const node of view.nodes) if (node.nodeType === 1 && CONFIRM.test(ownText(node)) && await page.visible(node)) last = node;
+  return last;
+}
+// Polls until `ready` holds (every 750 ms, up to `ms`); true when it did.
+async function waitFor(ready, ms) {
+  for (const end = Date.now() + ms; ;) { if (await ready()) return true; if (Date.now() > end) return false; await sleep(750); }
+}
 
 async function fileInput(page) {
   const view = await page.tree();
@@ -155,19 +170,25 @@ const DRIVERS = {
       }
       const uploadTab = await page.find(page.byText("上传封面"));
       if (uploadTab) { await page.click(uploadTab); await sleep(800); }
+      const opened = await visibleImages(page);
       const view = await page.tree();
       const input = view.nodes.find((node) => node.nodeType === 1 && node.localName === "input" && attr(node, "type") === "file" && /image\/(jpe?g|png)/.test(attr(node, "accept") || ""));
       if (!input) throw fail("SOCIAL_COVER_FAILED", "没有找到视频号的封面上传入口，没有发布，可以重新发起。");
       await page.setFile(input, file);
-      // Crop first; the editor itself may then ask for a confirmation too.
+      // Confirm only once the uploaded picture is in the editor (or its crop box opened), so a video frame
+      // still selected is never confirmed as the cover.
+      await waitFor(async () => Boolean(await page.find(CROP_DIALOG)) || (await visibleImages(page)).some((src) => !opened.includes(src)), 15_000);
+      // Every box the editor opens is confirmed in turn (an older page cropped first, then confirmed the editor).
       for (let i = 0; i < 20; i++) {
         await sleep(1000);
         if (!await page.find(COVER_DIALOG)) break;
-        await page.click(await page.find(page.byText("确定")));
+        await page.click(await confirmButton(page));
       }
-      await sleep(1500);
+      await sleep(1000);
       if (await page.find(COVER_DIALOG)) throw fail("SOCIAL_COVER_FAILED", "视频号的封面编辑框没有关闭，没有发布，可以重新发起。");
-      if (!(await visibleImages(page)).some((src) => !before.includes(src))) throw fail("SOCIAL_COVER_FAILED", "视频号的封面没有换成成片封面，没有发布，可以重新发起。");
+      // The form's preview shows the new cover a moment after the box closes.
+      if (!await waitFor(async () => (await visibleImages(page)).some((src) => !before.includes(src)), 15_000))
+        throw fail("SOCIAL_COVER_FAILED", "视频号的封面没有换成成片封面，没有发布，可以重新发起。");
     },
     formMatches: titleThenText,
     privateChecked: async () => false,
