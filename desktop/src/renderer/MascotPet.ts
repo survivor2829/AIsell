@@ -4,6 +4,8 @@
 //
 // Low-end computers matter: the frame loop stops whenever nothing is moving, and quiet stretches are the norm.
 
+import { lowPowerDevice } from "./power-saving";
+
 export type PetWork = "work" | "typing" | "drawing" | "error" | null;
 export type PetHooks = {
   walk: (dx: number) => Promise<{ moved?: number } | undefined>;
@@ -303,7 +305,9 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
       spin(); await w(1100); face("happy", "open"); fx(STAR, 300, 220, -60); fx(STAR, 720, 190, 60); await w(800);
     },
     async petted(w) { track = false; face("happy", "smile"); talk(pick(["好舒服～", "再摸摸～", "嘿嘿～"])); go({ blush: 1, sy: .985 }); for (let i = 0; i < 24 && petting(); i++) { go({ hr: Math.sin(i * .8) * 7, hy: 8 }); if (i % 4 === 0) fx(HEART, rnd(300, 720), 240, rnd(-50, 50)); await w(170); } },
-    async sleepy(w) { track = false; asleep = true; face("closed", "o"); go({ by: 112, sy: .96, fLx: 330, fLy: 1150, fRx: 670, fRy: 1150, fLr: -24, fRr: 24, Lx: 236, Ly: 1080, Rx: 764, Ry: 1080, hr: 7, hy: 24 }); for (;;) { fx(ZZ, 780, 260, 60); go({ hy: 30, hr: 9 }); await w(1900); go({ hy: 18, hr: 5 }); await w(1900); } },
+    async sleepy(w) { track = false; asleep = true; face("closed", "o"); go({ by: 112, sy: .96, fLx: 330, fLy: 1150, fRx: 670, fRy: 1150, fLr: -24, fRr: 24, Lx: 236, Ly: 1080, Rx: 764, Ry: 1080, hr: 7, hy: 24 }); // 省电 (2026-11-23): three snores, then it lies still until touched; nothing is redrawn while it sleeps.
+      for (let i = 0; i < 3; i++) { fx(ZZ, 780, 260, 60); go({ hy: 30, hr: 9 }); await w(1900); go({ hy: 18, hr: 5 }); await w(1900); }
+      go({ hy: 24, hr: 7 }); for (;;) await w(60_000); },
     async wake(w) { asleep = false; face("wide", "o"); pop(1.2); hop(420); await w(420); face("happy", "big"); hand("R", "open"); talk(pick(["你回来啦！", "我刚刚没睡！", "想我了吗～"])); for (let i = 0; i < 4; i++) { go({ Rx: 945 + (i % 2) * 62, Ry: 560, Rr: i % 2 ? 18 : -16, Rb: 170 }); await w(220); } },
     async dizzy(w) { face("dizzy", "wave"); V.tuft += 240; talk("晕…晕了…"); for (let i = 0; i < 24; i++) { go({ lean: Math.sin(i * .55) * 8, hr: Math.sin(i * .55 + 1) * 9, bx: Math.sin(i * .55) * 18 }); await w(90); } go({ lean: 0, hr: 0, bx: 0 }); },
     // Tucked into a side of the screen (user 2026-11-13「隐藏到右边…侧过身来看着你」): the body stays behind the
@@ -377,6 +381,8 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
   function startWork() { act(work === "typing" ? "typingLoop" : work === "drawing" ? "drawingLoop" : work === "error" ? "errorLoop" : "workLoop"); }
   function scheduleIdle() {
     window.clearTimeout(idleTimer);
+    // 省电: on a low-power computer the pet keeps still between tasks (blinks only); work is still acted out.
+    if (lowPowerDevice) return;
     idleTimer = window.setTimeout(() => {
       if (busy || dragging || work || tucked || destroyed) return;
       const pool = IDLE_ACTIONS.filter(([name]) => name !== lastIdle);

@@ -74,9 +74,14 @@ function registerWechatWorkflowIpc(options) {
       say({ text: "这次没停下来", sub: "请回到软件点「暂停程序」", mood: "error" });
     }
   }
-  const broadcast = (state) => {
+  // The 750 ms refresh only sends when something changed: both windows re-render on every update.
+  let lastSent = "";
+  const broadcast = (state, { onlyChanges = false } = {}) => {
     try { syncSpaceHotkey(state); } catch { /* Pausing by keyboard is a convenience; the run never depends on it. */ }
     const progress = viewState(state);
+    const text = JSON.stringify(progress);
+    if (onlyChanges && text === lastSent) return;
+    lastSent = text;
     for (const window of [main(), floatingWindow]) {
       if (window && !window.isDestroyed()) window.webContents.send("wechat-workflow:update", { ok: true, state: progress });
     }
@@ -184,7 +189,7 @@ function registerWechatWorkflowIpc(options) {
     broadcast(controller.status());
     if (!progressTimer) {
       progressTimer = setInterval(() => {
-        if (floatingWindow && !floatingWindow.isDestroyed() && floatingWindow.isVisible()) broadcast(controller.status());
+        if (floatingWindow && !floatingWindow.isDestroyed() && floatingWindow.isVisible()) broadcast(controller.status(), { onlyChanges: true });
       }, 750);
       progressTimer.unref?.();
     }

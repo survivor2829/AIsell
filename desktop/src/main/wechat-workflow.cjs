@@ -137,7 +137,9 @@ function createWechatWorkflowController(options) {
       };
     } catch { return null; }
   };
-  const getAccount = () => String(options.getAccount?.() || "");
+  // A status read asks for the account once per task; it is read once per status instead (main.cjs reads a file).
+  let statusAccount = null;
+  const getAccount = () => statusAccount ?? String(options.getAccount?.() || "");
   const emit = () => { revision += 1; options.onUpdate?.(status()); };
 
   try {
@@ -190,13 +192,43 @@ function createWechatWorkflowController(options) {
     }
     catch { return false; }
   }
-  function unknownResolution(task) {
+  function describeUnknown(task) {
     if (task.type !== "touch" || task.status !== "needs_attention" || task.accountName !== getAccount()) return null;
-    try {
-      const description = executors.touch?.describeUnknownWorkflowTask?.(task) || null;
-      return description?.required === true ? description : null;
-    }
+    try { return executors.touch?.describeUnknownWorkflowTask?.(task) || null; }
     catch { return null; }
+  }
+  function unknownResolution(task) {
+    const description = describeUnknown(task);
+    return description?.required === true ? description : null;
+  }
+  // 省电 (2026-11-23): 小玺 asks for the status every 750 ms. Reading every task's files each time
+  // kept a core a quarter busy on a PC with a long task history and got worse with use, so what a task's
+  // files say is reused until the task record, the account or one of its files changes. While nothing
+  // runs, the files are only looked at every few seconds (even a stat per file adds up on Windows).
+  const IDLE_RECHECK_MS = 3000;
+  const fileStamp = (file) => { try { const stat = fs.statSync(file); return `${stat.ino}:${stat.mtimeMs}:${stat.size}`; } catch { return "-"; } };
+  const taskViews = new Map();
+  function taskView(task) {
+    const stamp = executors[task.type]?.workflowTaskStamp;
+    const compute = () => ({ retryable: canRetry(task), description: describeUnknown(task), skipped: skippedTouchState(task) });
+    if (!stamp) return compute();
+    let record, files;
+    try {
+      record = [getAccount(), queueRevision, JSON.stringify(task)].join("|");
+      const saved = taskViews.get(task.id);
+      const time = Date.now();
+      if (saved?.record === record && !enabled && !inFlight && time - saved.checkedAt < IDLE_RECHECK_MS) return saved.view;
+      files = [fileStamp(taskPath(task)), stamp(task)].join("|");
+      if (saved?.record === record && saved.files === files) { saved.checkedAt = time; return saved.view; }
+    }
+    catch { return compute(); }
+    const view = compute();
+    taskViews.set(task.id, { record, files, view, checkedAt: Date.now() });
+    return view;
+  }
+  function forgetTaskViews() {
+    const ids = new Set(store.tasks.map((task) => task.id));
+    for (const id of taskViews.keys()) if (!ids.has(id)) taskViews.delete(id);
   }
   function skippedTouchState(task) {
     if (task.type !== "touch" || !executors.touch?.describeSkippedWorkflowTask) return null;
@@ -249,9 +281,7 @@ function createWechatWorkflowController(options) {
     const reconciled = [];
     for (const task of store.tasks) {
       if (task.type !== "touch" || task.status !== "needs_attention" || task.accountName !== getAccount()) continue;
-      let description;
-      try { description = executors.touch?.describeUnknownWorkflowTask?.(task); }
-      catch { continue; }
+      const { description } = taskView(task);
       if (!description?.reconciliation) continue;
       const diagnostic = applyUnknownResolution(task, description.reconciliation);
       reconciled.push({ task, diagnostic });
@@ -315,7 +345,13 @@ function createWechatWorkflowController(options) {
       .sort((left, right) => Number(left.notBefore) - Number(right.notBefore) || left.sequence - right.sequence)[0] || null;
   }
 
-  function status({ reconcile = true } = {}) {
+  function status(request) {
+    const outer = statusAccount;
+    statusAccount = outer ?? getAccount();
+    try { return statusNow(request); }
+    finally { statusAccount = outer; }
+  }
+  function statusNow({ reconcile = true } = {}) {
     if (reconcile) reconcileUnknownResolutions();
     const waiting = ["waiting_safety_interval", "waiting_recovery"].includes(phase) ? waitingTask() : null;
     return {
@@ -323,10 +359,9 @@ function createWechatWorkflowController(options) {
       waitingTaskId: waiting?.id || null, waitUntil: waiting?.notBefore || null,
       nextTaskId: nextTask()?.id || null, error, replyStatus: replyStatus === TOUCH_FIRST_STATUS && !touchUnfinished() ? "" : replyStatus, replyError, replyBackoff, replyExcludedCount, replyExcludedReasons, replyEnrollExcludedCount, replyEnrollAmbiguousCount, revision,
       classificationQuality: qualitySummary(),
-      tasks: store.tasks.map((task) => {
-        const retryable = canRetry(task);
-        const resolution = unknownResolution(task);
-        const skipped = skippedTouchState(task);
+      tasks: (forgetTaskViews(), store.tasks).map((task) => {
+        const { retryable, description, skipped } = taskView(task);
+        const resolution = description?.required === true ? description : null;
         return { ...task, canRetry: retryable, ...(resolution ? { unknownResolution: resolution } : {}),
           ...(skipped || {}),
           accountMismatch: Boolean(task.accountName && task.accountName !== getAccount()) };
