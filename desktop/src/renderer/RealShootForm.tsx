@@ -9,12 +9,14 @@ import { SceneIcon } from "./SceneIcons";
 type Item = { id: string; name: string };
 export type RealCatalog = {
   scenes: Item[]; points: (Item & { caption: string; cleaning?: boolean })[];
-  durations: number[]; pointLimit: Record<string, number>; minShots: Record<string, number>; customLimit: number; customLength: number;
+  durations: number[]; pointLimit: Record<string, number>; minShots: Record<string, number>; customLimit: number; customLength: number; sceneLength?: number;
 };
 export type Timing = { image: number; story: number; finish: number; video15: number; video6: number; shotSlots: number; imageSlots: number };
-export type RealDraft = { sceneId: string; pointIds: string[]; customPoints: string[] };
-export const initialReal: RealDraft = { sceneId: "", pointIds: [], customPoints: [] };
 export type ProductImage = { id: string; name: string; previewDataUrl: string };
+// The place: one from the list, or the customer's own words; and, if they have one, a photo of the real site.
+export type RealDraft = { sceneId: string; sceneText: string; venue: ProductImage | null; pointIds: string[]; customPoints: string[] };
+export const initialReal: RealDraft = { sceneId: "", sceneText: "", venue: null, pointIds: [], customPoints: [] };
+export const realSceneReady = (draft: RealDraft) => Boolean(draft.sceneId || draft.sceneText.trim());
 
 // A video shot takes roughly this long, between the measured 6- and 15-second times.
 const videoSeconds = (timing: Timing, seconds: number) => Math.max(60, timing.video6 + (timing.video15 - timing.video6) * (seconds - 6) / 9);
@@ -25,8 +27,8 @@ export function realEstimate(timing: Timing | undefined, catalog: RealCatalog | 
   const picked = points.length + draft.customPoints.length;
   // Same as the plan: a cleaning shot leads when none was picked and there is room; extra cleaning shots make up short lists.
   const shots = Math.max(catalog.minShots[durationSeconds] || 3, picked + (!points.some((point) => point.cleaning) && picked < limit ? 1 : 0));
-  // The 定妆照, the AI director, the scene picture, then the shots a few at a time.
-  return 10 + 2 * timing.image + timing.story + Math.ceil(shots / timing.shotSlots) * videoSeconds(timing, durationSeconds / shots) + timing.finish;
+  // The 定妆照, the AI director, the scene picture (none with a site photo), then the shots a few at a time.
+  return 10 + (draft.venue ? 1 : 2) * timing.image + timing.story + Math.ceil(shots / timing.shotSlots) * videoSeconds(timing, durationSeconds / shots) + timing.finish;
 }
 export function storyEstimate(timing: Timing | undefined, durationSeconds: number) {
   if (!timing) return 0;
@@ -49,10 +51,10 @@ export function Countdown({ finishAt }: { finishAt?: string | null }) {
 
 type FieldsProps = {
   catalog: RealCatalog; draft: RealDraft; durationSeconds: number; disabled: boolean;
-  onChange: (draft: RealDraft) => void;
+  onChange: (draft: RealDraft) => void; onPickVenue: () => void;
 };
 // Where it works and what it can do — the customer knows; the AI director works out the rest from the photos.
-export function RealShootFields({ catalog, draft, durationSeconds, disabled, onChange }: FieldsProps) {
+export function RealShootFields({ catalog, draft, durationSeconds, disabled, onChange, onPickVenue }: FieldsProps) {
   const [text, setText] = useState("");
   const limit = catalog.pointLimit[durationSeconds] || 5;
   const used = draft.pointIds.length + draft.customPoints.length;
@@ -63,9 +65,20 @@ export function RealShootFields({ catalog, draft, durationSeconds, disabled, onC
     onChange({ ...draft, customPoints: [...draft.customPoints, value] }); setText("");
   };
   return <>
-    <h2 className="pv2-label">在哪里用？<small>选一个，AI 会按这个场所布置地面和脏污</small></h2>
-    <div className="pv2-scenes">{catalog.scenes.map((scene) => { const on = draft.sceneId === scene.id; return <button key={scene.id} type="button" disabled={disabled} aria-pressed={on} className={on ? "is-on" : ""} onClick={() => onChange({ ...draft, sceneId: scene.id })}>
+    <h2 className="pv2-label">在哪里用？<small>选一个或自己写，AI 会按这个场所布置地面和脏污</small></h2>
+    <div className="pv2-scenes">{catalog.scenes.map((scene) => { const on = draft.sceneId === scene.id; return <button key={scene.id} type="button" disabled={disabled} aria-pressed={on} className={on ? "is-on" : ""} onClick={() => onChange({ ...draft, sceneId: scene.id, sceneText: "" })}>
       <span className="pv2-scene-icon"><SceneIcon id={scene.id} /></span>{scene.name}{on && <Check className="pv2-check" size={16} strokeWidth={3} />}</button>; })}</div>
+    <div className="rs-custom">
+      <label htmlFor="rs-scene-input">列表里没有？自己写场所</label>
+      <div><input id="rs-scene-input" maxLength={catalog.sceneLength || 30} value={draft.sceneText} disabled={disabled} placeholder="例如：新建的物流仓库、汽车 4S 店展厅"
+        onChange={(event) => onChange({ ...draft, sceneText: event.target.value, sceneId: event.target.value.trim() ? "" : draft.sceneId })} /></div>
+    </div>
+    <div className="rs-venue">
+      {draft.venue
+        ? <figure><img src={draft.venue.previewDataUrl} alt="现场照片" /><button type="button" aria-label="去掉现场照片" disabled={disabled} onClick={() => onChange({ ...draft, venue: null })}><X size={14} /></button></figure>
+        : <button type="button" className="rs-photo-add" disabled={disabled} onClick={onPickVenue}><MapPin size={22} />传现场照片</button>}
+      <small>{draft.venue ? "镜头都在这个现场拍，不再另画场景图。" : "可选：拍一张您的真实场地（越宽越好），视频就在这里拍。"}</small>
+    </div>
     <h2 className="pv2-label">想展示哪些卖点？<small>已选 {used} / {limit}，只选这台设备真有的</small></h2>
     <div className="rs-points">{catalog.points.map((point) => { const on = draft.pointIds.includes(point.id);
       return <button key={point.id} type="button" aria-pressed={on} className={on ? "is-on" : ""} disabled={disabled || (!on && used >= limit)} onClick={() => togglePoint(point.id)}>
@@ -82,17 +95,39 @@ export function RealShootFields({ catalog, draft, durationSeconds, disabled, onC
   </>;
 }
 
-// Up to three photos of the same machine from different sides: fewer surprises when it turns.
+// Up to five photos of the same machine from different sides (same limit as the main process): a side
+// nobody photographed is kept out of every shot, so each extra side means more freedom and fewer surprises.
+export const MAX_PHOTOS = 5;
 export function ProductPhotos({ images, disabled, onAdd, onRemove }: { images: ProductImage[]; disabled: boolean; onAdd: () => void; onRemove: (id: string) => void }) {
   return <div className="rs-photos">{images.slice(1).map((image) => <figure key={image.id}><img src={image.previewDataUrl} alt="另一个角度的产品图" />
     <button type="button" aria-label="去掉这张" disabled={disabled} onClick={() => onRemove(image.id)}><X size={14} /></button></figure>)}
-    {images.length > 0 && images.length < 3 && <button type="button" className="rs-photo-add" disabled={disabled} onClick={onAdd}><ImagePlus size={22} />加侧面/背面图</button>}
+    {images.length > 0 && images.length < MAX_PHOTOS && <button type="button" className="rs-photo-add" disabled={disabled} onClick={onAdd}><ImagePlus size={22} />加侧面/背面图</button>}
   </div>;
+}
+
+// 导演组 (2026-11-23): what the product analyst, the site survey and the risk review found before any video is paid for.
+export type Crew = {
+  sides: string[]; hiddenSides: string; parts: { name: string; count: string; where: string }[]; size: string; sizeNote: string; sheetIssues: string[];
+  survey: { widthM: number | null; zone: string; canTurn: boolean; fits: boolean; dirtVisible?: boolean; note: string } | null;
+  risks: { index: number; risk: string; fix: string }[]; rewritten: boolean; fallback?: number[]; venuePhoto?: boolean;
+};
+export function CrewCard({ crew, atSheet = false }: { crew?: Crew | null; atSheet?: boolean }) {
+  if (!crew) return null;
+  return <div className="rs-director"><ScanEye size={22} /><div><b>导演组看到的</b>
+    <span>真实照片拍到：{crew.sides.join("、")}{crew.hiddenSides ? `；${crew.hiddenSides}没有照片，镜头不会拍到` : ""}</span>
+    {crew.parts.length > 0 && <span>部件：{crew.parts.map((part) => `${part.name}${part.count ? ` ${part.count}` : ""}`).join("；")}</span>}
+    {crew.sizeNote && <span>体量：{crew.sizeNote}</span>}
+    {atSheet && crew.sheetIssues.length > 0 && <span className="rs-crew-warn"><AlertTriangle size={15} />定妆照可能不对：{crew.sheetIssues.join("；")}。不对的话点“重出”。</span>}
+    {crew.survey && <span>{crew.venuePhoto ? "您的现场" : "场地"}：可作业宽度约 {crew.survey.widthM ?? "?"} 米，{crew.survey.canTurn ? "能转弯" : "只直行，不安排转弯"}{crew.survey.note ? `；${crew.survey.note}` : ""}</span>}
+    {crew.rewritten && <span>风险审查让导演改过分镜{crew.risks.length || crew.fallback?.length ? "" : "，现在没有发现穿帮风险"}</span>}
+    {(crew.fallback || []).map((index) => <span key={`safe-${index}`}>第 {index + 1} 镜改了两次仍有风险，已换成最稳的拍法（侧面平移，看得见清洁后的地面），字幕不变</span>)}
+    {crew.risks.map((row) => <span key={row.index} className="rs-crew-warn"><AlertTriangle size={15} />第 {row.index + 1} 镜仍有风险：{row.risk}</span>)}
+  </div></div>;
 }
 
 type ProgressTask = {
   id: string; status: string; durationSeconds: number; shotsReady?: boolean[]; shotsRunning?: boolean[]; imagesReady?: Record<string, boolean>;
-  sheetConfirmed?: boolean; sheetStep?: boolean; directorStep?: boolean; directed?: boolean;
+  sheetConfirmed?: boolean; sheetStep?: boolean; directorStep?: boolean; directed?: boolean; crew?: Crew | null;
   plan: { machine?: string; surface?: string; dirt?: string; shots: { index: number; title: string; caption?: string; seconds: number; place?: string }[] };
 };
 // What the AI director understood from the photos, shown as soon as it has decided (让智能看得见).
@@ -138,6 +173,7 @@ export function RealShootProgress({ task, shotVideos }: { task: ProgressTask; sh
   const stuck = ["needs_attention", "outcome_unknown"].includes(task.status);
   return <div className="sv-progress">
     <DirectorCard task={task} />
+    <CrewCard crew={task.crew} />
     <ol className="sv-stages">{STAGES.map(({ label, Icon }, index) => <li key={label} className={index < stage ? "is-done" : index === stage ? "is-now" : ""}>
       <span>{index < stage ? <Check size={18} strokeWidth={3} /> : <Icon size={18} />}</span>{label}</li>)}</ol>
     <div className="pv2-shots">{task.plan.shots.map((shot, index) => {

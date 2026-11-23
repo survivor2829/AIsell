@@ -15,8 +15,14 @@ const VERSION = 'real-2';
 const DIRECTOR_MODEL = 'qwen3-vl-plus';
 const DIRECTOR_ROUTE = '/bailian/compatible-mode/v1/chat/completions';
 const PROMPT_LIMIT = 4500;
-const MAX_PRODUCT_IMAGES = 3;
-const CUSTOM_LIMIT = 3, CUSTOM_LENGTH = 30;
+// 2026-11-23: up to five photos (front, sides, back, a close-up); with the 定妆照 and the scene that is 7 of Wan3's 9 references.
+const MAX_PRODUCT_IMAGES = 5;
+// 导演组 (real-shoot-crew.cjs): the product analyst, the site survey and the risk review before any video is paid for.
+// crew-2 (2026-11-23 试拍反馈): no video while a shot is still at risk (two rewrites, then a safe shot), the
+// cleaned strip must be seen, the customer's own place and site photo.
+const CREW = 'crew-2';
+const CREWS = new Set(['crew-1', CREW]);
+const CUSTOM_LIMIT = 3, CUSTOM_LENGTH = 30, SCENE_LENGTH = 30;
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const clean = (value, limit) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, limit);
 const bare = (text) => String(text || '').replace(/\s+/gu, '');
@@ -65,7 +71,7 @@ const FILLER = { id: 'clean', name: '清洁效果', caption: '走过的地方 �
 
 // What the customer can tick: every selling point, whatever the machine (the customer knows what it can do).
 function choices() {
-  return { scenes: SCENES.map(({ id, name }) => ({ id, name })),
+  return { scenes: SCENES.map(({ id, name }) => ({ id, name })), sceneLength: SCENE_LENGTH,
     points: catalog.POINTS.filter((point) => !point.core).map(({ id, name, caption, cleaning }) => ({ id, name, caption, cleaning: Boolean(cleaning) })),
     durations: catalog.DURATIONS, pointLimit: catalog.POINT_LIMIT, minShots: catalog.MIN_SHOTS, customLimit: CUSTOM_LIMIT, customLength: CUSTOM_LENGTH };
 }
@@ -80,9 +86,15 @@ function planDirected(input) {
   if (String(input.facts || '').trim().length > FACT_LIMIT) throw fail('product_video_invalid_input', `产品资料最多${FACT_LIMIT}字，请精简后重试。`);
   const productName = clean(input.productName, 80);
   if (!productName) throw fail('product_video_invalid_input', '请填写产品名称，AI 导演要知道它是什么设备。');
-  const sceneId = Array.isArray(input.sceneIds) && input.sceneIds.length === 1 ? input.sceneIds[0] : '';
+  // The place: picked from the list, or written by the customer (user 2026-11-23: 选的场景通常是通用的);
+  // a photo of the real site makes every venue shot happen there instead of in a drawn one.
+  const sceneIds = Array.isArray(input.sceneIds) ? input.sceneIds.filter(Boolean) : [];
+  const sceneId = sceneIds.length === 1 ? sceneIds[0] : '';
+  const sceneText = clean(input.sceneText, SCENE_LENGTH);
   const scene = SCENES.find((row) => row.id === sceneId);
-  if (!scene || !catalog.SCENE_DETAIL[sceneId]) throw fail('product_video_invalid_option', '请选择一个使用场所。');
+  if (sceneIds.length > 1 || (sceneText && sceneIds.length)) throw fail('product_video_invalid_option', '使用场所选一个，或者自己写一个，不能同时。');
+  if (!sceneText && (!scene || !catalog.SCENE_DETAIL[sceneId])) throw fail('product_video_invalid_option', '请选择一个使用场所，或者自己写一个。');
+  const venuePhoto = typeof input.venueImageId === 'string' && input.venueImageId.length > 0;
   const pointIds = Array.isArray(input.pointIds) ? [...new Set(input.pointIds)] : [];
   const allowed = catalog.POINTS.filter((point) => !point.core);
   if (pointIds.some((id) => !allowed.some((point) => point.id === id))) throw fail('product_video_invalid_option', '有卖点无法识别，请重新勾选。');
@@ -114,7 +126,9 @@ function planDirected(input) {
     version: VERSION, pipelineVersion: 6, director: 'ai', directorModel: DIRECTOR_MODEL, videoProvider: 'bailian', videoModel: DIRECT_MODEL, videoAudio: true,
     sourceResolution: '480p', outputSize: '1080x1920', imageModel: IMAGE_MODEL,
     // The 定妆照 and the scene picture: the director always sets at least one shot in the venue.
-    sheet: true, imageCount: 2, productName, productImages: 1 + extra.length, scene: scene.name, sceneIds: [scene.id], pointIds, customPoints: custom,
+    // A site photo from the customer is the scene picture itself: nothing to draw.
+    sheet: true, crew: CREW, imageCount: venuePhoto ? 1 : 2, productName, productImages: 1 + extra.length, scene: scene ? scene.name : sceneText, sceneIds: scene ? [scene.id] : [],
+    ...(sceneText ? { sceneText } : {}), ...(venuePhoto ? { venuePhoto: true } : {}), pointIds, customPoints: custom,
     platePrompt: '', shots, evidenceStatus: 'user_selected_unverified', goal: '真实现场的设备作业演示',
     sendText: '这是按您这台设备做的现场作业演示。把您的场地情况发来，一起看看怎么用。',
     estimateNote: '一张场景图按图片单价；视频按 Wan3 480P 有声每秒单价，各镜头同时生成；AI 导演看图写分镜按用量计费（几分钱）。'
@@ -132,32 +146,36 @@ function pointHint(shot) {
 }
 
 // The vision model's brief. images: data URLs of the product photos followed by the 定妆照.
-function directorMessages({ plan, facts = '', images, feedback = '' }) {
-  const detail = catalog.SCENE_DETAIL[plan.sceneIds[0]], scene = SCENES.find((row) => row.id === plan.sceneIds[0]);
+function directorMessages({ plan, facts = '', images, feedback = '', crew = '' }) {
+  const scene = SCENES.find((row) => row.id === plan.sceneIds[0]), detail = scene && catalog.SCENE_DETAIL[scene.id];
+  const place = detail ? `「${scene.name}」：${detail.place}；${detail.light}；环境声：${detail.ambient}`
+    : `客户自己写的「${plan.scene}」：地点、陈设、光线和环境声由你按这种场所的真实样子判断`;
   const photos = plan.productImages;
   const list = plan.shots.map((shot) => `第${shot.index + 1}镜｜${shot.seconds}秒｜${shot.filler || shot.pointId === 'clean' ? `清洁效果（地面由脏变干净${plan.shots.filter((row) => row.filler || row.pointId === 'clean').length > 1 ? '；几个清洁镜头换不同区域、不同机位和走向，不要拍成一样' : ''}）` : `卖点「${shot.title}」`}${shot.caption ? `｜默认字幕：${shot.caption}` : ''}${pointHint(shot) ? `｜常见拍法：${pointHint(shot)}` : ''}`).join('\n');
   const system = `你是商用清洁设备的实拍导演，同时负责给视频生成模型写提示词。客户没有设备也没有场地，要靠你写的提示词，让模型拍出像在真实现场实拍、看不出是 AI 的设备作业视频。
-先认真看图：前${photos}张是这台机器的真实产品照片，最后一张是根据照片画的四视角定妆图（前侧、正侧、背后、工作部件近景）。判断它是什么设备、怎么移动（自主行驶的机器人 / 人推着走 / 人坐着开）、工作部件在哪、怎样清洁地面。产品名称里有“机器人”，或客户的卖点是自动避障、自动回充、乘电梯、夜间无人作业这类自主功能时，它就是自己行驶的机器人（operator 为 none），即使照片上有座椅或方向盘，座位上也没有人。
+先认真看图：前${photos}张是这台机器的真实产品照片，第${photos + 1}张是根据照片画的四视角定妆图（前侧、正侧、背后、工作部件近景）。${plan.venuePhoto ? `最后一张是客户在自己的真实现场拍的照片：场所里的镜头都在这个现场拍，地面、陈设和光线照这张照片写，作业路线选照片里最宽、最空的那块地方，plate 就描述这张照片。` : ''}判断它是什么设备、怎么移动（自主行驶的机器人 / 人推着走 / 人坐着开）、工作部件在哪、怎样清洁地面。产品名称里有“机器人”，或客户的卖点是自动避障、自动回充、乘电梯、夜间无人作业这类自主功能时，它就是自己行驶的机器人（operator 为 none），即使照片上有座椅或方向盘，座位上也没有人。
 然后为每一镜写一段给视频模型的中文提示词。下面是付费试拍验证过的经验，必须遵守：
 1. 每镜是一个连续镜头，一镜到底，不剪辑不转场；摄影机全程只做一件事（固定不动、或同速平移跟拍、或在后方跟随，三选一），不推拉摇移组合。
-2. 全片只有这一台机器，外观完全照照片和定妆图；照片里有的部件保留，没有的不加。照片里有座椅或方向盘但你判断是无人驾驶机器人时，座位上没有人。产品照片多是展示时拍的，刷子、刷盘、后部刮条常常收起悬空；作业时要写成放下的样子：刷子压在地面上转，后部刮条整条落地、胶条贴着地面略微压弯向后拖，和地面之间不留缝，这不算改外观。
+2. 全片只有这一台机器，外观完全照照片和定妆图；照片里有的部件保留，没有的不加。照片背景里的其他机器、人、货物和临时贴的纸质标签都不属于这台机器，不写进提示词。照片里有座椅或方向盘但你判断是无人驾驶机器人时，座位上没有人。产品照片多是展示时拍的，刷子、刷盘、后部刮条常常收起悬空；作业时要写成放下的样子：刷子压在地面上转，后部刮条整条落地、胶条贴着地面略微压弯向后拖，和地面之间不留缝，这不算改外观。
 3. 机器只朝机头方向前进，不倒着走。清洁镜头：开始时地面上的脏污要清楚可见，只有工作部件真正经过的地方才变干净，露出同一块旧地面的本色，机器前方和两侧没经过的地方保持原样作对照，干净的地方到最后一帧都保持干净。干净程度要像真实作业一遍：浮灰、碎屑和表面的脏污被带走，地面颜色明显变亮；旧地面本身的划痕、磨损和多年的老印子只是变淡，不会变成崭新的地面。带后部刮条的洗地设备，刮过的地面干净并带着柔和的光泽，能淡淡映出顶灯的光，但不是镜面、没有清晰倒影；不带刮条的扫地设备只写变干净，不写光泽。
+   清洁效果一定要被看见（客户最想看的就是清洁后的地面）：清洁镜头的机位要让机器身后那条干净带留在画面里——侧面平移跟拍、斜前方45°略高机位最好；有背面照时可以在后方跟随；正面迎着镜头开来时用略高的俯视机位，让身后的干净带从远处一直延伸到机器。镜头结束时干净带要占画面明显的一块，和旁边没清洁的脏地面有清楚的分界线。几个镜头的机位和走向要有变化，但都要符合导演组的报告。
 4. 不要在提示词里写“水、污水、积水、水渍、喷水、泡沫”这类词（视频模型会凭空画出脏水），只写看得见的结果，比如“地面露出本色、颜色变亮”。只有冲洗类设备（如高压清洗机）例外，并把 wet 设为 true。油污也一样：写成渗进地面、颜色发暗的旧油斑和拖开的油印，不写黏稠、半透明、一滩这类像液体的词，否则会被画成一滩油、被机器拖开。
 5. 画面要真实：场地原本的照明、纪实摄影机位、日常的脏污量（不是成堆垃圾），没有字幕、文字、商标。具体描述地面材质、脏污的样子、机器的动作速度和摄影机位置，写清楚但不堆形容词。
-6. 只拍客户给的卖点，不添加客户没说的功能，不编数字。
-7. 场景要符合「${scene.name}」：${detail.place}；${detail.light}；环境声：${detail.ambient}。场地的大小要配得上机器：大型设备（乘驾式、带座椅或方向盘、机身比人宽的）放在宽阔开敞的大片区域作业，比如宽主通道、车间空地、大堂中间，四周留足空间，不挤在窄过道和货架缝里，plate 也照这个写；客户选的卖点本身要窄通道或贴边（如窄道灵活、贴边清洁）的那一镜照卖点拍。地面材质和脏污由你根据这个场所和这台机器判断（例如工厂常见环氧地坪上的油污、铁屑，纺织车间的线头，写字楼的大理石和泥脚印）。
+6. 只拍客户给的卖点，不添加客户没说的功能，不编数字。有的卖点是概念（如“开荒保洁”“省人工”“适合大面积”），不能直接拍：先把它翻译成画面里看得见的证据——开荒保洁就是新建或刚装修完的场地，地上有厚厚的施工灰、水泥点、腻子粉和油漆点，机器开过留下一条反差很大的干净带；大面积、高效就是宽阔场地里机器匀速直行很远、身后一条很长的干净带。实在找不到诚实的画面证据，就拍一个普通的清洁镜头，让字幕说这个卖点，不编造效果。
+7. 场景要符合${place}。场地的大小要配得上机器：大型设备（乘驾式、带座椅或方向盘、机身比人宽的）放在宽阔开敞的大片区域作业，比如宽主通道、车间空地、大堂中间，四周留足空间，不挤在窄过道和货架缝里，plate 也照这个写；客户选的卖点本身要窄通道或贴边（如窄道灵活、贴边清洁）的那一镜照卖点拍。地面材质和脏污由你根据这个场所和这台机器判断（例如工厂常见环氧地坪上的油污、铁屑，纺织车间的线头，写字楼的大理石和泥脚印）。
 8. 字幕每镜一行，最多10个汉字宽（英文和数字算半个），说卖点本身，不夸大；各镜字幕互不相同。
 只输出一个 JSON 对象，不要任何其他文字：
 {"machine":"一句话：这是什么设备、怎么移动、工作部件在哪、有没有后部刮条","operator":"none 或 walk 或 ride","wet":false,"floor":"地面材质和旧化程度","dirt":"地上有什么脏东西、什么样子","plate":"这个场所的空场景照片描述：地点、陈设、地面、脏污、光线，不含机器和人","shots":[{"title":"不超过8字","caption":"一行字幕","venue":true,"prompt":"这一镜给视频模型的提示词，300到900字"}]}
 venue：镜头发生在场所主区域时为 true（会附上场景照片保持一致）；在电梯厅、门口、充电桩、工作站旁等别处时为 false。至少一镜为 true。shots 数量和顺序必须与分镜表完全一致。`;
-  const user = [`产品名称：${plan.productName}`, `使用场所：${scene.name}（${scene.description}）`, facts ? `客户资料：${clean(facts, FACT_LIMIT)}` : '',
+  const user = [`产品名称：${plan.productName}`, `使用场所：${scene ? `${scene.name}（${scene.description}）` : `${plan.scene}（客户自己写的）`}`, facts ? `客户资料：${clean(facts, FACT_LIMIT)}` : '',
+    crew ? `导演组的报告（必须照着拍，尤其是没拍到的面不能出现、场地不能转弯就只直行）：\n${crew}` : '',
     `分镜表（共${plan.shots.length}镜，时长不能改）：\n${list}`, feedback ? `上一次的结果不合格：${feedback}。请改正后重新输出完整 JSON。` : ''].filter(Boolean).join('\n\n');
   return [{ role: 'system', content: system },
     { role: 'user', content: [...images.map((url) => ({ type: 'image_url', image_url: { url } })), { type: 'text', text: user }] }];
 }
 
-function directorRequest({ plan, facts, images, feedback }) {
-  return { model: DIRECTOR_MODEL, messages: directorMessages({ plan, facts, images, feedback }), temperature: 0.6, max_tokens: 8000 };
+function directorRequest({ plan, facts, images, feedback, crew }) {
+  return { model: DIRECTOR_MODEL, messages: directorMessages({ plan, facts, images, feedback, crew }), temperature: 0.6, max_tokens: 8000 };
 }
 
 function jsonOf(content) {
@@ -201,7 +219,7 @@ function shotPrompt(plan, direction, shot) {
   const n = plan.productImages;
   const photos = n > 1 ? `${Array.from({ length: n }, (_, i) => `图${i + 1}`).join('、')}是这台机器不同角度的真实产品照片` : '图1是这台机器的真实产品照片';
   const sheet = `图${n + 1}`, plateRef = `图${n + 2}`;
-  const refs = `【参考图】${photos}，${sheet}是同一台机器的四视角定妆图，照片里看不到的面以${sheet}为准。${shot.venue ? `${plateRef}是拍摄现场：陈设、地面和光线以${plateRef}为准。` : ''}全片只有这一台机器，不复制、不分身；造型、比例、配色、零件和机身字样严格照照片，不新增零件，不变成其他型号。`;
+  const refs = `【参考图】${photos}，${sheet}是同一台机器的四视角定妆图，照片里看不到的面以${sheet}为准。${shot.venue ? `${plateRef}是拍摄现场：陈设、地面和光线以${plateRef}为准。` : ''}全片只有这一台机器，不复制、不分身；造型、比例、配色、零件和机身字样严格照照片，不新增零件，不变成其他型号；机身上的品牌字样照照片原样，看不清的地方保持模糊，不要编字母、不要改拼写；产品照片背景里的其他设备、人和货物不是拍摄内容。${plan.hiddenSides ? `这台机器的${plan.hiddenSides}没有真实照片，画面里不能露出${plan.hiddenSides}。` : ''}${shot.venue ? `开拍时地面上要看得见本镜写的脏污，即使${plateRef}里的地面看起来较干净。` : ''}`;
   const tail = `【底线】${shot.seconds}秒竖屏9:16，单个连续镜头，一镜到底，无剪辑、无切镜、无转场。机器只朝机头方向前进，不倒着走，不原地打转。${PEOPLE[direction.operator]}${!direction.wet ? '地面上不凭空出现任何液体或水痕。' : ''}声音只有机器运转声和现场环境声，无人声、无旁白、无音乐。
 ${STYLE}
 ${NEG}`;
@@ -209,6 +227,7 @@ ${NEG}`;
 }
 function platePrompt(plan, direction) {
   return `一张真实现场照片，竖版9:16。${direction.plate}
+地面：${direction.floor}。地上看得见日常的脏污：${direction.dirt}，是平时没打扫的样子，不是刚清洁过的地面。
 空无一人，没有任何机器设备。平视略低的机位，镜头朝场地深处，全画面清晰。
 ${STYLE}
 不要电影感，不要广告感，不要镜面地板，不要清晰倒影，不要过饱和，不要渲染感，无人物，无文字，无商标招牌，无水印。`;
@@ -223,23 +242,26 @@ function applyDirection(plan, direction) {
     return shot;
   });
   return { ...plan, directed: true, machine: direction.machine, operator: direction.operator, wet: direction.wet, surface: direction.floor, dirt: direction.dirt,
-    platePrompt: platePrompt(plan, direction), imageCount: shots.some((shot) => shot.place === 'venue') ? 2 : 1, shots };
+    platePrompt: platePrompt(plan, direction), imageCount: shots.some((shot) => shot.place === 'venue') && !plan.venuePhoto ? 2 : 1, shots };
 }
 
 // AI 检查 (user 2026-11-19: check only, never redo on its own): the vision model looks at four frames of
 // every finished shot next to the product photos and says which shot has a visible problem. The
 // customer decides whether to spend on redoing that one shot.
-function reviewRequest({ plan, images, sheets }) {
+function reviewRequest({ plan, images, sheets, crew = '' }) {
   const list = plan.shots.map((shot) => `第${shot.index + 1}镜「${shot.title}」`).join('\n');
   const system = `你是视频质检员。前${images.length}张图是一台清洁设备的产品照片和定妆图；后面每张图对应成片里的一个镜头：从左到右是这个镜头先后6个时刻的画面，格与格之间用白色竖条隔开，各格之间是时间先后，同一台机器在不同格里位置、角度不同是正常移动，不是分身。
-只检查单看某一格就能确定的问题：
+只检查看截图就能确定的问题：
 1. 同一格画面里同时出现两台机器；
 2. 机器外形、颜色、部件和产品照片明显不是同一款；
 3. ${plan.operator === 'none' ? '画面里出现人、人手，或有人坐在机器上' : '画面里的人露脸，或人和机器融在一起'}；
 4. 地上出现明显的积水、污水或泡沫${plan.wet ? '（这台是冲洗设备，干净的清水除外）' : ''}；
 5. 画面里出现字幕、大段文字或水印；
 6. 机器在地上走着作业，后部刮条或刷子却明显悬空、离开地面。
-清洁效果好不好、动作是否连贯这类单看几格判断不准的，不要报。拿不准就算合格（ok 为 true）。
+${crew ? `7. 轮子、刷子等部件的数量或位置和下面的部件清单明显不符（多出或少了轮子最常见）；
+8. 前后几格里机器的车头和车尾朝向颠倒（先看到车头、后看到车尾），或者机器转了接近90°甚至更多（从正面变成侧面），说明它转弯、掉头或原地转了身。
+${crew}
+` : ''}清洁效果好不好、动作是否连贯这类看几格判断不准的，不要报。拿不准就算合格（ok 为 true）。
 只输出 JSON：{"shots":[{"index":1,"ok":true,"issue":""}]}，issue 用一句不超过30字的中文说清楚在第几格看到了什么。`;
   return { model: DIRECTOR_MODEL, temperature: 0.2, max_tokens: 1500, messages: [{ role: 'system', content: system },
     { role: 'user', content: [...[...images, ...sheets].map((url) => ({ type: 'image_url', image_url: { url } })), { type: 'text', text: `镜头列表：\n${list}` }] }] };
@@ -255,5 +277,5 @@ function parseReview(content, plan) {
   });
 }
 
-module.exports = { reviewRequest, parseReview, VERSION, DIRECTOR_MODEL, DIRECTOR_ROUTE, PROMPT_LIMIT, MAX_PRODUCT_IMAGES, CUSTOM_LIMIT, CUSTOM_LENGTH, LIQUID,
+module.exports = { CREW, CREWS, SCENE_LENGTH, reviewRequest, parseReview, VERSION, DIRECTOR_MODEL, DIRECTOR_ROUTE, PROMPT_LIMIT, MAX_PRODUCT_IMAGES, CUSTOM_LIMIT, CUSTOM_LENGTH, LIQUID,
   choices, planDirected, directorMessages, directorRequest, parseDirection, applyDirection, shotPrompt, platePrompt, width, reword };
