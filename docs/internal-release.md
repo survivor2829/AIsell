@@ -115,6 +115,8 @@ npm.cmd run release:internal -- --base "C:/path/to/accepted-test-app"
 
 只发增量的版本不换官网的包。用户已同意每次完整包都同步官网（2026-11-20），出完整包时按此执行，不再另行确认。
 
+**官网落后时单独补一次（用户 2026-11-23）。** 不必每次发版都换官网；但官网落后几个版本、新客户装完还要再更新时，可以从已发布的 `main` 只打完整包换上去，不另发版：`npm.cmd run release:sop -- --full --build-only`，产物在发布工作区 `release/` 下，再按上面的步骤上传、核对、替换、外网读回。2026-11-23 用这个办法把官网从 1.3.49 换成 1.3.52。
+
 **官网服务器怎么改。** 服务器 `111.229.75.5`，用户 `ubuntu`（可免密 sudo），密钥由用户提供（不进仓库）。官网是独立容器 `aihuoke-site`（nginx:alpine），目录 `/home/ubuntu/projects/aihuoke-site/`：`site/index.html` 是页面，`download/aihuoke-setup.exe` 是安装包，`nginx.conf` 管下载文件名，服务器上的 `README.md` 有完整说明和修改记录。换安装包：先传成 `download/aihuoke-setup.exe.part`，核对 SHA-256 后 `mv` 成正式文件名，页面上的“约 xxx MB”和版本号一起改。页面版本号只标大版本（如 `V1.2`）。`nginx.conf` 是单文件挂载，要原地写入（不能用 `sed -i`），再 `docker exec aihuoke-site nginx -s reload`。改之前先备份，改完从外网读回核对。
 
 **去掉“测试版”字样（用户 2026-11-11：现在已经是正式版）。** 只改客户能看到的名字。已改：窗口标题（随增量生效），以及安装器里的桌面/开始菜单快捷方式名和卸载列表名（`electron-builder-test-installer.yml`，都改成“AI短视频获客”，要装完整包才会生效；electron-builder 覆盖安装时会把旧名字的快捷方式改成新名字）。官网页面和下载文件名在官网那边改。安装器 EXE 文件名暂不改，发布脚本按它找文件。内部身份保持不变：应用 ID `com.aihuoke.desktop.test`、`test` 频道、安装目录 `AI获客-测试版`、程序文件名 `AI获客 V1.0版本-测试版.exe`、数据目录 `xiaoxi-active-touch-test`。更新助手认这个程序路径，老客户靠这些身份才能继续自动更新、保留资料；改这些等于换成另一个软件。这次改名要用已装旧版的电脑实际覆盖安装验收：旧快捷方式是否留下、新快捷方式能否打开、资料是否还在、之后的增量更新是否正常。
