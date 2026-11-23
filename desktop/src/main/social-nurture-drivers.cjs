@@ -13,8 +13,10 @@ const BLOCKED = `(() => { const shown = (el) => el.getClientRects().length > 0;
   return [...document.querySelectorAll("iframe")].some((frame) => /captcha|verify/i.test(frame.src) && shown(frame))
     || [...document.querySelectorAll('[class*="captcha" i],[id*="captcha" i],[class*="verify-" i]')].some(shown)
     || words.test(document.body ? document.body.innerText.slice(0, 4000) : "")
+    // A check's own dialog is short; a layer holding a player and its comments is not, and a comment may
+    // say 完成验证 (review 2026-11-22).
     || [...document.querySelectorAll('[role="dialog"],[aria-modal="true"],[class*="modal" i],[class*="dialog" i],[class*="popup" i]')]
-      .some((el) => shown(el) && words.test(el.innerText || ""))
+      .some((el) => { const text = el.innerText || ""; return shown(el) && text.length < 600 && words.test(text); })
     // Whatever its markup, such a check sits in the middle of the screen, over everything.
     || (() => { let el = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
       for (let up = 0; el && up < 8; up++, el = el.parentElement) { const text = el.innerText || ""; if (text.length < 600 && words.test(text)) return true; }
@@ -38,11 +40,13 @@ const FOLLOW_PLUS = `(() => { const active = ${ON_SCREEN_ACTIVE}; if (!active) r
   // 2026-11-22: gone on screen, still found, the follow reported unconfirmed).
   const drawn = (el) => { for (let e = el; e && e !== active; e = e.parentElement) { const s = getComputedStyle(e);
     if (s.display === "none" || s.visibility === "hidden" || Number(s.opacity) < 0.1) return false; } return true; };
-  const plus = [...active.querySelectorAll("*")].find((el) => { const r = el.getBoundingClientRect();
+  const placed = [...active.querySelectorAll("*")].filter((el) => { const r = el.getBoundingClientRect();
     return r.width >= 12 && r.width <= 36 && r.height >= 12 && r.height <= 36 && r.width < a.width
       && r.left + r.width / 2 >= a.left + a.width * 0.25 && r.left + r.width / 2 <= a.right - a.width * 0.25
-      && r.top >= a.top + a.height * 0.5 && r.top <= a.bottom + 10 && drawn(el); });
-  if (!plus) return { state: "no_plus" };
+      && r.top >= a.top + a.height * 0.5 && r.top <= a.bottom + 10; });
+  const plus = placed.find(drawn);
+  // In its place but not drawn: fading out after a follow, or still fading in. The caller tells which.
+  if (!plus) return { state: placed.length ? "faded" : "no_plus" };
   const r = plus.getBoundingClientRect();
   return { state: "plus", x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`;
 async function clickAt(page, x, y) {
@@ -98,15 +102,20 @@ const DRIVERS = {
     },
     // A search counts once the page has gone to the results. Typed while the page was still settling,
     // the words were wiped and Enter searched nothing (test account, 2026-11-22): tried again, three times.
-    async search(page, keyword) {
+    // A check Douyin puts up instead (slider, SMS) ends it at once, for the caller's verification handling,
+    // and a box redrawn under the typing is found again (review 2026-11-22).
+    async search(page, keyword, { pause = sleep } = {}) {
       for (let attempt = 0; attempt < 3; attempt++) {
         const box = await page.find((node) => (node.localName === "input" && attr(node, "data-e2e") === "searchbar-input") || (node.localName === "textarea" && attr(node, "data-e2e") !== "comment-input"));
-        if (!box) { await sleep(2000); continue; }
-        await page.type(box, keyword);
-        await key(page, "Enter", "Enter", 13, "\r");
+        if (!box) { await pause(2000); continue; }
+        try {
+          await page.type(box, keyword);
+          await key(page, "Enter", "Enter", 13, "\r");
+        } catch { await pause(1000); continue; }
         for (let wait = 0; wait < 8; wait++) {
-          await sleep(1000);
+          await pause(1000);
           if (/\/search\//u.test(String(await page.url().catch(() => "")))) return true;
+          if (await page.evaluate(BLOCKED).catch(() => false)) return true;
         }
       }
       return false;
@@ -116,31 +125,35 @@ const DRIVERS = {
     // 综合 page then showed no results at all in 75 s while 视频 did (test account, 2026-11-22). So within
     // one wait the tab is clicked whenever it shows, and a result is opened once one shows; a page without
     // the tab still has its results tried.
-    async openFirstResult(page, { waitMs = 60_000 } = {}) {
-      const deadline = Date.now() + waitMs;
+    async openFirstResult(page, { waitMs = 60_000, pause = sleep, now = Date.now } = {}) {
+      const deadline = now() + waitMs;
       // Opened means the player is on screen, not that a click was sent: a script click on the first card
       // while the results were still settling opened nothing (test account, 2026-11-22). The card is clicked
       // like a person would, the player waited for, and once more as a script click if it did not come.
       const playing = () => page.evaluate(`Boolean(${ON_SCREEN_ACTIVE})`).catch(() => false);
-      // A result card is a link to a video (/video/<id>); the older list markup is kept as a second way.
-      const firstCard = () => page.find((node, view) => node.localName === "a" && (/\/video\/\d/u.test(String(attr(node, "href") || ""))
-        || view.ancestors(node).some((up) => (up.localName === "ul" && attr(up, "data-e2e") === "scroll-list")
-          || String(attr(up, "class") || "").split(/\s+/u).includes("search-result-card"))));
-      const scriptClick = `(() => { const link = [...document.querySelectorAll('a[href*="/video/"], ul[data-e2e="scroll-list"] li a, .search-result-card a')].find((el) => el.getClientRects().length);
+      // A result card is in the results list. Only on a page without the 视频 tab (laid out anew) is any
+      // link to a video taken: once on 视频, a hot list or a leftover 综合 card is not a search result.
+      const inList = (view, node) => view.ancestors(node).some((up) => (up.localName === "ul" && attr(up, "data-e2e") === "scroll-list")
+        || String(attr(up, "class") || "").split(/\s+/u).includes("search-result-card"));
+      const firstCard = (anyVideoLink) => page.find((node, view) => node.localName === "a"
+        && (inList(view, node) || (anyVideoLink && /\/video\/\d/u.test(String(attr(node, "href") || "")))));
+      const scriptClick = (anyVideoLink) => `(() => { const link = [...document.querySelectorAll('${anyVideoLink ? 'a[href*="/video/"], ' : ""}ul[data-e2e="scroll-list"] li a, .search-result-card a')].find((el) => el.getClientRects().length);
         if (!link) return false; link.click(); return true; })()`;
       let mouseClicks = 0, tabClicked = false;
-      for (let attempt = 0; Date.now() < deadline || attempt === 0; attempt++) {
-        await sleep(1000);
+      for (let attempt = 0; now() < deadline || attempt === 0; attempt++) {
+        await pause(1000);
+        // Opened late, after the last wait: no more clicks, they would land on the player.
+        if (await playing()) return true;
         if (!tabClicked) {
           const tab = await page.find((node) => attr(node, "data-key") === "video");
-          if (tab) { tabClicked = await page.click(tab); await sleep(2000); }
+          if (tab) { tabClicked = await page.click(tab); await pause(2000); }
         }
         let clicked = false;
         // Two real clicks on the card once it is there, then script clicks.
-        if (mouseClicks < 2) { const card = await firstCard(); clicked = card ? await page.click(card) : false; if (clicked) mouseClicks += 1; }
-        else clicked = Boolean(await page.evaluate(scriptClick).catch(() => false));
+        if (mouseClicks < 2) { const card = await firstCard(!tabClicked); clicked = card ? await page.click(card) : false; if (clicked) mouseClicks += 1; }
+        else clicked = Boolean(await page.evaluate(scriptClick(!tabClicked)).catch(() => false));
         if (!clicked) continue;
-        for (let wait = 0; wait < 8; wait++) { await sleep(1000); if (await playing()) return true; }
+        for (let wait = 0; wait < 8; wait++) { await pause(1000); if (await playing()) return true; }
       }
       return false;
     },
@@ -162,15 +175,17 @@ const DRIVERS = {
     },
     // The "+" over the author's avatar. No "+" beside an avatar: already followed, nothing to do.
     async follow(page) {
-      const found = await page.evaluate(FOLLOW_PLUS).catch(() => null);
-      if (found?.state === "no_plus") return "already";
+      let found = await page.evaluate(FOLLOW_PLUS).catch(() => null);
+      // A "+" in its place but not yet drawn may be fading in: given up to 3 s before it counts as followed.
+      for (let wait = 0; wait < 6 && found?.state === "faded"; wait++) { await sleep(500); found = await page.evaluate(FOLLOW_PLUS).catch(() => null); }
+      if (found?.state === "no_plus" || found?.state === "faded") return "already";
       if (found?.state !== "plus") return "missing";
       await clickAt(page, found.x, found.y);
       // The "+" fades out after the follow is made: 1.5 s was too early on a slow connection, it went later
-      // (test account, 2026-11-22). Looked at for up to 6 s.
+      // (test account, 2026-11-22). Looked at for up to 6 s; faded or gone, it is no longer drawn.
       for (let wait = 0; wait < 12; wait++) {
         await sleep(500);
-        if ((await page.evaluate(FOLLOW_PLUS).catch(() => null))?.state === "no_plus") return "done";
+        if (["no_plus", "faded"].includes((await page.evaluate(FOLLOW_PLUS).catch(() => null))?.state)) return "done";
       }
       return "unconfirmed";
     },
@@ -179,10 +194,16 @@ const DRIVERS = {
     async comment(page, text, delay) {
       const icon = await commentIcon(page);
       if (!icon) return "missing";
+      const playerWidth = () => page.evaluate(`(() => { const active = ${ON_SCREEN_ACTIVE}; return active ? active.getBoundingClientRect().width : 0; })()`).catch(() => 0);
+      const widthBefore = await playerWidth();
       await page.click(icon);
-      // The panel opened ours: closed again the same way however far it loaded (a blank, still-loading
-      // panel was left open on a slow connection, test account 2026-11-22).
-      const close = async () => { const again = await commentIcon(page); if (again) { await page.click(again); await sleep(1000); } };
+      // Closed again the way it was opened, however far it loaded (a blank, still-loading panel was left open
+      // on a slow connection, test account 2026-11-22), and only if it is open: the icon toggles, and a click
+      // on a panel that never opened would open it (review 2026-11-22). Open: its list shows, or it has
+      // pushed the player narrower (828 of 1164 px), which it does before its content loads.
+      const panelOpen = async () => Boolean(await page.evaluate(`[...document.querySelectorAll('[data-e2e="comment-list"]')].some((el) => { const r = el.getBoundingClientRect(); return r.width > 50 && r.left < innerWidth && r.right > 0; })`).catch(() => false))
+        || (widthBefore > 0 && (await playerWidth()) < widthBefore * 0.9);
+      const close = async () => { if (!(await panelOpen())) return; const again = await commentIcon(page); if (again) { await page.click(again); await sleep(1000); } };
       const editor = () => page.find((node, view) => view.ancestors(node).some((up) => String(attr(up, "class") || "").includes("comment-input-inner-container")) && attr(node, "contenteditable") === "true");
       const placeholder = () => page.find((node) => (node.children || []).some((child) => child.nodeType === 3 && /^留下你的精彩评论/.test(child.nodeValue.trim())));
       // The panel loads slowly on a slow connection: its editor, or the placeholder that opens it
