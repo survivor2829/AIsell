@@ -206,7 +206,7 @@ function createWechatWorkflowController(options) {
   // files say is reused until the task record, the account or one of its files changes. While nothing
   // runs, the files are only looked at every few seconds (even a stat per file adds up on Windows).
   const IDLE_RECHECK_MS = 3000;
-  const fileStamp = (file) => { try { const stat = fs.statSync(file); return `${stat.mtimeMs}:${stat.size}`; } catch { return "-"; } };
+  const fileStamp = (file) => { try { const stat = fs.statSync(file); return `${stat.ino}:${stat.mtimeMs}:${stat.size}`; } catch { return "-"; } };
   const taskViews = new Map();
   function taskView(task) {
     const stamp = executors[task.type]?.workflowTaskStamp;
@@ -346,10 +346,10 @@ function createWechatWorkflowController(options) {
   }
 
   function status(request) {
-    statusAccount = null;
-    statusAccount = getAccount();
+    const outer = statusAccount;
+    statusAccount = outer ?? getAccount();
     try { return statusNow(request); }
-    finally { statusAccount = null; }
+    finally { statusAccount = outer; }
   }
   function statusNow({ reconcile = true } = {}) {
     if (reconcile) reconcileUnknownResolutions();

@@ -1511,7 +1511,7 @@ function createTouchWorkflow(options = {}) {
   function workflowTaskStamp(record) {
     const taskDir = workflowDirectory(String(record?.id || record || "").trim());
     return ["touch_task.json", "touch_task.json.bak"].map((name) => {
-      try { const stat = fs.statSync(path.join(taskDir, name)); return `${stat.mtimeMs}:${stat.size}`; } catch { return "-"; }
+      try { const stat = fs.statSync(path.join(taskDir, name)); return `${stat.ino}:${stat.mtimeMs}:${stat.size}`; } catch { return "-"; }
     }).join("|");
   }
   function describeSkippedWorkflowTask(record) {

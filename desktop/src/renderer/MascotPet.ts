@@ -307,7 +307,7 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
     async petted(w) { track = false; face("happy", "smile"); talk(pick(["好舒服～", "再摸摸～", "嘿嘿～"])); go({ blush: 1, sy: .985 }); for (let i = 0; i < 24 && petting(); i++) { go({ hr: Math.sin(i * .8) * 7, hy: 8 }); if (i % 4 === 0) fx(HEART, rnd(300, 720), 240, rnd(-50, 50)); await w(170); } },
     async sleepy(w) { track = false; asleep = true; face("closed", "o"); go({ by: 112, sy: .96, fLx: 330, fLy: 1150, fRx: 670, fRy: 1150, fLr: -24, fRr: 24, Lx: 236, Ly: 1080, Rx: 764, Ry: 1080, hr: 7, hy: 24 }); // 省电 (2026-11-23): three snores, then it lies still until touched; nothing is redrawn while it sleeps.
       for (let i = 0; i < 3; i++) { fx(ZZ, 780, 260, 60); go({ hy: 30, hr: 9 }); await w(1900); go({ hy: 18, hr: 5 }); await w(1900); }
-      go({ hy: 24, hr: 7 }); for (;;) await w(600_000); },
+      go({ hy: 24, hr: 7 }); for (;;) await w(60_000); },
     async wake(w) { asleep = false; face("wide", "o"); pop(1.2); hop(420); await w(420); face("happy", "big"); hand("R", "open"); talk(pick(["你回来啦！", "我刚刚没睡！", "想我了吗～"])); for (let i = 0; i < 4; i++) { go({ Rx: 945 + (i % 2) * 62, Ry: 560, Rr: i % 2 ? 18 : -16, Rb: 170 }); await w(220); } },
     async dizzy(w) { face("dizzy", "wave"); V.tuft += 240; talk("晕…晕了…"); for (let i = 0; i < 24; i++) { go({ lean: Math.sin(i * .55) * 8, hr: Math.sin(i * .55 + 1) * 9, bx: Math.sin(i * .55) * 18 }); await w(90); } go({ lean: 0, hr: 0, bx: 0 }); },
     // Tucked into a side of the screen (user 2026-11-13「隐藏到右边…侧过身来看着你」): the body stays behind the
