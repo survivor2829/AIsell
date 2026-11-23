@@ -237,7 +237,10 @@ async function run() {
   const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
   const clip = Buffer.alloc(2048); clip.write('ftyp', 4, 'ascii');
   const posts = [], videoTasks = new Map();
-  let maxRunning = 0, failVideo = '', throttleOnce = false, unknownBusyOnce = false, badCaptionsOnce = false, failSheetOnce = false;
+  let maxRunning = 0, failVideo = '', throttleOnce = false, unknownBusyOnce = false, badCaptionsOnce = false, failSheetOnce = false, riskCalls = 0, riskAlways = false, riskBadSecond = false;
+  // 导演组 (crew-2): the analyst, the site survey and the risk review answer on the director's route.
+  const CREW_SYSTEM = /^你是(?:商用清洁设备的产品分析师|拍摄前的场地勘察|视频开拍前的风险审查)/u;
+  const isDirect = (p) => p.route === ai.DIRECTOR_ROUTE && !/视频质检员/u.test(p.body.messages[0].content) && !CREW_SYSTEM.test(p.body.messages[0].content);
   const imageTasks = new Map();
   const running = () => [...videoTasks.values()].filter((task) => task.status === 'running').length;
   const provider = {
@@ -259,6 +262,9 @@ async function run() {
         if (route === ai.DIRECTOR_ROUTE) {
           const text = request.body.messages[1].content.at(-1).text, system = request.body.messages[0].content;
           if (/视频质检员/u.test(system)) return { choices: [{ message: { content: '{"shots":[{"index":3,"ok":false,"issue":"第4格出现两台机器"}]}' } }] };
+          if (/产品分析师/u.test(system) && !/风险审查/u.test(system)) return { choices: [{ message: { content: JSON.stringify({ sides: ['front', 'left', 'nonsense'], parts: [{ name: '轮子', count: '左侧2个（前1后1）', where: '车身下方' }], size: 'large', sizeNote: '约长1.6米、宽0.9米', turning: '掉头需要约3米宽', sheetIssues: ['背面为 AI 推测'] }) } }] };
+          if (/场地勘察/u.test(system)) return { choices: [{ message: { content: '{"widthM":12,"floor":"环氧地坪","dirt":"施工灰尘","zone":"中央通道直行","canTurn":false,"fits":true,"note":"只直行"}' } }] };
+          if (/风险审查/u.test(system)) { riskCalls += 1; if (riskBadSecond && riskCalls === 2) return { choices: [{ message: { content: '不是 JSON' } }] }; return { choices: [{ message: { content: riskCalls === 1 || riskAlways ? '{"shots":[{"index":2,"ok":false,"risk":"要从后方跟拍，会露出没拍到的车尾","fix":"改成机器朝镜头直行"}]}' : '{"shots":[]}' } }] }; }
           const count = (text.match(/第\d+镜｜/gu) || []).length, plan = { shots: Array.from({ length: count }, (_, i) => ({ index: i, title: `镜${i + 1}`, caption: '', pointId: i === 1 ? 'lift' : 'x' })) };
           const answer = JSON.parse(direction(plan));
           if (!/上一次的结果不合格/u.test(text)) answer.shots[0].prompt += '地上的污水被吸走。';
@@ -389,21 +395,35 @@ async function run() {
     const directedDraft = await service.create({ mode: 'product', style: 'real', durationSeconds: 15, productName: 'DZ95X 洗地机器人', sceneIds: ['factory'],
       imageId: front.id, pointIds: ['lift'], customPoints: ['洗拖一体'] });
     assert.equal(directedDraft.directorStep, true); assert.equal(directedDraft.directed, false);
-    assert.ok(directedDraft.quote.maximumCny > 0 && directedDraft.quote.directorCny === 0.2, 'the director and the check are in the quote');
-    await service.start(directedDraft.id);
+    assert.ok(directedDraft.quote.maximumCny > 0 && directedDraft.quote.directorCny === 0.85, 'the director, the crew (three risk reviews, two rounds of rewrites) and the check are in the quote');
+    assert.equal(directedDraft.plan.crew, ai.CREW);
+    riskCalls = 0; await service.start(directedDraft.id);
     await until(directedDraft.id, (t) => t.status === 'awaiting_sheet');
-    assert.equal(posts.slice(postsBefore).filter((p) => p.route === ai.DIRECTOR_ROUTE).length, 0, 'the director waits for the confirmed 定妆照');
+    assert.equal(posts.slice(postsBefore).filter(isDirect).length, 0, 'the director waits for the confirmed 定妆照');
+    // ① 产品分析师 looks at the photos and the 定妆照 before the customer confirms it; what it found is on the page.
+    const analysed = await service.get(directedDraft.id);
+    assert.equal(posts.slice(postsBefore).filter((p) => /产品分析师/u.test(p.body.messages?.[0]?.content || '')).length, 1);
+    assert.deepEqual(analysed.crew.sides, ['正面/车头', '左侧']); assert.equal(analysed.crew.hiddenSides, '背面/车尾'); assert.deepEqual(analysed.crew.sheetIssues, ['背面为 AI 推测']);
     await service.confirmSheet(directedDraft.id);
     const directedDone = await until(directedDraft.id, (t) => t.status === 'completed');
     const mine = posts.slice(postsBefore);
-    const directs = mine.filter((p) => p.route === ai.DIRECTOR_ROUTE && !/视频质检员/u.test(p.body.messages[0].content));
-    assert.equal(directs.length, 2, 'an answer with liquid in it is written once more');
+    const directs = mine.filter(isDirect);
+    assert.equal(directs.length, 3, 'an answer with liquid in it is written once more, then once for the risk review');
+    assert.match(directs[0].body.messages[1].content.at(-1).text, /导演组的报告[\s\S]*没拍到：背面\/车尾/u, 'the director is told which side nobody photographed');
+    assert.match(directs[2].body.messages[1].content.at(-1).text, /风险审查：第2镜要从后方跟拍/u, 'the risky shot goes back to the director with the reason');
+    assert.equal(mine.filter((p) => /场地勘察/u.test(p.body.messages?.[0]?.content || '')).length, 1, 'the scene picture is surveyed once');
+    assert.equal(mine.filter((p) => /风险审查/u.test(p.body.messages?.[0]?.content || '')).length, 2, 'reviewed again after the rewrite, then filmed once nothing is flagged');
+    assert.match(directs[0].body.messages[0].content, /清洁效果一定要被看见/u, 'the director is told the cleaned floor must be seen');
+    assert.match(directs[0].body.messages[0].content, /开荒保洁就是新建或刚装修完的场地/u, 'an abstract selling point is turned into something visible');
+    assert.match(mine.find((p) => /视频质检员/u.test(p.body.messages?.[0]?.content || '')).body.messages[0].content, /部件清单[\s\S]*轮子 左侧2个/u, 'the final check counts the parts');
+    assert.equal(directedDone.crew.rewritten, true); assert.deepEqual(directedDone.crew.risks, []); assert.equal(directedDone.crew.survey.widthM, 12);
     assert.match(directs[1].body.messages[1].content.at(-1).text, /第1镜提示词里写了「污水」/u);
     assert.equal(directs[0].body.messages[1].content.filter((part) => part.type === 'image_url').length, 2, 'the product photo and the 定妆照');
     assert.equal(directedDone.directed, true); assert.match(directedDone.plan.machine, /洗地机器人/u);
     const directedVideos = mine.filter((p) => p.route.includes('video-synthesis'));
     assert.equal(directedVideos.length, 3);
     assert.ok(directedVideos.every((p) => /一镜到底/u.test(p.body.input.prompt) && /不倒着走/u.test(p.body.input.prompt)));
+    assert.ok(directedVideos.every((p) => /画面里不能露出背面\/车尾/u.test(p.body.input.prompt)), 'every shot keeps the unphotographed side out of view');
     assert.equal(directedVideos.filter((p) => p.body.input.media.length === 3).length, 2, 'venue shots carry the scene picture');
     assert.deepEqual(directedDone.review.shots.map((shot) => shot.ok), [true, true, false]);
     assert.equal(directedDone.canRedoShot, true);
@@ -417,6 +437,50 @@ async function run() {
     assert.equal(redone.review.shots[2].redone, true); assert.equal(redone.canRedoShot, false);
     assert.ok(fs.existsSync(path.join(root, directedDraft.id, 'shot-2-before-redo.mp4')), 'the earlier take is kept');
     await assert.rejects(service.redoShot(directedDraft.id, 0), (e) => e.code === 'product_video_retry_limit');
+    // crew-2: the customer writes the place and brings a photo of the real site. The site is surveyed before the
+    // director writes (it sees the photo), nothing is drawn for it, and a shot still at risk after two rewrites is
+    // filmed the safe way — no video is ever paid for with a flagged shot.
+    const site = photo('site.png');
+    await assert.rejects(service.create({ mode: 'product', style: 'real', durationSeconds: 15, productName: 'X', sceneIds: ['factory'], sceneText: '仓库', imageId: front.id }),
+      (e) => e.code === 'product_video_invalid_option', 'a picked place and a written one cannot both be sent');
+    await assert.rejects(service.create({ mode: 'product', style: 'real', durationSeconds: 15, productName: 'X', sceneText: '仓库', imageId: front.id, venueImageId: front.id }),
+      (e) => e.code === 'product_video_invalid_input', 'the site photo is not one of the product photos');
+    const ownDraft = await service.create({ mode: 'product', style: 'real', durationSeconds: 15, productName: 'SIBEN 无人驾驶洗地机', sceneText: '新建的物流仓库', venueImageId: site.id,
+      imageId: front.id, extraImageIds: [side.id, photo('back.png').id, photo('top.png').id, photo('close.png').id], pointIds: ['lift'], customPoints: ['开荒保洁'] });
+    assert.equal(ownDraft.plan.scene, '新建的物流仓库'); assert.deepEqual(ownDraft.plan.sceneIds, []); assert.equal(ownDraft.plan.venuePhoto, true); assert.equal(ownDraft.plan.imageCount, 1);
+    const ownBefore = posts.length;
+    riskCalls = 0; riskAlways = true;
+    await service.start(ownDraft.id); await until(ownDraft.id, (t) => t.status === 'awaiting_sheet'); await service.confirmSheet(ownDraft.id);
+    const ownDone = await until(ownDraft.id, (t) => t.status === 'completed');
+    riskAlways = false;
+    const own = posts.slice(ownBefore), ownDirects = own.filter(isDirect), system = (p) => p.body.messages?.[0]?.content || '';
+    const surveyAt = own.findIndex((p) => /场地勘察/u.test(system(p)));
+    assert.ok(surveyAt >= 0 && surveyAt < own.indexOf(ownDirects[0]), 'the real site is surveyed before the director writes');
+    assert.match(system(own[surveyAt]), /客户在真实现场拍的照片/u);
+    assert.match(ownDirects[0].body.messages[1].content.at(-1).text, /新建的物流仓库（客户自己写的）[\s\S]*【场景勘察】客户现场照片/u, 'the director gets the written place and the survey');
+    assert.equal(ownDirects[0].body.messages[1].content.filter((part) => part.type === 'image_url').length, 7, 'five product photos (the AI director takes five), the 定妆照 and the site photo');
+    assert.match(system(ownDirects[0]), /最后一张是客户在自己的真实现场拍的照片/u);
+    assert.equal(own.filter((p) => p.route.includes('/images/generations') && !/产品定妆设定图/u.test(p.body.prompt || '')).length, 0, 'nothing is drawn for the site');
+    assert.equal(own.filter((p) => /风险审查/u.test(system(p))).length, 3, 'reviewed after each of the two rewrites');
+    assert.match(ownDirects.at(-1).body.messages[1].content.at(-1).text, /风险审查：第2镜/u);
+    assert.equal(ownDirects.length, 4, 'the first answer (with liquid) is written again, then one rewrite per risk round');
+    const ownOps = Object.keys(JSON.parse(fs.readFileSync(path.join(root, ownDraft.id, 'task.json'), 'utf8')).operations).filter((key) => /^direct/u.test(key)).sort();
+    assert.deepEqual(ownOps, ['direct', 'direct_2', 'direct_risk', 'direct_risk2'], 'every rewrite is its own request, never an old answer');
+    const ownVideos = own.filter((p) => p.route.includes('video-synthesis'));
+    assert.equal(ownVideos.length, 3);
+    assert.equal(ownVideos.filter((p) => /同速平移跟拍。机器从画面左侧沿一条直线匀速驶向右侧，全程只露出侧面[\s\S]*干净带/u.test(p.body.input.prompt)).length, 1, 'the still-risky shot (and only it) is filmed the safe way');
+    assert.ok(ownVideos.every((p) => p.body.input.media.length === 7), 'five photos, the 定妆照 and the site photo on every venue shot');
+    assert.deepEqual(ownDone.crew.fallback, [1]); assert.deepEqual(ownDone.crew.risks, []); assert.equal(ownDone.crew.venuePhoto, true);
+    assert.ok(ownDone.quote.reservedCny <= ownDone.quote.budgetCny + 1e-9);
+    // Review: a re-review that cannot be read never lets the rewritten plan through unchecked — the shot flagged
+    // before is filmed the safe way.
+    const blind = await service.create({ mode: 'product', style: 'real', durationSeconds: 15, productName: 'DZ95X 洗地机器人', sceneIds: ['factory'], imageId: front.id, pointIds: ['lift'] });
+    riskCalls = 0; riskBadSecond = true;
+    await service.start(blind.id); await until(blind.id, (t) => t.status === 'awaiting_sheet'); await service.confirmSheet(blind.id);
+    const blindDone = await until(blind.id, (t) => t.status === 'completed');
+    riskBadSecond = false;
+    assert.equal(riskCalls, 2); assert.deepEqual(blindDone.crew.fallback, [1]); assert.deepEqual(blindDone.crew.risks, []);
+    assert.equal(blindDone.crew.safeMove, 'side');
     // Review of #313: after three bad answers the retry asks again three times instead of reusing old answers.
     let alwaysBad = true;
     provider.request = ((original) => async (route, request = {}) => {
@@ -429,7 +493,7 @@ async function run() {
     await service.start(stubborn.id); await until(stubborn.id, (t) => t.status === 'awaiting_sheet'); await service.confirmSheet(stubborn.id);
     const gaveUp = await until(stubborn.id, (t) => t.status === 'needs_attention');
     assert.equal(gaveUp.errorCode, 'product_video_direction_invalid');
-    const directCalls = () => posts.filter((p) => p.route === ai.DIRECTOR_ROUTE && !/视频质检员/u.test(p.body.messages[0].content) && /S9/u.test(p.body.messages[1].content.at(-1).text)).length;
+    const directCalls = () => posts.filter((p) => isDirect(p) && /S9/u.test(p.body.messages[1].content.at(-1).text)).length;
     assert.equal(directCalls(), 3);
     alwaysBad = false;
     await service.retryShot(stubborn.id);

@@ -143,6 +143,12 @@ html[data-beat="1"] .sv-stages li.is-now>span{opacity:.6}
 @media(max-width:640px){.rs-mode{grid-template-columns:1fr}}
 /* AI 导演 (2026-11-19): your own selling point, what the director understood, the AI check of the finished shots. */
 .rs-custom{display:grid;gap:8px;margin-top:12px}
+.rs-venue{display:flex;align-items:center;gap:12px;margin-top:12px}
+.rs-venue figure{position:relative;margin:0;width:96px;height:64px;border-radius:12px;overflow:hidden;background:#fff;border:1.5px solid var(--pv-line);flex:none}
+.rs-venue img{width:100%;height:100%;object-fit:cover}
+.rs-venue figure button{position:absolute;right:3px;top:3px;width:22px;height:22px;border-radius:50%;border:0;background:rgba(0,0,0,.6);color:#fff;display:grid;place-items:center;padding:0;cursor:pointer}
+.rs-venue small{font-size:14px;color:#6b7280;line-height:1.5}
+.rs-venue .rs-photo-add{flex:none}
 .rs-custom label{font-size:15px;font-weight:800;color:#374151}
 .rs-custom>div:first-of-type{display:flex;gap:8px}
 .rs-custom input{flex:1;min-width:0;height:48px;padding:0 14px;border-radius:14px;border:1.5px solid var(--pv-line);background:#fff;font:inherit;font-size:16px}
@@ -152,6 +158,8 @@ html[data-beat="1"] .sv-stages li.is-now>span{opacity:.6}
 .rs-director,.rs-review{display:flex;gap:12px;align-items:flex-start;background:#fff;border:1.5px solid var(--pv-line);border-radius:16px;padding:14px 16px;margin-bottom:12px;color:var(--pv-accent)}
 .rs-director>div,.rs-review>div{display:grid;gap:5px;min-width:0;color:#374151;font-size:15px;line-height:1.55}
 .rs-director b,.rs-review b{font-size:16px;color:#1f2937}
+.rs-crew-warn{display:flex;gap:6px;align-items:flex-start;color:#b45309}
+.rs-crew-warn svg{flex:none;margin-top:4px}
 .rs-review p{margin:0;color:#374151;font-size:15px}
 .rs-review-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;color:#92400e}
 .rs-review-row span{flex:1;min-width:180px;color:#374151}

@@ -5,7 +5,7 @@ import { ExampleBanner } from './VideoExamples';
 import { SceneIcon } from "./SceneIcons";
 import { formatWan } from "./BillingBadge";
 import { SheetConfirm, StoryVideoProgress, storyProgress, type StoryTask } from "./StoryVideoProgress";
-import { Countdown, ProductPhotos, RealShootFields, RealShootProgress, ShotReviewPanel, initialReal, minutes, realEstimate, storyEstimate, type ProductImage, type RealCatalog, type RealDraft, type ShotReview, type Timing } from "./RealShootForm";
+import { Countdown, CrewCard, MAX_PHOTOS, ProductPhotos, RealShootFields, RealShootProgress, ShotReviewPanel, initialReal, minutes, realEstimate, storyEstimate, type Crew, type ProductImage, type RealCatalog, type RealDraft, realSceneReady, type ShotReview, type Timing } from "./RealShootForm";
 
 type Choice = { id: string; name: string };
 type Quote = { ready?: boolean; estimatedCny?: number | null; maximumCny?: number; actualCny?: number; pendingCny?: number; reservedCny?: number; budgetCny?: number; note?: string; message?: string; checkedAt?: string };
@@ -18,7 +18,7 @@ type VideoTask = {
   id: string; mode: "product" | "social"; status: string; statusLabel: string; createdAt: string;
   durationSeconds: number; sceneIds?: string[]; productName?: string; facts: string; imageId: string; plan: Plan; currentShot: number;
   completedShots: number; shotsReady?: boolean[]; shotsRunning?: boolean[]; storyPipeline?: boolean; realPipeline?: boolean; progress?: number; etaSeconds?: number | null; estimatedFinishAt?: string | null; imagesReady?: Record<string, boolean>; imageTotal?: number; sheetRedos?: number; sheetStep?: boolean; sheetConfirmed?: boolean; directorStep?: boolean; directed?: boolean; review?: ShotReview | null; canRedoShot?: boolean; redoNote?: string;
-  story?: StoryTask["story"]; error: string; resumeStatus?: string; retryLabel?: string; canRetry: boolean; canExport: boolean; canExportSource?: boolean; canPreview: boolean; canRefresh?: boolean; quote?: Quote;
+  story?: StoryTask["story"]; crew?: Crew | null; error: string; resumeStatus?: string; retryLabel?: string; canRetry: boolean; canExport: boolean; canExportSource?: boolean; canPreview: boolean; canRefresh?: boolean; quote?: Quote;
 };
 type Result<T> = { ok: boolean; data?: T; error?: string; code?: string; task?: VideoTask };
 type Capabilities = { ready: boolean; message: string; scenes: Choice[]; story?: { ready: boolean; message: string }; real?: { ready: boolean; message: string }; catalog?: RealCatalog; timing?: Timing };
@@ -135,7 +135,8 @@ export function ProductVideoPage() {
     try {
       const input = style === "real"
         ? { mode: "product", style: "real", productName: draft.productName, facts: draft.facts, durationSeconds: draft.durationSeconds, imageId: draft.imageId,
-          extraImageIds: images.slice(1).map((item) => item.id), sceneIds: [realDraft.sceneId], pointIds: realDraft.pointIds, customPoints: realDraft.customPoints }
+          extraImageIds: images.slice(1).map((item) => item.id), ...(realDraft.sceneId ? { sceneIds: [realDraft.sceneId] } : { sceneText: realDraft.sceneText.trim() }),
+          ...(realDraft.venue ? { venueImageId: realDraft.venue.id } : {}), pointIds: realDraft.pointIds, customPoints: realDraft.customPoints }
         : { ...draft, mode: "product", style: "story" };
       const result = await api.createAndStart(input);
       if (result.ok && result.data) updateTask(result.data);
@@ -146,14 +147,16 @@ export function ProductVideoPage() {
   // The story happens in one place.
   const toggleScene = (id: string) => { setError(""); setDraft(old => ({ ...old, sceneIds: old.sceneIds[0] === id ? [] : [id] })); };
   const running = Boolean(selected && ACTIVE.has(selected.status));
-  const realReady = Boolean(draft.productName.trim() && realDraft.sceneId);
+  const realReady = Boolean(draft.productName.trim() && realSceneReady(realDraft));
   const canGenerate = Boolean(draft.imageId && !busy && !running && draft.facts.length <= 12000 && (style === "story" || realReady));
   const estimate = style === "real" ? realEstimate(capability?.timing, capability?.catalog, draft.durationSeconds, realDraft) : storyEstimate(capability?.timing, draft.durationSeconds);
   const addImage = (extra: boolean) => api && void perform("image", () => unwrap(api.importImage()), item => {
     if (!item) return;
-    setImages(old => extra ? [...old.filter(row => row.id !== item.id), item].slice(0, 3) : [item, ...old.slice(1)]);
+    setImages(old => extra ? [...old.filter(row => row.id !== item.id), item].slice(0, MAX_PHOTOS) : [item, ...old.slice(1)]);
     if (!extra) setDraft(old => ({ ...old, imageId: item.id }));
   });
+  // A photo of the customer's own site: it becomes the scene of every venue shot.
+  const pickVenue = () => api && void perform("image", () => unwrap(api.importImage()), item => { if (item) setRealDraft(old => ({ ...old, venue: item })); });
   const quote = selected?.quote;
   const shots = selected?.plan.shots || [];
   const ready = selected?.shotsReady || shots.map((_, index) => index < (selected?.completedShots || 0));
@@ -185,7 +188,7 @@ export function ProductVideoPage() {
           </div>
         </div>
         {style === "real" ? (capability?.catalog ? <RealShootFields catalog={capability.catalog} draft={realDraft} durationSeconds={draft.durationSeconds} disabled={!!busy || running}
-          onChange={(next) => { setError(""); setRealDraft(next); }} /> : <p className="pv2-note">正在读取可选的场所和卖点…</p>) : <>
+          onChange={(next) => { setError(""); setRealDraft(next); }} onPickVenue={pickVenue} /> : <p className="pv2-note">正在读取可选的场所和卖点…</p>) : <>
         <h2 className="pv2-label">故事发生在哪里？<small>选一个，不选就拍工厂仓储</small></h2>
         <div className="pv2-scenes">{(capability?.scenes || []).map(scene => { const on = draft.sceneIds.includes(scene.id); return <button key={scene.id} type="button" aria-pressed={on} className={on ? "is-on" : ""} onClick={() => toggleScene(scene.id)}><span className="pv2-scene-icon"><SceneIcon id={scene.id} /></span>{scene.name}{on && <Check className="pv2-check" size={16} strokeWidth={3} />}</button>; })}</div>
         </>}
@@ -220,6 +223,7 @@ export function ProductVideoPage() {
           </div> : selected.realPipeline && !STUCK.has(selected.status) && selected.status !== "draft" ? <>
             <div className="pv2-progress"><Ring value={progressOf(selected)} lines={[selected.status === "awaiting_sheet" ? "等你确认" : selected.statusLabel, `${selected.durationSeconds} 秒 · ${shots.length} 个镜头`]} />
               {selected.status !== "awaiting_sheet" && <div className="rs-side-info"><Countdown finishAt={selected.estimatedFinishAt} /><p className="pv2-note">几个镜头同时在拍，拍好一个就显示一个。可以先去做别的，做好了桌宠会告诉你。</p></div>}</div>
+            {selected.status === "awaiting_sheet" && <CrewCard crew={selected.crew} atSheet />}
             {selected.status === "awaiting_sheet"
               ? <SheetConfirm taskId={selected.id} redos={selected.sheetRedos || 0} busy={!!busy} imageMedia={(id, key) => api ? api.imageMedia(id, key) : Promise.resolve({ ok: false })}
                 onConfirm={() => api && void perform("confirm", () => unwrap(api.confirmSheet(selected.id)), updateTask)}
