@@ -1506,6 +1506,14 @@ function createTouchWorkflow(options = {}) {
     const taskDir = workflowDirectory(String(id || "").trim());
     return fs.existsSync(path.join(taskDir, "touch_task.json"));
   }
+  // Changes whenever anything describe*/canRetry read for this task changes on disk (the status view reuses
+  // their answers until then).
+  function workflowTaskStamp(record) {
+    const taskDir = workflowDirectory(String(record?.id || record || "").trim());
+    return ["touch_task.json", "touch_task.json.bak"].map((name) => {
+      try { const stat = fs.statSync(path.join(taskDir, name)); return `${stat.mtimeMs}:${stat.size}`; } catch { return "-"; }
+    }).join("|");
+  }
   function describeSkippedWorkflowTask(record) {
     const id = String(record?.id || record || "").trim();
     if (!id) return null;
@@ -1559,7 +1567,7 @@ function createTouchWorkflow(options = {}) {
   }
   return { prepareWorkflowTask, updateWorkflowTask, hasStartedWorkflowTask, runWorkflowStep, canRetryWorkflowTask, describeUnknownWorkflowTask, resolveUnknownWorkflowTask, acknowledgeUnknownWorkflowResolution,
     diagnosticSnapshot: (id) => id ? readWorkflowTask(id) : null,
-    describeSkippedWorkflowTask, retrySkippedWorkflowTask,
+    describeSkippedWorkflowTask, retrySkippedWorkflowTask, workflowTaskStamp,
     describeImages: (ids = []) => ids.map((id) => options.mediaStore.describe(id)),
     importImages: (paths) => options.mediaStore.importFiles(paths) };
 }

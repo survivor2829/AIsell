@@ -1118,6 +1118,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           acknowledgeUnknownWorkflowResolution: touchTaskController.acknowledgeUnknownWorkflowResolution,
           describeSkippedWorkflowTask: touchTaskController.describeSkippedWorkflowTask,
           retrySkippedWorkflowTask: touchTaskController.retrySkippedWorkflowTask,
+          workflowTaskStamp: touchTaskController.workflowTaskStamp,
           describeImages: touchTaskController.describeImages,
           importImages: touchTaskController.importImages
         },
