@@ -19,14 +19,16 @@ const UPDATE_WINDOW_WORDS = { waiting: ["等软件歇一下，我就开始", nul
 async function processSnapshot() {
   let result;
   try { result = await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-    "[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate,ExecutablePath,Name | ConvertTo-Json -Compress"],
-    { windowsHide: true, maxBuffer: 8 * 1024 ** 2, timeout: PROCESS_QUERY_TIMEOUT_MS }); }
+    "[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate,ExecutablePath,Name,CommandLine | ConvertTo-Json -Compress"],
+    { windowsHide: true, maxBuffer: 32 * 1024 ** 2, timeout: PROCESS_QUERY_TIMEOUT_MS }); }
   catch (error) {
     if (error.killed) throw Object.assign(Error("update_process_snapshot_timeout"), { cause: error });
     throw error;
   }
   const rows = JSON.parse(result.stdout.replace(/^\uFEFF/, ""));
-  return (Array.isArray(rows) ? rows : [rows]).map(row => ({ pid: row.ProcessId, parent: row.ParentProcessId, created: row.CreationDate, executable: row.ExecutablePath, name: row.Name }));
+  return (Array.isArray(rows) ? rows : [rows]).map(row => ({ pid: row.ProcessId, parent: row.ParentProcessId, created: row.CreationDate, executable: row.ExecutablePath, name: row.Name,
+    // Read in memory only, to tell our workers from programs we merely launched; never stored or reported.
+    ...(typeof row.CommandLine === "string" ? { commandLine: row.CommandLine } : {}) }));
 }
 // CreationDate is "/Date(ms)/" from Windows PowerShell or ISO text; null when unknown.
 function createdAt(row) {
@@ -63,34 +65,46 @@ function descendants(rows, rootPid, seed = []) {
   }
   return [...selected.values()];
 }
-// Only processes running our own files can block the update: an executable under the install or the
-// profile (app, workers, bundled tools) or one whose path Windows would not tell us. Programs the app
-// started from elsewhere (WeChat, a browser) lock none of our files; field report 2026-11-23: the helper
-// waited on "4 processes" no customer could name, then gave up after 120 s.
+// Field report 2026-11-23: the helper waited on "4 processes" no customer could name, then gave up after
+// 120 s. A process of the app's tree is our worker when it runs from the install or the profile, names
+// either on its command line (an account browser's --user-data-dir), or is a script host the app runs
+// its own work in (RPA PowerShell, Python). Anything else the app merely launched — WeChat, a browser
+// opened on a link — holds none of our files and no longer blocks the update. A process whose path
+// Windows will not tell us is still waited on, but never ended.
+const SCRIPT_HOSTS = new Set(["powershell.exe", "pwsh.exe", "cmd.exe", "conhost.exe", "python.exe", "pythonw.exe", "node.exe", "wscript.exe", "cscript.exe"]);
 function isWithin(file, root) {
   const relative = path.relative(path.resolve(root).toLowerCase(), path.resolve(file).toLowerCase());
-  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+  return relative === "" || (!!relative && relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative));
 }
 function processKind(row, roots = []) {
-  if (!row.executable) return "unknown";
-  return roots.some(root => root && isWithin(row.executable, root)) ? "own" : "external";
+  if (!row.executable || !roots.length) return "unknown";
+  if (roots.some(root => root && isWithin(row.executable, root))) return "own";
+  if (SCRIPT_HOSTS.has(path.basename(row.executable).toLowerCase())) return "own";
+  const command = String(row.commandLine || "").replace(/\//g, "\\").toLowerCase();
+  return command && roots.some(root => root && command.includes(path.resolve(root).toLowerCase())) ? "own" : "external";
 }
-// Never a customer path. label is the file name shown in the window; name is the report's identifier.
-function processSummary(row, roots) {
-  const label = String(row.name || (row.executable ? path.basename(row.executable) : "") || "unknown").slice(0, 60), name = label.toLowerCase();
-  return { name: /^[a-z0-9][a-z0-9_.-]{0,59}$/u.test(name) ? name : "x", label, kind: processKind(row, roots) };
+// Never a customer path. label is the file name shown in the window; name is the report's identifier
+// ("app" for the app's own executable, whose file name is Chinese).
+function processSummary(row, roots, appExecutable) {
+  const label = String(row.name || (row.executable ? path.basename(row.executable) : "") || "unknown").slice(0, 60), lower = label.toLowerCase();
+  const isApp = !!appExecutable && !!row.executable && path.resolve(row.executable).toLowerCase() === path.resolve(appExecutable).toLowerCase();
+  return { name: isApp ? "app" : /^[a-z0-9][a-z0-9_.-]{0,59}$/u.test(lower) ? lower : "x", label, kind: processKind(row, roots) };
 }
 function describeRemaining(rows, roots) {
   const counts = new Map();
   for (const row of rows) { const { label } = processSummary(row, roots); counts.set(label, (counts.get(label) || 0) + 1); }
   return [...counts].map(([name, count]) => count > 1 ? `${name} ×${count}` : name).join("、");
 }
-// The app has already quit; after this grace its own processes still running are stuck, not working.
-const FORCE_STOP_AFTER_MS = 20000;
-async function waitForExit(job, onStage, timeoutMs = 120000, { roots = [], forceStopAfterMs = FORCE_STOP_AFTER_MS } = {}) {
-  let tracked = job.processes;
+// Counted from the moment the app's main process has gone: its quit cleanup (sidecars, databases) runs
+// first and is never cut short. Our processes still running this long after it are stuck, not working.
+// The main process itself is never ended here.
+const FORCE_STOP_AFTER_MS = 30000;
+async function waitForExit(job, onStage, timeoutMs = 120000, { roots = [], appExecutable = "", forceStopAfterMs = FORCE_STOP_AFTER_MS } = {}) {
+  let tracked = job.processes, parentGoneAt = null;
   const started = Date.now(), until = started + timeoutMs;
   const recorded = new Set(job.processes.map(identity)), stopped = new Set();
+  const parent = job.processes.find(row => row.pid === job.parentPid);
+  const summary = row => processSummary(row, roots, appExecutable);
   while (true) {
     if (job.authorizationFile && readJson(job.authorizationFile.replace(/\.json$/, ".cancel.json"))) throw Error("update_request_cancelled");
     const rows = await processSnapshot();
@@ -102,10 +116,12 @@ async function waitForExit(job, onStage, timeoutMs = 120000, { roots = [], force
     tracked = descendants(rows, job.parentPid, tracked).filter(row => !own.has(row.pid));
     const alive = rows.filter(row => tracked.some(value => value.pid === row.pid && value.created === row.created));
     const blocking = alive.filter(row => processKind(row, roots) !== "external");
-    if (!blocking.length) return { ignored: alive.map(row => processSummary(row, roots)) };
-    if (Date.now() > until) throw Object.assign(Error("update_workers_still_running"), { processes: blocking.map(row => processSummary(row, roots)) });
-    const stoppable = blocking.filter(row => processKind(row, roots) === "own" && !stopped.has(identity(row)));
-    if (Date.now() - started >= forceStopAfterMs && stoppable.length) {
+    if (!blocking.length) return { ignored: alive.map(summary) };
+    if (Date.now() > until) throw Object.assign(Error("update_workers_still_running"), { processes: blocking.map(summary) });
+    const parentAlive = parent ? rows.some(row => identity(row) === identity(parent)) : false;
+    if (!parentAlive && parentGoneAt === null) parentGoneAt = Date.now();
+    const stoppable = blocking.filter(row => processKind(row, roots) === "own" && row.pid !== job.parentPid && !stopped.has(identity(row)));
+    if (parentGoneAt !== null && Date.now() - parentGoneAt >= forceStopAfterMs && stoppable.length) {
       onStage("waiting", "正在结束未退出的软件进程", `${describeRemaining(stoppable, roots)} 退出超时，正在结束它们，然后继续更新。`);
       // Recheck identity right before taskkill: a PID freed since the snapshot may already name another process.
       const current = new Set((await processSnapshot()).map(identity));
@@ -158,7 +174,8 @@ async function stopLaunch(pid, tracked, onStage) {
     tracked = descendants(rows, pid, tracked);
     const alive = tracked.filter(row => rows.some(current => identity(current) === identity(row)));
     if (!alive.length) return;
-    if (Date.now() > until) throw Error("update_workers_still_running");
+    // Its own code: the new version may already be selected, so "nothing changed" would be wrong.
+    if (Date.now() > until) throw Error("update_launch_still_running");
     for (const row of alive) {
       const current = (await processSnapshot()).find(value => identity(value) === identity(row));
       if (!current) continue;
@@ -332,7 +349,8 @@ async function prepareHelperRuntime(options) {
 async function createUpdateJob({ userData, prepared, currentVersion, channel = "test" }) {
   await require("./update-backups.cjs").retryRetiringBackups(userData).catch(error => console.warn(`Backup cleanup deferred: ${error.message}`));
   const paths = updatePaths(userData); fs.mkdirSync(paths.jobs, { recursive: true });
-  const id = crypto.randomUUID(), snapshot = await processSnapshot(), processes = descendants(snapshot, process.pid);
+  // Command lines stay out of the job file: they are only read live by the helper.
+  const id = crypto.randomUUID(), snapshot = await processSnapshot(), processes = descendants(snapshot, process.pid).map(({ commandLine, ...row }) => row);
   if (!processes.some(row => row.pid === process.pid)) throw Error("update_process_snapshot_failed");
   const installedRoot = global.__xiaoxiComponents?.installedRoot || path.dirname(process.execPath);
   const applicationRoot = global.__xiaoxiComponents?.applicationRoot || path.join(installedRoot, "resources", "app");
@@ -408,7 +426,7 @@ async function runHelper({ jobFile, userData }) {
       detail += `\n更新记录未能保存（${updateFailure(error, currentPhase).code}），请保留此窗口的错误信息。`;
     }
     // Only what the window says is warmer; the status file above, errors and any rollback keep the exact wording.
-    const warm = !persistenceError && !/恢复|回退|结束新版/.test(title + detail) ? UPDATE_WINDOW_WORDS[phase] : null;
+    const warm = !persistenceError && !/恢复|回退|结束/.test(title + detail) ? UPDATE_WINDOW_WORDS[phase] : null;
     const shown = warm ? [warm[0], warm[1] ?? detail] : [title, detail];
     if (!window.isDestroyed()) void window.webContents.executeJavaScript(`document.getElementById('title').textContent=${JSON.stringify(shown[0])};document.getElementById('detail').textContent=${JSON.stringify(shown[1])};document.getElementById('busy').hidden=${JSON.stringify(phase === "error")};document.getElementById('actions').hidden=${JSON.stringify(!(phase === "error" && relaunchOffered))};${phase === "complete" ? "document.getElementById('busy').value=100;document.getElementById('detail').textContent+=' 更新完成 100%。';" : "document.getElementById('busy').removeAttribute('value');"}`).catch(() => {});
     if (persistenceError && phase !== "error") throw persistenceError;
@@ -425,7 +443,7 @@ async function runHelper({ jobFile, userData }) {
     job.authorizationFile = full; authorized = true;
     const config = require("./cloud-config.cjs").cloudConfig({ channel: job.channel || "test" });
     stage("waiting", "等待软件和工作进程退出", "退出完成后将继续安装更新。");
-    await waitForExit(job, stage, undefined, { roots: [job.installedRoot, userData] });
+    await waitForExit(job, stage, undefined, { roots: [job.installedRoot, userData], appExecutable: job.executable });
     const prepared = job.prepared;
     let dataBackup;
     stage("verifying", "正在校验更新", "正在核对签名和完整版本文件。");
@@ -515,11 +533,12 @@ async function runHelper({ jobFile, userData }) {
     }
     const remaining = Array.isArray(error?.processes) && error.processes.length
       ? `（${[...new Set(error.processes.map(row => row.label || row.name))].join("、")}）` : "";
-    const messages = { update_workers_still_running: `本次更新没有安装：软件的部分进程${remaining}一直没有退出。软件和数据都保持原样，点“重新打开软件”会再次尝试更新；仍不行请重启电脑后再更新。`, update_start_rolled_back: "新版本启动失败，已恢复上一版本，可重新检查更新。", update_start_failed: "更新启动未完成，请重试。" };
+    const messages = { update_workers_still_running: `本次更新没有安装：软件的部分进程${remaining}一直没有退出。软件和数据都保持原样，点“重新打开软件”会再次尝试更新；仍不行请重启电脑后再更新。`, update_start_rolled_back: "新版本启动失败，已恢复上一版本，可重新检查更新。", update_start_failed: "更新启动未完成，请重试。",
+      update_launch_still_running: "新版本没能正常启动，它的进程也没有按时结束。请重启电脑后再打开软件；仍打不开时用官网完整安装包覆盖安装，数据会保留。" };
     const failure = updateFailure(error, currentPhase);
     finished = true;
     // Once authorized the app has quit. Rollbacks reopen it themselves; a failed restore is not reopened blindly.
-    relaunchOffered = authorized && !["update_start_rolled_back", "update_restore_failed"].includes(failure.code);
+    relaunchOffered = authorized && !["update_start_rolled_back", "update_restore_failed", "update_launch_still_running"].includes(failure.code);
     stage("error", "更新未完成", messages[failure.code] || formatUpdateFailure(failure), failure);
   } finally {
     // Failure to remove a receipt must never hide the original failure or lock its window.

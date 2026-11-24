@@ -269,6 +269,29 @@ if (!process.versions.electron) {
     assert.deepEqual(require("../src/main/update-failure-report.cjs").failureDetails({ phase: "error", failure: recorded }).remaining_code,
       ["mystery.exe:unknown"], "the field report says which processes never exited");
 
+    // While the app's main process is still quitting, nothing is ended however long the grace is.
+    const mainAlive = { ProcessId: appRow.pid, ParentProcessId: 4, CreationDate: appRow.created, ExecutablePath: join(installed, "AI获客 V1.0版本.exe"), Name: "AI获客 V1.0版本.exe" };
+    snapshot = [mainAlive, { ...worker }]; killed = [];
+    const quitting = await helperModule.exports.waitForExit(job(), () => {}, 1500,
+      { ...roots, appExecutable: mainAlive.ExecutablePath, forceStopAfterMs: 0 }).catch(error => error);
+    assert.deepEqual(killed, [], "the app's quit cleanup is never cut short, and the main process is never ended");
+    assert.deepEqual(quitting.processes.map(row => row.name).sort(), ["app", "ffmpeg.exe"], "the app's own Chinese-named executable is reported as app");
+
+    // Workers outside our folders: an account browser on a profile under ours, and a system PowerShell RPA host.
+    const accountBrowser = { ProcessId: 5500, ParentProcessId: 5000, CreationDate: date(-45000), ExecutablePath: join("C:", "Program Files", "Google", "Chrome", "chrome.exe"),
+      Name: "chrome.exe", CommandLine: `chrome.exe --user-data-dir="${join(profile, "data", "social_accounts", "profiles", "a1")}"` };
+    const rpaHost = { ProcessId: 5600, ParentProcessId: 5000, CreationDate: date(-45000), ExecutablePath: join("C:", "Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      Name: "powershell.exe", CommandLine: "powershell.exe -NoProfile -EncodedCommand AAAA" };
+    snapshot = [accountBrowser, rpaHost]; killed = [];
+    await helperModule.exports.waitForExit(job(), () => {}, 60000, { ...roots, forceStopAfterMs: 0 });
+    assert.deepEqual(killed.sort(), [5500, 5600], "a browser on our profile and an RPA host are waited on and ended like our own workers");
+
+    // Without roots nothing is classified away: the old wait-for-everything behaviour.
+    snapshot = [{ ...worker }]; killed = [];
+    const noRoots = await helperModule.exports.waitForExit(job(), () => {}, 1500, { forceStopAfterMs: 0 }).catch(error => error);
+    assert.equal(noRoots.message, "update_workers_still_running", "a call without roots keeps waiting");
+    assert.deepEqual(killed, [], "and ends nothing");
+
     // A failed update must stop the bar: author CSS display:block used to override the hidden attribute.
     const source = fs.readFileSync(helperFile, "utf8");
     assert.match(source, /progress\[hidden\],#actions\[hidden\]\{display:none\}/u, "a hidden progress bar really disappears");
