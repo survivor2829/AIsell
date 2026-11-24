@@ -54,7 +54,7 @@
 | 文件 | 来源原图 | 员工 |
 | --- | --- | --- |
 | `login/production.webp` | `xiaoxi-integrated-idle.png` | 小影 |
-| `login/agent.webp` | `xiaohui-integrated-idle.png` | 小诚 |
+| `login/agent.webp` | `xiaohui-integrated-idle.png` | 小微 |
 | `login/operations.webp` | `xiaolian-integrated-idle.png` | 小绘 |
 | `login/business.webp` | `business-assistant.png` | 小睿 |
 | `login/materials.webp` | `materials-assistant.png` | 小禾 |
@@ -65,7 +65,7 @@
 | 文件 | 生成（2026-10-26/27，wan3.0-video 720P 5 秒，每条约 ¥3） | 动作 |
 | --- | --- | --- |
 | `login/production.webm` | 任务 `b88bf150…` | 小影眨眼、点头、挥手 |
-| `login/agent.webm` | 任务 `1e962870…` | 小诚用笔点平板，抬头歪头眨眼，热情地笑 |
+| `login/agent.webm` | 任务 `1e962870…` | 小微用笔点平板，抬头歪头眨眼，热情地笑 |
 | `login/operations.webm` | 任务 `d4a1ac3f…` | 小绘扶眼镜，温柔浅笑点头 |
 | `login/business.webm` | 任务 `b1cf36d1…` | 小睿看一眼平板数据，抬头自信微笑点头 |
 | `login/materials.webm` | 任务 `a5b148a2…` | 小禾把平板转向镜头，歪头微笑眨眼 |

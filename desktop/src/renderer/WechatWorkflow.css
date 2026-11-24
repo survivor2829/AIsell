@@ -356,7 +356,7 @@
 .workflow-page.is-touch .workflow-running-line { font-size: 15px; }
 .workflow-page.is-touch .workflow-task-meta { font-size: 14px; }
 
-/* 精准触达配色融合 (2026-11-18): the summary follows the role color (小诚 purple) instead of red, green, orange and blue;
+/* 精准触达配色融合 (2026-11-18): the summary follows the role color (小微 purple) instead of red, green, orange and blue;
    each number keeps its own icon, and cards take the tint of the page background. */
 .workflow-page.is-touch { --touch-accent: var(--brand-red, #e60000); --touch-card: color-mix(in srgb, var(--workspace-role-surface, #fff5f6) 35%, white); --touch-line: color-mix(in srgb, var(--touch-accent) 16%, transparent); }
 .touch-sum-track{stroke:color-mix(in srgb, var(--brand-red, #e60000) 14%, white)}
