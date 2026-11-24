@@ -685,7 +685,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
     {state.enabled && current?.type === "touch" && state.currentExecution?.taskId === current.id && <AgentStage label="AI 触达组工作台" model={touchStageModel({
       stage: state.currentExecution.stage, partKind: state.currentExecution.partKind, partIndex: state.currentExecution.partIndex, partTotal: state.currentExecution.partTotal,
       textSent: state.currentExecution.textSent, contactIndex: state.currentExecution.contactIndex, contactTotal: state.currentExecution.contactTotal,
-      hasImages: Boolean(current.images?.length), done: current.progress.done, total: current.progress.total, skipped: current.skipped_records?.length || 0,
+      hasImages: Boolean(current.images?.length), aiPolish: Boolean(current.aiPolish), done: current.progress.done, total: current.progress.total, skipped: current.skipped_records?.length || 0,
       stepLabel: TOUCH_STAGE_LABELS[state.currentExecution.stage] || "正在处理" })} />}
     {(error || state.error) && <div className="workflow-alert" role="alert">{error || state.error}</div>}
     {state.classificationQuality?.status === "needs_review" && <div className="workflow-alert" role="alert">
