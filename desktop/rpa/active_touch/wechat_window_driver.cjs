@@ -1270,6 +1270,31 @@ $targetHeight = ${WECHAT_STABLE_WINDOW_LAYOUT.height}
 $width = [Math]::Min([int]$workArea.Width, [int][Math]::Round($targetWidth * $dpiScale))
 $height = [Math]::Min([int]$workArea.Height, [int][Math]::Round($targetHeight * $dpiScale))
 if (-not (Test-XiaoxiUserIdle)) { Stop-ForActiveUser $matched.pid $hWnd; exit }
+# Field (47d2578f, 2026-11-24): WeChat's 搜一搜 side panel was left open (the customer's own search) and its
+# changing content made a chat that had not changed fail the pre-send check (atomic_conversation_changed,
+# 13 times in an hour). The panel is a browser tab of WeChat's helper process embedded in the main window; its own 关闭 button
+# is pressed through UI Automation (no mouse) before every WeChat step, then the window is laid out.
+$windowDiagnostic.search_panel_closed = $false
+try {
+  if (-not $script:windowUiaLoaded) { Add-Type -AssemblyName UIAutomationClient; $script:windowUiaLoaded = $true }
+  $panelRoot = [System.Windows.Automation.AutomationElement]::FromHandle($hWnd)
+  $stripCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, "TabStrip")
+  $closeCondition = New-Object System.Windows.Automation.OrCondition(
+    (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, "关闭")),
+    (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, "Close")))
+  foreach ($panelStrip in $panelRoot.FindAll([System.Windows.Automation.TreeScope]::Descendants, $stripCondition)) {
+    # Only an embedded panel (another process inside WeChat's window), never WeChat's own controls.
+    if ([int]$panelStrip.Current.ProcessId -eq [int]$matched.pid) { continue }
+    foreach ($panelClose in $panelStrip.FindAll([System.Windows.Automation.TreeScope]::Descendants, $closeCondition)) {
+      if ($panelClose.Current.IsOffscreen -or -not $panelClose.Current.IsEnabled) { continue }
+      $panelInvoke = $null
+      if ($panelClose.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$panelInvoke)) {
+        $panelInvoke.Invoke(); $windowDiagnostic.search_panel_closed = $true
+      }
+    }
+  }
+  if ($windowDiagnostic.search_panel_closed) { Start-Sleep -Milliseconds 300 }
+} catch { $windowDiagnostic.search_panel_closed = $false }
 if ([Win32WechatWindow]::IsZoomed($hWnd)) {
   [void][Win32WechatWindow]::ShowWindowAsync($hWnd, 9)
   Start-Sleep -Milliseconds 120
@@ -2402,8 +2427,28 @@ if ($requireHeaderChange) {
   try { $headerBefore = Get-ConversationHeaderHash $expectedHWnd } catch {}
   if (-not $headerBefore) { @{ ok=$false; reason="wechat_search_result_landing_unverified"; rule_id=(Write-XiaoxiFailure "wx1-r047" "wechat_search_result_landing_unverified"); error="无法采集点击前会话状态，任务已暂停"; send_attempted=$false; actionAttempted=$false } | ConvertTo-Json -Compress; exit }
 }
-[void][Win32WechatSearchResultClick]::SetCursorPos($clickX,$clickY)
-[Win32WechatSearchResultClick]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero); [Win32WechatSearchResultClick]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
+# Field (47d2578f, 2026-11-24, search_result_not_opened 44 times in 90 minutes; 166/407/647 on older
+# versions): the dropdown listed the verified contact, the click was sent, and WeChat neither opened
+# the chat nor closed the dropdown. A press that arrives the instant the cursor jumps onto the row can
+# be dropped by WeChat's popup, so the cursor rests on the row (a real move event) before the press.
+function Invoke-SearchResultPress {
+  [void][Win32WechatSearchResultClick]::SetCursorPos($clickX,$clickY)
+  [Win32WechatSearchResultClick]::mouse_event(0x0001,0,0,0,[UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 90
+  [Win32WechatSearchResultClick]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 40
+  [Win32WechatSearchResultClick]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
+}
+# The dropdown is its own WeChat window; while that same window still covers the clicked point the click
+# did not open a chat (opening one closes it). Anything else there now (a profile card from a network
+# lookup row, another dialog) is never pressed again.
+$dropdownHWnd = $hit.ToInt64()
+function Test-SearchDropdownStillUnderClick {
+  if ($root.ToInt64() -eq $expectedHWnd) { return $false }
+  $probe = New-Object Win32WechatSearchResultClick+POINT; $probe.X=$clickX; $probe.Y=$clickY
+  return [Win32WechatSearchResultClick]::WindowFromPoint($probe).ToInt64() -eq $dropdownHWnd
+}
+Invoke-SearchResultPress
 # Field (user, 2026-11-14): a cursor left on the clicked row sits where the next search's dropdown
 # draws a row; WeChat highlights the hovered row and the next result check could fail. Once the click
 # is processed, move the cursor (no click) to WeChat's own top strip. Only when nobody touched the
@@ -2431,6 +2476,20 @@ if ([uint64][Win32WechatSearchResultClick]::GetLastInputTick() -eq $clickInputTi
   }
 }
 Start-Sleep -Milliseconds 350
+# One more press on the same verified row, only if the dropdown is still there, WeChat is still in
+# front and nobody has touched the mouse or keyboard since our own input. Everything below still checks
+# where it landed, and the title check that follows still decides whether this is the right chat.
+$resultClickRetried = $false
+if ((Test-SearchDropdownStillUnderClick) -and
+    [Win32WechatSearchResultClick]::GetForegroundWindow().ToInt64() -eq $expectedHWnd -and
+    [uint64][Win32WechatSearchResultClick]::GetLastInputTick() -eq $ownedInputTick) {
+  Invoke-SearchResultPress
+  $resultClickRetried = $true
+  Start-Sleep -Milliseconds 150
+  if ($clickParked) { [void][Win32WechatSearchResultClick]::SetCursorPos($parkPoint.X, $parkPoint.Y) }
+  $ownedInputTick = [uint64][Win32WechatSearchResultClick]::GetLastInputTick()
+  Start-Sleep -Milliseconds 350
+}
 $landingHWnd = [Win32WechatSearchResultClick]::GetForegroundWindow()
 [uint32]$landingPid = 0; [void][Win32WechatSearchResultClick]::GetWindowThreadProcessId($landingHWnd, [ref]$landingPid)
 if ([int]$landingPid -ne $expectedPid) { @{ ok=$false; reason="wechat_window_not_foreground"; actionAttempted=$true } | ConvertTo-Json -Compress; exit }
@@ -2462,7 +2521,7 @@ if ($requireHeaderChange) {
   try { $headerAfter = Get-ConversationHeaderHash $expectedHWnd } catch {}
   if (-not $headerAfter -or $headerAfter -ceq $headerBefore) { @{ ok=$false; reason="wechat_search_result_landing_unverified"; rule_id=(Write-XiaoxiFailure "wx1-r047" "wechat_search_result_landing_unverified"); error="点击后会话区域未变化，任务已暂停以防触达上一位"; send_attempted=$false; actionAttempted=$true } | ConvertTo-Json -Compress; exit }
 }
-@{ ok=$true; pid=$expectedPid; hWnd=$expectedHWnd; exactSearchOpened=$true; resultClickCursorParked=[bool]$clickParked } | ConvertTo-Json -Compress
+@{ ok=$true; pid=$expectedPid; hWnd=$expectedHWnd; exactSearchOpened=$true; resultClickCursorParked=[bool]$clickParked; resultClickRetried=[bool]$resultClickRetried } | ConvertTo-Json -Compress
 `;
 
 function searchCandidateFingerprint(mode, candidate) {

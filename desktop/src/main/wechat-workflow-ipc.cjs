@@ -54,6 +54,16 @@ function registerWechatWorkflowIpc(options) {
       if (!disposed) setImmediate(() => { if (!disposed) broadcast(controller.status()); });
     }
   });
+  // While the app operates WeChat, WeChat types with Windows' own US keyboard, never a third-party
+  // input method whose floating windows sat over the search dropdown (47d2578f, 2026-11-24). Between
+  // steps (auto-reply listening, waiting) and on pause the customer's own input method is back.
+  const inputMethod = (options.createInputMethodGuard || (() => ({ sync() {}, restore() {} })))({
+    log: (name, details) => options.logger?.event?.("wechat_workflow", name, details, { level: /failed/.test(name) ? "warn" : "info" })
+  });
+  function syncInputMethod(state) {
+    inputMethod.sync(!disposed && Boolean(state?.enabled) && state.phase !== "pausing" && state.phase !== "listening"
+      && (Boolean(state.currentTaskId) || state.phase === "replying"));
+  }
   function syncSpaceHotkey(state) {
     if (!disposed && state?.enabled && state.phase !== "pausing") {
       spaceHotkey.start();
@@ -78,6 +88,7 @@ function registerWechatWorkflowIpc(options) {
   let lastSent = "";
   const broadcast = (state, { onlyChanges = false } = {}) => {
     try { syncSpaceHotkey(state); } catch { /* Pausing by keyboard is a convenience; the run never depends on it. */ }
+    try { syncInputMethod(state); } catch { /* The input method is hardening; the run never waits on it. */ }
     const progress = viewState(state);
     const text = JSON.stringify(progress);
     if (onlyChanges && text === lastSent) return;
@@ -635,6 +646,7 @@ function registerWechatWorkflowIpc(options) {
     dispose: async () => {
       disposed = true;
       spaceHotkey.stop();
+      await Promise.race([Promise.resolve(inputMethod.restore()), new Promise((resolve) => setTimeout(resolve, 3000))]);
       for (const event of ["display-metrics-changed", "display-removed"]) screen.removeListener?.(event, regroundSprite);
       clearInterval(progressTimer); progressTimer = null;
       await controller.dispose(); floatingWindow?.destroy(); floatingWindow = null;

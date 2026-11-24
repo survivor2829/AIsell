@@ -31,6 +31,7 @@ const checks = [
   "rpa/active_touch/vision_rescue.self_check.cjs",
   "rpa/active_touch/vision_title.self_check.cjs",
   "rpa/active_touch/wechat_chat_edge.self_check.cjs",
+  "rpa/active_touch/wechat_input_method.self_check.cjs",
   "rpa/active_touch/wechat_session_list_edge.self_check.cjs",
   "src/main/wechat-vision-check.self_check.cjs",
   "src/main/shortcut-repair.self_check.cjs",
