@@ -924,10 +924,21 @@ export function FinishedVideoCenterPage({ onOpenProductions }: { onOpenProductio
   return (
     <section className="page content-foundation-page finished-page">
       <div className="page-head content-page-head">
-        <div>
-          <h1>成片中心</h1>
-          <p>查看和下载可用作品，最新成片排在前面。</p>
-        </div>
+        {ready ? (
+          <div className="finished-toolbar" aria-label="成片筛选">
+            <label className="finished-search">
+              <Search size={17} aria-hidden="true" />
+              <input
+                aria-label="搜索成片"
+                type="search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="搜索标题或文件名"
+              />
+            </label>
+            <span className="finished-result-count">{query.trim() ? `找到 ${filteredItems.length} 条作品` : `${availableCount} 条可用作品`}</span>
+          </div>
+        ) : <div />}
         <div className="actions content-page-actions">
           {onOpenProductions && <button className="secondary-button" onClick={onOpenProductions}>制作记录</button>}
           <button className="secondary-button" onClick={() => void refresh({ announce: true })} disabled={!ready || busy}>
@@ -943,22 +954,6 @@ export function FinishedVideoCenterPage({ onOpenProductions }: { onOpenProductio
 
       {!ready && <ContentEngineBanner status={status} loading={loading} />}
       {notice && <div className="touch-notice" role="status">{notice}</div>}
-
-      {ready && (
-        <div className="finished-toolbar" aria-label="成片筛选">
-          <label className="finished-search">
-            <Search size={17} aria-hidden="true" />
-            <input
-              aria-label="搜索成片"
-              type="search"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索标题或文件名"
-            />
-          </label>
-          <span className="finished-result-count">{query.trim() ? `找到 ${filteredItems.length} 条作品` : `${availableCount} 条可用作品`}</span>
-        </div>
-      )}
 
       <div className="finished-grid">
         {showInitialSkeleton && Array.from({ length: 6 }, (_, index) => (

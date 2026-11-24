@@ -460,7 +460,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   const runningDetail = state.phase === "completed" ? "本轮已结束，可查看下方结果"
     : state.phase === "needs_attention" ? "本轮已结束，部分任务已跳过，可查看下方结果"
       : state.waitingTaskId ? waitingDetail
-      : !state.enabled ? "启动前安排好任务；运行中需先暂停再调整"
+      : !state.enabled ? ""
         : executionDetail || (next ? `下一项：${next.title}`
           : current ? "正在执行本轮已安排任务"
             : waitingForSchedule ? "到达已安排的时间后继续执行"
@@ -892,7 +892,7 @@ export function WorkflowRecipients({ workflow, contacts = [] }: { workflow: Work
   const excluded = (state.replyExcludedCount || 0) + (state.replyEnrollAmbiguousCount || 0);
   return <section className="workflow-recipients reply-scope" aria-labelledby="reply-scope-title">
     <div className="reply-scope-head">
-      <div><h2 id="reply-scope-title">接待范围<span>{state.recipients.length} 位客户</span></h2><p>只自动回复下面这些客户，群聊和其他人不会碰。</p></div>
+      <div><h2 id="reply-scope-title">接待范围<span>{state.recipients.length} 位客户</span></h2></div>
       {!addOpen && <button type="button" className="secondary-button" disabled={locked} onClick={() => { setAdding(true); setQuery(""); }}><Plus size={16} />添加客户</button>}
     </div>
     {addOpen && <div className="reply-scope-add">

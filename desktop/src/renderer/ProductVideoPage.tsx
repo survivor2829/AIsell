@@ -163,7 +163,6 @@ export function ProductVideoPage() {
   const shotState = (index: number) => ready[index] ? "done" : selected && index === selected.currentShot && running && !finishing(selected) && selected.status !== "transcribing" ? "now" : selected && STUCK.has(selected.status) && index === selected.currentShot ? "stuck" : "wait";
   const history = items.filter(task => task.id !== selected?.id);
   return <div className="product-video-page pv2">
-    <header className="pv2-header"><h1>场景效果视频</h1><p>一张产品图，变成在现场干活的视频。</p></header>
     <ExampleBanner topic="product-video" />
     <div className="pv2-grid">
       <section className="pv2-card pv2-form" aria-label="产品资料">

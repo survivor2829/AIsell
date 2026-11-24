@@ -1246,3 +1246,15 @@
 .finished-download-options button:hover {
   background: #fff1f3;
 }
+
+/* The search sits in the header row beside the actions (no repeated page title above it). */
+.content-page-head .finished-toolbar {
+  margin-top: 0;
+  padding: 0;
+  border-bottom: 0;
+  flex: 1;
+  min-width: 0;
+}
+.content-page-head .finished-result-count { margin-left: 0; }
+.finished-page .content-page-head { align-items: center; padding-bottom: 18px; border-bottom: 1px solid #e4e7ec; }
+.finished-page .content-page-head .content-page-actions { padding-top: 0; }

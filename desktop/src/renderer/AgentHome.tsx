@@ -466,10 +466,6 @@ function AgentPortrait({ definition }: { definition: RoleDefinition }) {
           </div>
         )}
       </div>
-      <div className="agent-portrait-name">
-        <strong>{definition.name}</strong>
-        <span>{definition.responsibility}数字员工</span>
-      </div>
     </div>
   );
 }
@@ -493,7 +489,7 @@ function MetricStrip({ metrics, onOpen }: { metrics: Metric[]; onOpen: (target: 
             <div>
               <span>{metric.label}</span>
               <p><strong>{metric.value}</strong>{metric.unit && <small>{metric.unit}</small>}</p>
-              <em>{metric.detail}</em>
+              {metric.value === "—" && <em>{metric.detail}</em>}
             </div>
           </div>
         );

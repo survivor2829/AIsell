@@ -79,7 +79,7 @@ export function AgentOverview({ preferences, onOpenRole, onStart, workflowTasks 
       <HomeReel />
     </section>
     <section className="home-crew-wrap" aria-label="6 位 AI 员工">
-    <div className="home-crew-title"><h2>你的 6 位 AI 员工</h2><span>点一位，让她开始干活</span></div>
+    <div className="home-crew-title"><h2>你的 6 位 AI 员工</h2></div>
     <div className="home-crew">
       {AGENT_ROLE_ORDER.map((key) => {
         const appearance = appearanceFor(key, preferences[key].appearanceId);
