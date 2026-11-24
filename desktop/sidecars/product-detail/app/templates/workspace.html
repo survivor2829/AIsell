@@ -2415,6 +2415,8 @@
     const subText = loading?.querySelector('div:nth-child(3)');
     if (loading) loading.style.display = 'block';
     if (results) results.innerHTML = '';
+    // A new task starts with an empty workbench, not the last task's finished one.
+    if (loading) loading.querySelectorAll('.agent-stage').forEach((node) => { window.AgentStage?.stop(loading); node.remove(); });
     if (loadingText) loadingText.textContent = '正在生成 AI 精修版详情页…';
     if (subText) subText.textContent = statusText;
     if (bar) bar.style.width = '0%';
@@ -2540,8 +2542,12 @@
       if (ui.bar) ui.bar.style.width = `${Number(state.progress_pct || 0)}%`;
       if (ui.subText) ui.subText.textContent = `${modeBadge} · ${state.progress_msg || state.status}`;
       renderAiRefineProgressBlocks(state, ui);
-      // AI 工作台：策划、设计师、拼版各是一个光标，跟着这份真实状态走。
-      if (window.AgentStage && ui.loading) window.AgentStage.render(ui.loading, state);
+      // AI 工作台：策划、设计师、拼版各是一个光标，跟着这份真实状态走。下面会自动恢复的结果不明/待恢复
+      // 状态先按“恢复中”画，不提前标红（自动恢复用完仍停在这里时，下一轮才按真实状态显示失败）。
+      if (window.AgentStage && ui.loading) {
+        const recovering = ['outcome_unknown', 'recovery_required'].includes(state.status) && recoveryAttempts < 3;
+        window.AgentStage.render(ui.loading, recovering ? { ...state, status: 'running_recovery', error: '' } : state);
+      }
       if (taskRecord.status !== state.status) {
         taskRecord = persistAiRefineTask({ ...taskRecord, status: state.status }) || taskRecord;
       }

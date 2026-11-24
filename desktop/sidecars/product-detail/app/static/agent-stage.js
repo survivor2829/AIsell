@@ -3,14 +3,23 @@
    这里是嵌入页（Flask 模板），所以用原生 JS 实现。动效跟一个每秒一次的心跳走、任务结束即停，不用无限 CSS 动画。 */
 (function () {
   'use strict';
-  const IMAGE_CONCURRENCY = 5; // ai_refine_v2/pipeline_runner.py: screens drawn at the same time
-  const RUNNING = new Set(['queued', 'running', 'running_planner', 'running_generator', 'running_assembler', 'running_recovery']);
+  const RUNNING = new Set(['pending', 'running', 'running_planner', 'running_generator', 'running_assembler', 'running_recovery']);
   const FAILED = new Set(['failed', 'outcome_unknown', 'recovery_required', 'pricing_required']);
-  const DESIGNER_COLORS = ['#fb923c', '#f59e0b', '#fbbf24', '#fdba74', '#f97316'];
+  const DESIGNER_COLORS = ['#fb923c', '#f59e0b', '#fbbf24', '#fdba74', '#f97316', '#fcd34d', '#fed7aa', '#ea580c'];
 
   function screenTitle(screen, index) {
     const raw = screen && (screen.title || screen.headline || screen.role || screen.type);
     return raw ? String(raw).slice(0, 14) : `第 ${index + 1} 屏`;
+  }
+  // Each screen's own record (pipeline_runner checkpoint): prepared/submitted → raw_url → downloaded (success);
+  // error or placeholder means that screen did not come out. Nothing is guessed from concurrency.
+  function screenOf(block) {
+    if (!block) return 'queued';
+    if (block.success) return 'done';
+    if (block.error || block.placeholder) return 'failed';
+    if (block.raw_url) return 'fetching';
+    if (block.provider_task_id || block.provider_status) return 'drawing';
+    return 'queued';
   }
 
   // The whole model comes from the status the page already polls.
@@ -20,40 +29,49 @@
     const finished = status === 'success' || status === 'partial_success';
     const planning = state.planning && Array.isArray(state.planning.screens) ? state.planning.screens : [];
     const blocks = Array.isArray(state.blocks) ? state.blocks : [];
-    const total = Number(state.planned_count) || planning.length || blocks.length;
-    const ready = (index) => Boolean(blocks[index] && blocks[index].success);
+    const reroll = Number.isInteger(state.reroll_index) ? state.reroll_index : null;
+    const total = reroll !== null ? planning.length : (Number(state.planned_count) || planning.length || blocks.length);
+    // A single-screen redo: the other screens are kept; only the redone one has a record of its own.
+    const screen = (index) => reroll !== null ? (index === reroll ? screenOf(blocks.length === 1 ? blocks[0] : blocks[index]) : 'done') : screenOf(blocks[index]);
+    const states = Array.from({ length: total }, (_, index) => screen(index));
     const planned = planning.length > 0 || blocks.length > 0;
-    const phase = finished ? 3 : status === 'running_assembler' ? 2 : (status === 'running_generator' || status === 'running_recovery' || (failed && planned)) ? 1 : 0;
+    const allReady = total > 0 && states.every((value) => value === 'done');
+    // The step reached: a failure stays on the step it happened in.
+    const phase = finished ? 3 : status === 'running_assembler' || (failed && allReady) ? 2
+      : status === 'running_generator' || status === 'running_recovery' || (failed && planned) ? 1 : 0;
     const at = (step) => phase > step ? 'done' : phase === step ? (failed ? 'fail' : 'now') : 'wait';
-    const pending = [];
-    for (let index = 0; index < total; index += 1) if (!ready(index)) pending.push(index);
-    // At most five screens are drawn at once; the rest wait their turn.
-    const drawing = phase === 1 && !failed ? pending.slice(0, IMAGE_CONCURRENCY) : [];
-    const screenState = (index) => ready(index) ? 'done' : phase > 1 ? (finished ? 'fail' : 'wait')
-      : failed && phase === 1 ? 'fail' : drawing.includes(index) ? 'now' : 'wait';
+    const drawing = [];
+    states.forEach((value, index) => { if (value === 'drawing' || value === 'fetching') drawing.push(index); });
+    const cardState = (value) => value === 'done' ? 'done' : value === 'failed' ? 'fail' : (value === 'drawing' || value === 'fetching') && !failed && phase === 1 ? 'now' : 'wait';
 
     const cards = [{ id: 'plan', label: '分图方案', icon: '✦', state: at(0), detail: planned ? `${total} 屏` : '' }];
-    for (let index = 0; index < total; index += 1) {
-      const block = blocks[index] || {};
-      const state0 = screenState(index);
-      cards.push({ id: `screen-${index}`, label: block.is_hero ? '首图' : `第 ${index + 1} 屏`, icon: '▣', state: state0,
-        detail: state0 === 'wait' && phase === 1 ? '排队' : screenTitle(planning[index], index) });
-    }
+    states.forEach((value, index) => {
+      const hero = index === 0 || (planning[index] && planning[index].role === 'hero');
+      cards.push({ id: `screen-${index}`, label: hero ? '首图' : `第 ${index + 1} 屏`, icon: '▣', state: cardState(value),
+        detail: value === 'fetching' && !failed ? '下载中' : value === 'queued' && phase === 1 && !failed ? '排队' : screenTitle(planning[index], index) });
+    });
     cards.push({ id: 'long', label: '拼成长图', icon: '☰', state: at(2) });
 
     const agents = [{ id: 'planner', name: '策划', color: '#f472b6', at: 'plan', state: at(0) }];
-    drawing.forEach((index, slot) => agents.push({ id: `designer-${slot}`, name: `设计师 ${slot + 1}`, color: DESIGNER_COLORS[slot], at: `screen-${index}`, state: 'now' }));
-    if (!drawing.length) agents.push({ id: 'designer-0', name: '设计师', color: DESIGNER_COLORS[0], at: 'plan', state: phase > 1 ? 'done' : 'wait' });
+    if (phase === 1 && !failed && drawing.length) {
+      drawing.forEach((index, slot) => agents.push({ id: `designer-${slot}`, name: `设计师 ${slot + 1}`, color: DESIGNER_COLORS[slot % DESIGNER_COLORS.length], at: `screen-${index}`, state: 'now' }));
+    } else {
+      agents.push({ id: 'designer-0', name: '设计师', color: DESIGNER_COLORS[0], at: 'plan', state: phase > 1 ? 'done' : 'wait' });
+    }
     agents.push({ id: 'assembler', name: '拼版', color: '#a78bfa', at: 'long', state: at(2) });
 
     const log = [];
     const message = String(state.progress_msg || '');
+    const doneCount = states.filter((value) => value === 'done').length;
+    const failedCount = states.filter((value) => value === 'failed').length;
     if (at(0) !== 'wait') log.push({ who: '策划', color: '#f472b6', state: at(0), text: at(0) === 'done' ? `客户买点已精选，分成 ${total} 屏` : (message || '读产品资料，挑客户买点、分屏') });
     if (phase >= 1) {
-      const done = pending.length ? total - pending.length : total;
-      log.push({ who: '设计组', color: '#fb923c', state: phase > 1 ? 'done' : at(1), text: phase > 1 ? `${done}/${total} 屏画好了` : `已画好 ${done}/${total} 屏，${drawing.length} 位设计师在画` });
+      const designState = phase > 1 ? 'done' : failed ? 'fail' : 'now';
+      const text = reroll !== null && phase === 1 ? `重画第 ${reroll + 1} 屏，其余沿用`
+        : phase > 1 ? `${doneCount}/${total} 屏画好了` : `已画好 ${doneCount}/${total} 屏${drawing.length ? `，${drawing.length} 位设计师在画` : ''}${failedCount ? `，${failedCount} 屏没画成` : ''}`;
+      log.push({ who: '设计组', color: '#fb923c', state: designState, text });
     }
-    if (at(2) !== 'wait') log.push({ who: '拼版', color: '#a78bfa', state: at(2), text: at(2) === 'done' ? (status === 'partial_success' ? `长图拼好了，${pending.length} 屏没画成` : '长图拼好了') : '把画好的屏拼成长图' });
+    if (at(2) !== 'wait') log.push({ who: '拼版', color: '#a78bfa', state: at(2), text: at(2) === 'done' ? (failedCount ? `长图拼好了，${failedCount} 屏没画成` : '长图拼好了') : '把画好的屏拼成长图' });
     if (failed && state.error) log.push({ who: '原因', color: '#f87171', state: 'fail', text: String(state.error).slice(0, 160) });
     return { cards, agents, log, running: RUNNING.has(status) };
   }

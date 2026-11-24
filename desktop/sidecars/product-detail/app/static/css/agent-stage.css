@@ -26,8 +26,9 @@
   transition: transform .9s cubic-bezier(.22, 1, .36, 1); }
 .agent-cursor svg { fill: var(--agent); stroke: #0b1020; stroke-width: 1.4; stroke-linejoin: round; filter: drop-shadow(0 0 6px var(--agent)); }
 .agent-cursor i { margin-top: 12px; padding: 1px 7px; border-radius: 6px; background: var(--agent); color: #0b1020; font-size: 11px; font-style: normal; font-weight: 800; white-space: nowrap; box-shadow: 0 0 10px color-mix(in srgb, var(--agent) 55%, transparent); }
-/* Working: the cursor clicks on its card with the shared heartbeat (html[data-beat], beat.ts) rather than an
-   endless animation, which would keep the window redrawing (power policy, endless-animation.self_check).
+/* Working: the cursor clicks on its card with the stage's own heartbeat (.agent-stage[data-beat], set once a
+   second by static/agent-stage.js while the task runs) rather than an endless animation, which would keep the
+   window redrawing.
    Done or waiting: parked and dimmed. Failed: stopped, red. */
 .agent-cursor svg { transition: transform .18s ease-out; }
 .agent-stage[data-beat="1"] .agent-cursor.is-now svg { transform: translate(4px, 3px) scale(.86); }
