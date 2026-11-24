@@ -6,11 +6,17 @@
     { "id": "tools", "name": "工具类" }
   ],
   "examples": [
-    { "id": "bg1", "category": "equipment", "name": "普渡 BG1", "image": "bg1.jpg", "thumbnail": "bg1-thumb.jpg" },
-    { "id": "s9", "category": "equipment", "name": "毛驴快跑 S9", "image": "s9.jpg", "thumbnail": "s9-thumb.jpg" },
     { "id": "cc1-pro", "category": "equipment", "name": "普渡 CC1 Pro", "image": "cc1-pro.jpg", "thumbnail": "cc1-pro-thumb.jpg" },
     { "id": "ride-on-sweeper", "category": "equipment", "name": "驾驶式扫地车", "image": "ride-on-sweeper.jpg", "thumbnail": "ride-on-sweeper-thumb.jpg" },
+    { "id": "bg1", "category": "equipment", "name": "普渡 BG1", "image": "bg1.jpg", "thumbnail": "bg1-thumb.jpg" },
+    { "id": "s9", "category": "equipment", "name": "毛驴快跑 S9", "image": "s9.jpg", "thumbnail": "s9-thumb.jpg" },
     { "id": "indoor-cleaner", "category": "equipment", "name": "室内清洁机器人", "image": "indoor-cleaner.jpg", "thumbnail": "indoor-cleaner-thumb.jpg" },
-    { "id": "outdoor-sweeper", "category": "equipment", "name": "户外清扫机器人", "image": "outdoor-sweeper.jpg", "thumbnail": "outdoor-sweeper-thumb.jpg" }
+    { "id": "outdoor-sweeper", "category": "equipment", "name": "户外清扫机器人", "image": "outdoor-sweeper.jpg", "thumbnail": "outdoor-sweeper-thumb.jpg" },
+    { "id": "charger", "category": "accessories", "name": "龙克免维护电池充电器", "image": "charger.jpg", "thumbnail": "charger-thumb.jpg" },
+    { "id": "vacuum-motor", "category": "accessories", "name": "龙克洗地机二层风叶电机", "image": "vacuum-motor.jpg", "thumbnail": "vacuum-motor-thumb.jpg" },
+    { "id": "scrub-pad", "category": "consumables", "name": "爱悠威红色标准百洁垫", "image": "scrub-pad.jpg", "thumbnail": "scrub-pad-thumb.jpg" },
+    { "id": "pressure-hose", "category": "consumables", "name": "龙克高压清洗机高压管", "image": "pressure-hose.jpg", "thumbnail": "pressure-hose-thumb.jpg" },
+    { "id": "squeegee", "category": "tools", "name": "龙克洗地机吸水胶条", "image": "squeegee.jpg", "thumbnail": "squeegee-thumb.jpg" },
+    { "id": "waist-bag", "category": "tools", "name": "爱悠威短款腰包", "image": "waist-bag.jpg", "thumbnail": "waist-bag-thumb.jpg" }
   ]
 }

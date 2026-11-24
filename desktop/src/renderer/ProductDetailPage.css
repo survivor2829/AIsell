@@ -5,16 +5,23 @@
 }
 
 .detail-examples{min-width:0;container-type:inline-size;padding:12px 0}
-.detail-examples-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
-.detail-examples-head>div{display:flex;flex-direction:column;gap:4px;font-size:17px}.detail-examples-head span{font-size:12px;color:#556174}
-.detail-examples-head label{display:flex;align-items:center;gap:7px;font-size:13px;color:#445167}.detail-examples-head select{min-height:36px;border:1px solid #d6dbe4;border-radius:8px;padding:4px 8px;background:#fff;color:#273442;font:inherit}
-.detail-example-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-flow:column;gap:10px}
-.detail-example-grid>button{display:flex;align-items:center;gap:16px;min-width:0;padding:9px 14px;border:1px solid #dedbea;border-radius:10px;background:#fff;color:#273442;cursor:pointer;text-align:left}
-.detail-example-grid>button:hover{border-color:var(--agent-accent-strong,#7976de)}
-.detail-example-grid>button>img{display:block;flex:0 0 48px;width:48px;height:64px;object-fit:cover;border-radius:5px}
-.detail-example-grid>button>span{display:block;min-width:0;font-size:13px;font-weight:600;overflow-wrap:anywhere}.detail-examples small{display:flex;align-items:center;gap:3px;margin-top:5px;color:#556174;font-size:12px;font-weight:400}
-.detail-example-grid>button:focus-visible,.detail-examples select:focus-visible,.detail-example-dialog button:focus-visible{outline:3px solid #7976de;outline-offset:2px}
-@container(max-width:420px){.detail-example-grid{grid-template-columns:1fr;grid-auto-flow:row}}
+.detail-examples-head{margin-bottom:12px;font-size:17px}
+/* Four category columns, two examples each: the layout says what kinds of products get detail pages. */
+.detail-example-groups{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.detail-example-group{--cat:#6f6bd8;--cat-soft:#f1f0fd;display:flex;flex-direction:column;gap:8px;min-width:0;padding:10px;border-radius:12px;background:var(--cat-soft)}
+.detail-example-group[data-category=accessories]{--cat:#2f7fd1;--cat-soft:#edf5fd}
+.detail-example-group[data-category=consumables]{--cat:#d2502f;--cat-soft:#fdf1ed}
+.detail-example-group[data-category=tools]{--cat:#2f9a6a;--cat-soft:#ecf7f1}
+.detail-example-group>h3{margin:0 0 2px;font-size:14px;font-weight:700;color:var(--cat)}
+.detail-example-group>button{display:flex;flex-direction:column;gap:6px;min-width:0;padding:6px;border:1px solid transparent;border-radius:10px;background:#fff;color:#273442;cursor:pointer;text-align:left;transition:border-color .15s,box-shadow .15s}
+.detail-example-group>button:hover{border-color:var(--cat);box-shadow:0 4px 14px #1b223314}
+.detail-example-thumb{position:relative;display:block;aspect-ratio:1;overflow:hidden;border-radius:7px;background:#eef0f5}
+.detail-example-thumb>img{display:block;width:100%;height:100%;object-fit:cover}
+.detail-example-thumb>svg{position:absolute;right:6px;bottom:6px;padding:4px;border-radius:50%;background:#ffffffe6;color:var(--cat);opacity:0;transition:opacity .15s}
+.detail-example-group>button:hover .detail-example-thumb>svg,.detail-example-group>button:focus-visible .detail-example-thumb>svg{opacity:1}
+.detail-example-name{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:12px;font-weight:600;line-height:1.4;min-height:2.8em}
+.detail-example-group>button:focus-visible,.detail-example-dialog button:focus-visible{outline:3px solid #7976de;outline-offset:2px}
+@container(max-width:520px){.detail-example-groups{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .detail-example-dialog{width:min(960px,92vw);height:86vh;padding:0;border:0;border-radius:14px;color:#273442;background:#fff}.detail-example-dialog::backdrop{background:#17203399}
 .detail-example-dialog[open]{display:flex;flex-direction:column}
 .detail-example-dialog>header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 18px;border-bottom:1px solid #e4e7ec;min-height:58px;box-sizing:border-box}.detail-example-dialog header>strong{flex:1;min-width:150px;font-size:15px}.detail-example-dialog label{display:flex;align-items:center;gap:8px;font-size:13px}.detail-example-dialog button{background:none;border:0;padding:6px;cursor:pointer;color:inherit}
@@ -179,3 +186,4 @@
 @media(max-width:760px) {
  .product-detail-intro .product-detail-persona { width:180px; height:250px; }
 }
+.detail-example-stepper{display:flex;align-items:center;gap:4px;font-size:13px;color:#556174;font-variant-numeric:tabular-nums}
