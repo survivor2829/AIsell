@@ -75,7 +75,7 @@ function copyPrompt({ videos, hint, platforms = PLATFORM_KEYS, references = [] }
     ...examples.map((text, index) => `${index + 1}.「${text}」`),
     "各平台：",
     ...wanted.map((key) => `- ${key}（${STYLES[key].name}）：${STYLES[key].style}；标题不超过 ${STYLES[key].titleMax} 个字。`),
-    "正文写到手机一屏能看完就收住。每个平台给 3 个不同角度的标题供用户挑，最推荐的放第一个；话题不带 # 号，选目标客户会搜的词。不写最好、第一、100% 这类绝对化用语。",
+    "正文 100 字左右（用户 2026-11-24 定），挑最打动人的说，不必把资料都搬进去。每个平台给 3 个不同角度的标题供用户挑，最推荐的放第一个；话题不带 # 号，选目标客户会搜的词。不写最好、第一、100% 这类绝对化用语。",
     `只返回 JSON：{"platforms":{${wanted.map((key) => `"${key}":{"titles":["","",""],"description":"","topics":[]}`).join(",")}}}`
   ].filter(Boolean).join("\n");
 }
