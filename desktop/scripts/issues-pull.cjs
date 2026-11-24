@@ -203,6 +203,8 @@ function cluster(capsules, feedback, fresh = new Set(), health = []) {
     group.occurrences += capsule.occurrences || 1;
     group.installs.add(item.client?.installId);
     group.versions.add(item.client?.version);
+    // The version at the latest occurrence too: a computer can change version within the day's capsule.
+    if (item.capsule?.latest?.appVersion) group.versions.add(item.capsule.latest.appVersion);
     if (capsule.createdAt < group.firstSeen) group.firstSeen = capsule.createdAt;
     if (capsule.lastSeenAt > group.lastSeen) group.lastSeen = capsule.lastSeenAt;
     const origin = originFrame(capsule.traceback) || (capsule.where ? { file: capsule.where, line: 0, function: "" } : null);

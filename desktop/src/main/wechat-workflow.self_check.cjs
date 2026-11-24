@@ -411,6 +411,53 @@ async function checkClickedAttentionPersistFailureRecovery() {
   }
 }
 
+// cfe8221b (2026-11-21): 734 contacts skipped as contact_snapshot_changed and the record could not say
+// why. Each skip now says which kind of change it was and which fields, never their content.
+async function checkSnapshotChangeIsExplained() {
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-snapshot-change-"));
+  const events = [];
+  const unsubscribe = configureDiagnostics({ rootDir: path.join(root, "diagnostics") }).subscribe((entry) => {
+    if (entry.event === "contact_skipped") events.push(entry.details);
+  });
+  try {
+    const synced = "2026-11-21T10:00:00.000Z";
+    let contacts = [1, 2, 3].map((number) => ({ id: `customer-${number}`, name: `客户${number}`, remark: `备注${number}`,
+      wechatId: `wxid_customer_${number}`, wechatAccountId: "test-account", syncedAt: synced }));
+    let clock = Date.parse("2026-11-21T12:00:00.000Z");
+    const workflow = createTouchWorkflow({
+      dataDir: root, now: () => new Date(clock), random: () => 0, readContacts: () => contacts,
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+      passport: { bindTrace() {}, recordEvent() {}, recordFailure() {}, writeRunBill() {} },
+      execute: async () => assert.fail("a changed contact is never searched")
+    });
+    const record = { id: "snapshot-change", payload: workflow.prepareWorkflowTask({ script: "您好", contactIds: contacts.map((contact) => contact.id) }) };
+    // After the task was made: one contact deleted, one renamed in the remark, one disabled; all re-synced.
+    const resynced = "2026-11-21T11:30:00.000Z";
+    contacts = [
+      { ...contacts[1], remark: "新备注", syncedAt: resynced },
+      { ...contacts[2], allowed: false, syncedAt: resynced }
+    ];
+    for (let step = 0; step < 6; step += 1) {
+      clock += 60 * 60 * 1000;
+      if ((await workflow.runWorkflowStep(record, { isEnabled: () => true })).status === "completed") break;
+    }
+    const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+    const results = loadTaskState(taskDir).results;
+    assert.deepEqual(results.map((row) => row.reason), [
+      "联系人已不在同步的通讯录里，已跳过",
+      "联系人资料已变化（名称、备注），为防发错人已跳过",
+      "联系人现在不能触达（联系人已停用或禁止触达），已跳过"
+    ], "the customer sees what changed");
+    const kinds = events.map((details) => details.change_kind);
+    assert.deepEqual(kinds.slice(0, 3), ["missing_from_contacts", "identity_changed", "excluded_contact_disabled"]);
+    assert.equal(events[1].changed_fields_code, "name.remark", "the changed fields, by name only");
+    assert.equal(events[1].contact_resynced, true);
+    assert.equal(events[1].snapshot_sync_age_hours, 4, "hours since the task's snapshot was synced (its step runs two hours in)");
+    assert.equal(events[1].live_contact_count, 2);
+    assert.equal(JSON.stringify(events).includes("新备注"), false, "never the changed text itself");
+  } finally { unsubscribe(); }
+}
+
 async function checkR008BoundedRecovery() {
   assert.deepEqual(classifyWechatFailureReason("wechat_window_preflight_failed"), {
     reasonCode: "wechat_window_preflight_failed", classification: "environment", attentionScope: "global", known: true
@@ -1023,6 +1070,10 @@ async function checkR008EvidencePrivacy(ruleId = "search-r008") {
               titles:[{length:4,sha256_16:'abcdef1234567890',punctuation_whitespace_width_only:true,text:secret}],
               header:{lines:1,expected_length:3,observed_length:4,first_diff_index:2,expected_class:'han',observed_class:secret,cut:false,text:secret}},
             popup_candidate_count: 2, search_columns: [62, Infinity],
+            resolver_mode: "exact_name_contact_section_visual", candidate_point: { x: 240, y: 137, left: 136, top: 130, right: 343, bottom: 144, text: secret },
+            click_observation: { x: 240, y: 137, elapsed_ms: 812, over_dropdown: true, header_before: true, header_changed: false,
+              dropdown_after_press: true, dropdown_after_retry: true, retry: "attempted", keyboard_language: "0804", note: secret,
+              covering: [{ class: "SOGOUSmartAssistant", process: "SGTool", layered: true, transparent: false, topmost: true }, { class: secret, process: secret }] },
             ocr_observation: { visual_lines: [{ text: secret }], uia_candidates: [{ text: `${secret}-uia` }],
               capture_source: "formula_fallback", ocr_boxes: [{ text: secret, left: 1, top: 2, right: 3, bottom: 4,
                 char_count: 2, first_class: "han", last_class: "han", boundary_distance: [2], equals_query: true,
@@ -1065,6 +1116,14 @@ async function checkR008EvidencePrivacy(ruleId = "search-r008") {
     if (ruleId === "search-r008") assert.equal(failures.some((failure) => Buffer.isBuffer(failure.screenshotBytes)
       && failure.screenshotBytes.equals(capturePng)), true, "r008 skip evidence must attach OCR bytes");
     assert.equal(evidence.popup_candidate_count, 2, "state-only numeric evidence must survive the whitelist");
+    // A found-but-not-opened contact records which rule picked the row, where it was pressed and what
+    // WeChat did after; window names are kept only as short ASCII identifiers (2026-11-24).
+    assert.equal(evidence.resolver_mode, "exact_name_contact_section_visual");
+    assert.deepEqual(evidence.candidate_point, { x: 240, y: 137, left: 136, top: 130, right: 343, bottom: 144 });
+    assert.deepEqual(evidence.click_observation, { x: 240, y: 137, elapsed_ms: 812, over_dropdown: true, header_before: true,
+      header_changed: false, dropdown_after_press: true, dropdown_after_retry: true, retry: "attempted", keyboard_language: "0804",
+      covering: [{ class: "SOGOUSmartAssistant", process: "SGTool", layered: true, transparent: false, topmost: true },
+        { class: "", process: "", layered: false, transparent: false, topmost: false }] }, "click evidence is finite and identifier-only");
     assert.deepEqual(evidence.search_columns, [62]);
     assert.equal(evidence.popup_dpi, undefined, `non-finite ${ruleId} DPI must be omitted`);
     assert.equal(evidence.capture_source, undefined, "capture source must be a known enum value");
@@ -3495,6 +3554,7 @@ async function main() {
   await checkLiveWorkflowRecovery();
   await checkInterruptedSendRecoveryInSameProcess();
   await checkClickedAttentionPersistFailureRecovery();
+  await checkSnapshotChangeIsExplained();
   await checkR008BoundedRecovery();
   await checkWechatWindowPause();
   await checkLoginWaitRetryRoundAndPreparing();

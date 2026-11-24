@@ -1088,7 +1088,6 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       ...runtime,
       logger,
       createSpacePauseHotkey: require("./space-pause-hotkey.cjs").createSpacePauseHotkey,
-      createInputMethodGuard: (guardOptions) => require("../../rpa/active_touch/wechat_input_method.cjs").createWechatInputMethodGuard(guardOptions),
       appVersion: components.businessVersion(app),
       buildId: build.buildId || process.env.XIAOXI_BUILD_ID || "",
       buildCommit: build.buildCommit || process.env.XIAOXI_BUILD_COMMIT || "",
@@ -1301,6 +1300,16 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           jobsDir: components.updatePaths(userData).jobs,
           roots: { profile: userData, install: path.dirname(process.execPath), temp: require("node:os").tmpdir() },
           log: (details) => logger.event("update", "update.helper_failed", details, { level: "error", code: details.error_code, phase: details.failure_phase })
+        });
+      } catch { /* Reporting never blocks the started app. */ }
+      // A start on an older version than last time is reported with how it happened (version-history.cjs).
+      try {
+        const userData = app.getPath("userData");
+        require("./version-history.cjs").recordVersionHistory({
+          file: path.join(userData, "data", "version-history.json"),
+          version: components.businessVersion(app), installerVersion: app.getVersion(),
+          selectionFailure: components.readJson(components.updatePaths(userData).selection, {})?.failure,
+          log: (details) => logger.event("update", "app.version_downgraded", details, { level: "error", code: `app_version_downgraded_${details.downgrade_kind}` })
         });
       } catch { /* Reporting never blocks the started app. */ }
       if (app.isPackaged) {

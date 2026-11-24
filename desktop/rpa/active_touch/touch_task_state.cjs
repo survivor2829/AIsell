@@ -930,6 +930,7 @@ module.exports = {
   readTaskState,
   markPreviousBuildTask,
   identityKey,
+  publicContact,
   publicTaskState,
   poisonedSearchCandidate,
   recordSkippedResult,

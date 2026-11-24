@@ -88,9 +88,6 @@ const workflowPolicies = Object.freeze({
   powershell_blocked_by_antivirus: { classification: "blocker", attentionScope: "global" },
   powershell_output_invalid: { classification: "blocker", attentionScope: "global" },
   powershell_timeout: { classification: "environment", attentionScope: "global" },
-  // The input-method guard (wechat_input_method.cjs) could not load Windows' US keyboard: only logged,
-  // the run goes on with the customer's own input method.
-  us_layout_unavailable: { classification: "environment", attentionScope: "global" },
   wechat_operation_failed: { classification: "blocker", attentionScope: "global" },
   image_send_pre_click_timeout: { classification: "recoverable", attentionScope: "task" },
   wechat_id_name_conflict: { classification: "blocker", attentionScope: "task" },
