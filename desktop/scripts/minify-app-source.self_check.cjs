@@ -47,8 +47,15 @@ try {
   assert.ok(at > 0);
   const packaged = ["C:", "Program Files", "X", "resources", "app", "src", "main", "page.cjs"].join("\\");
   const mapped = mapStack(`at ${packaged}:1:${at + 1}`, { version: "9.9.9", mapsRoot: maps });
-  assert.ok(/src\/main\/page\.cjs:6:\d+/.test(mapped), mapped);
+  assert.ok(/src\/main\/page\.cjs:6:\d+/.test(mapped.text), mapped.text);
+  assert.equal(mapped.mapped, 1);
+  assert.equal(mapStack("no frames here", { version: "9.9.9", mapsRoot: maps }).mapped, 0, "nothing mapped is reported, not passed through silently");
+  assert.ok(JSON.parse(fs.readFileSync(path.join(maps, "9.9.9", "minifier.json"), "utf8")).esbuild, "the minifier version is recorded with the maps");
   assert.throws(() => minifyAppSource(app, { version: "1", mapsRoot: path.join(app, "maps") }), /outside the packaged application/);
+  // Case-folded, and anywhere in a packaged target (…/resources/app), not only inside resources/app.
+  const target = path.join(root, "target"); const nestedApp = path.join(target, "resources", "app");
+  fs.mkdirSync(nestedApp, { recursive: true });
+  assert.throws(() => minifyAppSource(nestedApp, { version: "1", mapsRoot: path.join(target, "maps").toUpperCase() }), /outside the packaged application/);
   assert.throws(() => minifyAppSource(app, { mapsRoot: maps }), /release version/);
   console.log("minify app source self-check passed: comments gone, strings and injected functions intact, maps outside the app");
 } finally {

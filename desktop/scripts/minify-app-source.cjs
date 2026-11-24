@@ -18,11 +18,22 @@ function* scripts(root) {
   }
 }
 
-function minifyAppSource(appDir, { version, mapsRoot, directories = ["rpa", "src/main", "src/shared", "remotion-packaging"], include = () => true, esbuild = require("esbuild") } = {}) {
+// The esbuild that ships with vite (no separate dependency to drift); its version is recorded with the maps.
+function viteEsbuild() {
+  const vite = path.dirname(require.resolve("vite/package.json"));
+  return require(require.resolve("esbuild", { paths: [vite] }));
+}
+// Windows paths: compare resolved, case-folded, with a trailing separator.
+const inside = (child, parent) => (path.resolve(child) + path.sep).toLowerCase().startsWith((path.resolve(parent) + path.sep).toLowerCase());
+
+function minifyAppSource(appDir, { version, mapsRoot, directories = ["rpa", "src/main", "src/shared", "remotion-packaging"], include = () => true, esbuild = viteEsbuild() } = {}) {
   if (!version) throw new Error("minifyAppSource needs the release version for its source maps");
   const mapDir = path.join(mapsRoot, version);
+  // Maps carry the original comments: never anywhere in the packaged target (resources/app sits two levels down).
   const appRoot = path.resolve(appDir);
-  if (path.resolve(mapDir).startsWith(appRoot + path.sep)) throw new Error("Source maps must stay outside the packaged application");
+  const target = path.basename(appRoot).toLowerCase() === "app" && path.basename(path.dirname(appRoot)).toLowerCase() === "resources"
+    ? path.resolve(appRoot, "..", "..") : appRoot;
+  if (inside(mapDir, target)) throw new Error("Source maps must stay outside the packaged application");
   const summary = { files: 0, skipped: 0, before: 0, after: 0, mapDir };
   for (const directory of directories) {
     for (const file of scripts(path.join(appDir, directory))) {
@@ -43,6 +54,8 @@ function minifyAppSource(appDir, { version, mapsRoot, directories = ["rpa", "src
       summary.after += Buffer.byteLength(result.code);
     }
   }
+  fs.mkdirSync(mapDir, { recursive: true });
+  fs.writeFileSync(path.join(mapDir, "minifier.json"), JSON.stringify({ esbuild: esbuild.version, files: summary.files }, null, 2));
   return summary;
 }
 
