@@ -25,10 +25,20 @@ const { createCoverCache, copyPrompt, parseCopy, writeCopy } = require("./social
   assert.match(prompt, /洗地机演示（批量口播）/); assert.match(prompt, /面向物业/);
   assert.match(prompt, /小红书.*种草/); assert.match(prompt, /xiaohongshu.*不超过 20 个字/); assert.match(prompt, /channels/);
   assert.doesNotMatch(prompt, /douyin/);
+  assert.match(prompt, /资料只有标题/, "没有口播时不让 AI 编造功能");
+  // 有口播/字幕原文和品牌时一起交给 AI，只许用其中的事实；要 3 个不同写法的标题、大类词+精准词话题。
+  const spoken = copyPrompt({ videos: [{ title: "洗地机", spoken: "一趟洗一大片，扫吸一体不扬尘", brand: "新奔" }], hint: "", platforms: ["douyin"] });
+  assert.ok(spoken.includes("口播/字幕原文：一趟洗一大片，扫吸一体不扬尘")); assert.match(spoken, /品牌：新奔/);
+  assert.ok(spoken.includes("只能用口播/字幕原文")); assert.match(spoken, /titles：3 个写法不同的标题/); assert.match(spoken, /行业大类词/);
+  // 三个标题：截断、去重、去掉绝对化用语；都违规时保留，让用户自己改。
+  const options = parseCopy(JSON.stringify({ platforms: { douyin: { titles: ["工厂地面一趟洗干净", "全网最好的洗地机", "工厂地面一趟洗干净", "拖把三小时，它半小时"], description: "d", topics: [] } } }), ["douyin"]);
+  assert.deepEqual(options.douyin.titles, ["工厂地面一趟洗干净", "拖把三小时，它半小时"]);
+  assert.equal(options.douyin.title, "工厂地面一趟洗干净");
+  assert.equal(parseCopy(JSON.stringify({ platforms: { douyin: { titles: ["第一名的选择"] } } }), ["douyin"]).douyin.title, "第一名的选择");
   const calls = [];
   const client = { businessContent: async (input) => { calls.push(input); return { content: JSON.stringify({ platforms: { kuaishou: { title: "老铁看这个", description: "说明", topics: ["保洁"] } } }) }; } };
-  assert.deepEqual(await writeCopy({ client, videos: [{ title: "a" }], hint: "", platforms: ["kuaishou"] }), { kuaishou: { title: "老铁看这个", description: "说明", topics: ["保洁"] } });
-  assert.equal(calls[0].maxTokens, 1600);
+  assert.deepEqual(await writeCopy({ client, videos: [{ title: "a" }], hint: "", platforms: ["kuaishou"] }), { kuaishou: { title: "老铁看这个", titles: ["老铁看这个"], description: "说明", topics: ["保洁"] } });
+  assert.equal(calls[0].maxTokens, 2400);
   await assert.rejects(writeCopy({ client, videos: [], hint: "" }), { code: "SOCIAL_VIDEO_REQUIRED" });
   await assert.rejects(writeCopy({ client: null, videos: [{ title: "a" }] }), { code: "SOCIAL_COPY_UNAVAILABLE" });
   // 服务出错时不把内部信息带给界面。

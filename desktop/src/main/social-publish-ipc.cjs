@@ -39,7 +39,7 @@ function reportSocialFailure({ logger, evidenceDir }, module, failure) {
 }
 const reportPublishFailure = (deps, failure) => reportSocialFailure(deps, "social_publish", failure);
 
-function registerSocialPublishIpc({ ipcMain, dataDir, accounts, resolveFinishedVideo, resolveFinishedCover = async () => "", getMainWindow, ffmpegPath = "ffmpeg", copyClient, publisherOptions = {}, logger, evidenceDir, onState = () => {} }) {
+function registerSocialPublishIpc({ ipcMain, dataDir, accounts, resolveFinishedVideo, resolveFinishedCover = async () => "", resolveFinishedFacts = async () => ({}), getMainWindow, ffmpegPath = "ffmpeg", copyClient, publisherOptions = {}, logger, evidenceDir, onState = () => {} }) {
   const covers = createCoverCache({ dir: path.join(dataDir, "covers"), ffmpegPath });
   let publisher; let initializationError;
   try {
@@ -86,7 +86,13 @@ function registerSocialPublishIpc({ ipcMain, dataDir, accounts, resolveFinishedV
       return result;
     },
     async suggest(payload) {
-      const videos = (Array.isArray(payload?.videos) ? payload.videos : []).slice(0, 5).map((video) => ({ title: text(video?.title, 80), name: text(video?.name, 80), context: text(video?.context, 200) }));
+      const picked = (Array.isArray(payload?.videos) ? payload.videos : []).slice(0, 5);
+      // What each video actually says (narration or subtitles, brand) comes from the engine, not the renderer.
+      const videos = await Promise.all(picked.map(async (video) => {
+        const id = String(video?.id || "");
+        const facts = FINISHED_ID.test(id) ? await resolveFinishedFacts(id).catch(() => ({})) : {};
+        return { title: text(video?.title, 80), name: text(video?.name, 80), context: text(video?.context, 200), spoken: text(facts?.spoken_text, 1500), brand: text(facts?.brand_name, 40) };
+      }));
       const platforms = (Array.isArray(payload?.platforms) ? payload.platforms : []).map(String).filter((platform) => PLATFORMS.includes(platform));
       return writeCopy({ client: copyClient, videos, hint: text(payload?.hint, 300), platforms: platforms.length ? platforms : PLATFORMS });
     },

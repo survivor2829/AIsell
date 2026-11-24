@@ -2432,7 +2432,37 @@ class ContentEngineService:
             "finished_video_id": finished_video_id,
             "absolute_path": str(path.resolve(strict=True)),
             "cover_path": self._finished_cover_path(row["metadata_json"]),
+            **self._finished_copy_facts(row["metadata_json"], path),
         }
+
+    def _finished_copy_facts(self, metadata_json: str, output_path: Path) -> dict[str, str]:
+        """What the video actually says, for writing its publish copy (customers found copy
+        written from the title alone too vague, 2026-11-24); empty fields when unknown."""
+        spoken, brand = "", ""
+        try:
+            generated_id = str(json.loads(metadata_json or "{}").get("generated_video_id") or "")
+            row = self.connection.execute(
+                "SELECT recipe_json FROM generated_videos WHERE id = ?", (generated_id,)
+            ).fetchone() if generated_id else None
+            recipe = json.loads(row["recipe_json"] or "{}") if row else {}
+            if isinstance(recipe, dict):
+                spoken = str(recipe.get("confirmed_script") or "".join(
+                    str(item.get("text") or "") for item in recipe.get("captions") or [] if isinstance(item, dict)))
+                brand_info = (recipe.get("packaging") or {}).get("brand") or {}
+                brand = str(brand_info.get("name") or "") if isinstance(brand_info, dict) else ""
+        except (TypeError, ValueError, KeyError):
+            spoken, brand = "", ""
+        if not spoken.strip():
+            # Scene and digital-human videos keep their subtitles beside the video.
+            try:
+                srt = output_path.with_suffix(".srt")
+                if srt.is_file() and srt.stat().st_size < 200_000:
+                    lines = srt.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+                    spoken = "".join(line.strip() for line in lines
+                                     if line.strip() and not line.strip().isdigit() and "-->" not in line)
+            except OSError:
+                spoken = ""
+        return {"spoken_text": " ".join(spoken.split())[:1500], "brand_name": " ".join(brand.split())[:40]}
 
     def _finished_cover_path(self, metadata_json: str) -> str:
         """The cover shown for a finished video (its AI cover, or the clean frame

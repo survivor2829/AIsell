@@ -24,7 +24,7 @@ const videoName = (item: FinishedItem) => item.title || item.displayName;
 const videoDate = (item: FinishedItem) => { const date = new Date(item.createdAt); return Number.isNaN(date.getTime()) ? "" : `${date.getMonth() + 1}月${date.getDate()}日`; };
 const videoContext = (item: FinishedItem) => typeof item.metadata?.batch_title === "string" ? String(item.metadata.batch_title) : "";
 const topicText = (topics: string[]) => topics.map((topic) => `#${topic}`).join(" ");
-type Copy = { title: string; description: string; topics: string };
+type Copy = { title: string; description: string; topics: string; titles?: string[] };
 const EMPTY_COPY: Copy = { title: "", description: "", topics: "" };
 const STYLE_HINT: Record<SocialPlatformKey, string> = { douyin: "口语、有钩子", kuaishou: "接地气、实在", xiaohongshu: "种草笔记风", channels: "稳重、可信" };
 const parseTopics = (value: string) => [...new Set(value.split(/[\s,，#]+/).map((topic) => topic.trim()).filter(Boolean))].slice(0, 8);
@@ -127,10 +127,10 @@ export function SocialPublishPanel({ onManageAccounts }: { onManageAccounts: () 
     if (!publishApi || !chosenVideos.length) return;
     setWriting(true); if (!auto) { setError(""); setNotice(""); }
     try {
-      const result = await publishApi.suggest({ hint, platforms: copyPlatforms, videos: chosenVideos.map((item) => ({ title: item.title, name: item.displayName, context: videoContext(item) })) });
+      const result = await publishApi.suggest({ hint, platforms: copyPlatforms, videos: chosenVideos.map((item) => ({ id: item.finishedVideoId, title: item.title, name: item.displayName, context: videoContext(item) })) });
       if (!result.ok || !result.state) { if (!auto) setError(result.error || "AI 写文案暂时不可用，请自己填写。"); return; }
       const written = result.state;
-      setCopies((all) => ({ ...all, ...Object.fromEntries(Object.entries(written).map(([platform, copy]) => [platform, { title: copy.title, description: copy.description, topics: copy.topics.join(" ") }])) }));
+      setCopies((all) => ({ ...all, ...Object.fromEntries(Object.entries(written).map(([platform, copy]) => [platform, { title: copy.title, titles: copy.titles, description: copy.description, topics: copy.topics.join(" ") }])) }));
       setNotice(`AI 已按 ${Object.keys(written).map((platform) => PLATFORM_NAMES[platform as SocialPlatformKey]).join("、")} 各写了一套文案，切换上面的平台查看和修改。`);
     } catch { if (!auto) setError("AI 写文案暂时不可用，请自己填写。"); }
     finally { setWriting(false); }
@@ -287,6 +287,7 @@ export function SocialPublishPanel({ onManageAccounts }: { onManageAccounts: () 
           <div className="dist-form">
             <label>标题<input value={current.title} maxLength={60} placeholder={chosenVideos.length ? "AI 会自动写，也可以自己填" : "先选视频"} onChange={(event) => setCurrent({ title: event.target.value })} />
               <small>{current.title.trim().length} 字{TITLE_LIMITS[activePlatform] ? ` · ${PLATFORM_NAMES[activePlatform]}最多 ${TITLE_LIMITS[activePlatform]} 字` : ""}</small></label>
+            {(current.titles?.length ?? 0) > 1 && <div className="dist-title-options" role="group" aria-label="换一个标题">{current.titles!.map((option) => <button type="button" key={option} aria-pressed={option === current.title} onClick={() => setCurrent({ title: option })}>{option}</button>)}</div>}
             <label>正文<textarea rows={5} value={current.description} maxLength={800} placeholder="说说视频讲了什么、对谁有用" onChange={(event) => setCurrent({ description: event.target.value })} /></label>
             <label>话题<input value={current.topics} placeholder="用空格分开，例如：清洁设备 保洁" onChange={(event) => setCurrent({ topics: event.target.value })} /></label>
             {parseTopics(current.topics).length > 0 && <div className="dist-topics">{parseTopics(current.topics).map((topic) => <span key={topic}>#{topic}</span>)}</div>}
