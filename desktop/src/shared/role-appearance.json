@@ -1,8 +1,8 @@
 {
   "agent": {
-    "name": "小诚", "legacyNames": ["小玺", "许玺达"], "responsibility": "微信拓客",
+    "name": "小微", "legacyNames": ["小玺", "许玺达", "小诚"], "responsibility": "微信拓客",
     "appearances": [
-      {"id": "original", "label": "经典小诚", "portraitKey": "xiaohui-integrated", "position": "50% 31%", "accent": "#a855f7", "strong": "#7131b7", "surface": "#efdcfb", "soft": "#f5ecfb", "pattern": "agent-original.svg", "motifs": ["message", "users", "send", "bot", "thumbs", "list"], "layout": "routes"},
+      {"id": "original", "label": "经典小微", "portraitKey": "xiaohui-integrated", "position": "50% 31%", "accent": "#a855f7", "strong": "#7131b7", "surface": "#efdcfb", "soft": "#f5ecfb", "pattern": "agent-original.svg", "motifs": ["message", "users", "send", "bot", "thumbs", "list"], "layout": "routes"},
       {"id": "welcome", "label": "热情相迎", "portraitKey": "xiaoxi-welcome", "position": "50% 29%", "accent": "#e60000", "strong": "#e60000", "surface": "#f8f3f1", "soft": "#fff9f6", "pattern": "agent-welcome.svg", "motifs": ["users", "send", "user", "users", "send", "user"], "layout": "orbits"},
       {"id": "connect", "label": "随时在线", "portraitKey": "xiaoxi-connect", "position": "50% 28%", "accent": "#e60000", "strong": "#e60000", "surface": "#f4f0ee", "soft": "#fff8f4", "pattern": "agent-connect.svg", "motifs": ["message", "user", "users", "message", "user", "message"], "layout": "network"}
     ]

@@ -1,4 +1,4 @@
-/* 精准触达页头：和主页同一套浅色大卡片，颜色跟着角色主题走（小诚是紫色），尺寸随窗口放大。 */
+/* 精准触达页头：和主页同一套浅色大卡片，颜色跟着角色主题走（小微是紫色），尺寸随窗口放大。 */
 .touch-hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); grid-template-rows: 1fr auto; column-gap: clamp(24px, 2.4vw, 56px); row-gap: clamp(18px, 2vh, 30px);
   margin-bottom: clamp(18px, 1.6vw, 30px); padding: clamp(26px, 2.4vw, 50px) clamp(28px, 2.6vw, 56px); overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--brand-red) 14%, white); border-radius: clamp(24px, 1.8vw, 36px); box-shadow: 0 18px 40px color-mix(in srgb, var(--brand-red) 8%, transparent); color: #172033;
