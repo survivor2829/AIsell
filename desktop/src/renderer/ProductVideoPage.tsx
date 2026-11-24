@@ -20,7 +20,7 @@ type VideoTask = {
   id: string; mode: "product" | "social"; status: string; statusLabel: string; createdAt: string;
   durationSeconds: number; sceneIds?: string[]; productName?: string; facts: string; imageId: string; plan: Plan; currentShot: number;
   completedShots: number; shotsReady?: boolean[]; shotsRunning?: boolean[]; storyPipeline?: boolean; realPipeline?: boolean; progress?: number; etaSeconds?: number | null; estimatedFinishAt?: string | null; imagesReady?: Record<string, boolean>; imageTotal?: number; sheetRedos?: number; sheetStep?: boolean; sheetConfirmed?: boolean; directorStep?: boolean; directed?: boolean; review?: ShotReview | null; canRedoShot?: boolean; redoNote?: string;
-  story?: StoryTask["story"]; crew?: Crew | null; error: string; resumeStatus?: string; retryLabel?: string; canRetry: boolean; canExport: boolean; canExportSource?: boolean; canPreview: boolean; canRefresh?: boolean; quote?: Quote;
+  story?: StoryTask["story"]; crew?: Crew | null; error: string; resumeStatus?: string; failedShotIndex?: number | null; retryLabel?: string; canRetry: boolean; canExport: boolean; canExportSource?: boolean; canPreview: boolean; canRefresh?: boolean; quote?: Quote;
 };
 type Result<T> = { ok: boolean; data?: T; error?: string; code?: string; task?: VideoTask };
 type Capabilities = { ready: boolean; message: string; scenes: Choice[]; story?: { ready: boolean; message: string }; real?: { ready: boolean; message: string }; catalog?: RealCatalog; timing?: Timing };
@@ -239,7 +239,7 @@ export function ProductVideoPage() {
           </> : <>
             <div className="pv2-progress">
               <Ring value={progressOf(selected)} lines={[`镜头 ${selected.completedShots} / ${shots.length} 拍好`, finishing(selected) ? "正在配音合成" : running ? "做好会自动显示" : ""].filter(Boolean)} />
-              {!selected.realPipeline && <div className="pv2-bars">{shots.map((shot, index) => { const state = shotState(index); return <div key={shot.index} className={`is-${state}`}>
+              {!(selected.realPipeline && STUCK.has(selected.status)) && <div className="pv2-bars">{shots.map((shot, index) => { const state = shotState(index); return <div key={shot.index} className={`is-${state}`}>
                 <span>镜头 {index + 1}</span><em>{state === "done" ? "✓ 好了" : state === "now" ? "拍摄中" : state === "stuck" ? "停住了" : "排队"}</em>
                 <i><b style={{ width: state === "done" ? "100%" : state === "now" ? "45%" : "0%" }} /></i></div>; })}</div>}
             </div>

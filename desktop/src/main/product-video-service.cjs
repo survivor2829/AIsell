@@ -138,7 +138,7 @@ function createProductVideoService(options = {}) {
         imagesReady: Object.fromEntries(Object.entries(task.images || {}).filter(([, image]) => image.file).map(([key]) => [key, true])),
         story: task.story ? { title: task.story.title, logline: task.story.logline, characters: task.story.characters.map((person) => ({ name: person.name, role: person.role })),
           lines: task.story.segments.flatMap((segment) => segment.shots.flatMap((shot) => shot.lines.map((row) => ({ who: row.who, line: row.line })))) } : null } : {}),
-      error: cleanMessage(task.error || ''), errorCode: task.errorCode || '', resumeStatus: task.resumeStatus || '', canRetry: task.status === 'needs_attention' && !((task.videoRetryCount || 0) >= 1 && (Number.isInteger(task.failedShotIndex) || ['product_video_video_failed','product_video_shot_failed'].includes(task.errorCode))),
+      error: cleanMessage(task.error || ''), errorCode: task.errorCode || '', resumeStatus: task.resumeStatus || '', failedShotIndex: Number.isInteger(task.failedShotIndex) ? task.failedShotIndex : null, canRetry: task.status === 'needs_attention' && !((task.videoRetryCount || 0) >= 1 && (Number.isInteger(task.failedShotIndex) || ['product_video_video_failed','product_video_shot_failed'].includes(task.errorCode))),
       retryLabel: Number.isInteger(task.failedShotIndex) ? `重新生成第 ${task.failedShotIndex + 1} 段` : ASR_RETRY_ERRORS.has(task.errorCode) ? (task.plan.pipelineVersion === 6 ? '重新合成' : '重新识别字幕') : '',
       canRefresh: RUNNING.has(task.status) || ['outcome_unknown', 'draft'].includes(task.status), canExport: task.status === 'completed', canExportSource: Boolean(task.sourceFile), canPreview: task.status === 'completed' && Boolean(task.finalFile) };
   }

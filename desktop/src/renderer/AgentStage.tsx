@@ -22,6 +22,9 @@ export function AgentStage({ model, label }: { model: StageModel; label: string 
   const log = useRef<HTMLOListElement>(null);
   const [points, setPoints] = useState<Record<string, Point>>({});
   const [dockRows, setDockRows] = useState(1);
+  const logCount = useRef(0);
+  // Re-measure only when what is shown changes, not on every parent poll.
+  const signature = JSON.stringify([model.cards.map((card) => [card.id, card.state]), model.agents.map((agent) => [agent.id, agent.at, agent.state]), model.log.length]);
 
   // Cursors sit on their card while working, line up in the dock once done or still waiting.
   useLayoutEffect(() => {
@@ -29,13 +32,15 @@ export function AgentStage({ model, label }: { model: StageModel; label: string 
       const root = board.current?.getBoundingClientRect();
       if (!root) return;
       const next: Record<string, Point> = {};
-      const parked = model.agents.filter((agent) => agent.state !== "now" && agent.state !== "fail");
+      // Working agents whose card is not on the board wait in the dock rather than off-screen.
+      const onCard = (agent: StageAgent) => (agent.state === "now" || agent.state === "fail") && Boolean(cards.current[agent.at]);
+      const parked = model.agents.filter((agent) => !onCard(agent));
       const dockBox = dock.current?.getBoundingClientRect();
       model.agents.forEach((agent) => {
         const box = cards.current[agent.at]?.getBoundingClientRect();
-        if ((agent.state === "now" || agent.state === "fail") && box) {
-          // Several agents on one card (the cameramen on one shot list) spread across it.
-          const crowd = model.agents.filter((other) => other.at === agent.at && (other.state === "now" || other.state === "fail"));
+        if (onCard(agent) && box) {
+          // Several agents on one card spread across it.
+          const crowd = model.agents.filter((other) => other.at === agent.at && onCard(other));
           const slot = crowd.indexOf(agent);
           // Lower right of the card, clear of its title and detail line.
           next[agent.id] = { x: box.left - root.left + box.width * 0.58 - slot * 10, y: box.top - root.top + box.height - 26 - slot * 6 };
@@ -48,14 +53,19 @@ export function AgentStage({ model, label }: { model: StageModel; label: string 
       const perRow = Math.max(1, Math.floor(((dockBox?.width || DOCK_SLOT) - 8) / DOCK_SLOT));
       setDockRows(Math.max(1, Math.ceil(parked.length / perRow)));
       setPoints(next);
-      // The newest line stays in view.
-      if (log.current) log.current.scrollTop = log.current.scrollHeight;
+      // New lines scroll into view, unless the reader has scrolled up to read earlier ones.
+      const list = log.current;
+      if (list && list.childElementCount !== logCount.current) {
+        const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 48;
+        if (nearBottom || logCount.current === 0) list.scrollTop = list.scrollHeight;
+        logCount.current = list.childElementCount;
+      }
     };
     measure();
     const observer = new ResizeObserver(measure);
     if (board.current) observer.observe(board.current);
     return () => observer.disconnect();
-  }, [model]);
+  }, [signature]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return <section className="agent-stage" aria-label={label}>
     <div className="agent-stage-board" ref={board}>

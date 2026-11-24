@@ -4,7 +4,7 @@ import type { StageAgent, StageCard, StageLog, StageModel, StageState } from "./
 // 场景效果视频（无人实拍 + AI 导演）的 AI 工作台：只从任务的真实状态推出看板、光标和日志。
 // 步骤顺序与主进程 advanceReal 一致：定妆照 → 等客户确认 → 导演写分镜 → 画场地 → 风险审查 → 并行拍镜头 → AI 检查 → 拼接加字幕。
 export type SceneStageTask = {
-  status: string; resumeStatus?: string; error?: string;
+  status: string; resumeStatus?: string; error?: string; failedShotIndex?: number | null; currentShot?: number;
   sheetStep?: boolean; sheetConfirmed?: boolean; directorStep?: boolean; directed?: boolean;
   imagesReady?: Record<string, boolean>; shotsReady?: boolean[]; shotsRunning?: boolean[];
   review?: { skipped?: boolean; shots: { ok: boolean; redone?: boolean }[] } | null;
@@ -22,7 +22,8 @@ function phaseOf(task: SceneStageTask, status: string) {
   if (status === "awaiting_sheet") return PHASE.confirm;
   if (status === "directing") return PHASE.direct;
   if (status === "imaging") {
-    if (task.sheetStep && !task.sheetConfirmed) return task.imagesReady?.sheet ? PHASE.confirm : PHASE.sheet;
+    // The analyst still reads the sheet after it is drawn; the customer's turn starts at awaiting_sheet.
+    if (task.sheetStep && !task.sheetConfirmed) return PHASE.sheet;
     if (task.directorStep && !task.directed) return PHASE.direct;
     return plateNeeded && !task.imagesReady?.plate ? PHASE.plate : PHASE.preflight;
   }
@@ -33,17 +34,31 @@ function phaseOf(task: SceneStageTask, status: string) {
   return PHASE.upload;
 }
 
+// A stuck task that did not record where it stopped: the furthest step its results show.
+function inferredStatus(task: SceneStageTask) {
+  const shots = task.plan.shots;
+  const plateNeeded = shots.some((shot) => shot.place === "venue");
+  if (shots.length && shots.every((_, index) => task.shotsReady?.[index])) return "assembling";
+  if (task.shotsReady?.some(Boolean) || task.shotsRunning?.some(Boolean)) return "generating";
+  if ((!task.sheetStep || task.sheetConfirmed) && (!task.directorStep || task.directed) && (!plateNeeded || task.imagesReady?.plate)) return "generating";
+  if (!task.sheetStep || task.sheetConfirmed) return task.directorStep && !task.directed ? "directing" : "imaging";
+  return task.imagesReady?.sheet ? "awaiting_sheet" : "imaging";
+}
+
 export function sceneStageModel(task: SceneStageTask): StageModel {
   const stuck = STUCK.has(task.status);
-  const phase = phaseOf(task, stuck ? task.resumeStatus || "uploading" : task.status);
+  const phase = phaseOf(task, stuck ? task.resumeStatus || inferredStatus(task) : task.status);
   const plateNeeded = task.plan.shots.some((shot) => shot.place === "venue");
   const at = (step: number): StageState => phase > step ? "done" : phase === step ? (stuck ? "fail" : "now") : "wait";
   const shots = task.plan.shots;
-  const firstOpenShot = shots.findIndex((_, index) => !task.shotsReady?.[index]);
+  // The shot the main process recorded as failed; several shots run at once, so not simply the first open one.
+  const failedShot = Number.isInteger(task.failedShotIndex) ? Number(task.failedShotIndex)
+    : Number.isInteger(task.currentShot) && !task.shotsReady?.[Number(task.currentShot)] ? Number(task.currentShot)
+    : shots.findIndex((_, index) => !task.shotsReady?.[index]);
   const shotState = (index: number): StageState => {
     if (phase > PHASE.shoot || task.shotsReady?.[index]) return "done";
     if (phase < PHASE.shoot) return "wait";
-    if (stuck) return index === firstOpenShot ? "fail" : "wait";
+    if (stuck) return index === failedShot ? "fail" : "wait";
     return task.shotsRunning?.[index] ? "now" : "wait";
   };
   const sheetState: StageState = phase === PHASE.confirm ? (stuck ? "fail" : "user") : at(PHASE.sheet);
@@ -53,8 +68,10 @@ export function sceneStageModel(task: SceneStageTask): StageModel {
   const cards: StageCard[] = [
     { id: "photos", label: "产品照", icon: <ImageIcon size={18} />, state: at(PHASE.upload) },
     ...(task.sheetStep ? [{ id: "sheet", label: "定妆照", icon: <ImagePlus size={18} />, state: sheetState, detail: sheetState === "user" ? "等你确认" : undefined }] : []),
-    ...(task.directorStep ? [{ id: "board", label: "分镜", icon: <Sparkles size={18} />, state: phase === PHASE.preflight ? at(PHASE.preflight) : at(PHASE.direct),
-      detail: phase > PHASE.direct ? `${shots.length} 个镜头` : undefined }] : []),
+    // Every real shoot has a shot plan; without the AI director it comes from the customer's picks, and the
+    // pre-shoot check still runs on it, so the card is always there to show that step.
+    { id: "board", label: "分镜", icon: <Sparkles size={18} />, state: phase === PHASE.preflight ? at(PHASE.preflight) : task.directorStep ? at(PHASE.direct) : at(PHASE.upload),
+      detail: phase > PHASE.direct ? `${shots.length} 个镜头` : undefined },
     ...(plateNeeded ? [{ id: "plate", label: "拍摄场地", icon: <MapPin size={18} />, state: at(PHASE.plate) }] : []),
     ...shots.map((shot, index) => ({ id: `shot-${index}`, label: `镜头 ${index + 1}`, icon: <Clapperboard size={18} />, state: shotState(index), detail: shot.title })),
     ...(task.directorStep ? [{ id: "review", label: "AI 检查", icon: <ScanEye size={18} />, state: at(PHASE.review),
@@ -94,7 +111,6 @@ export function sceneStageModel(task: SceneStageTask): StageModel {
   if (task.directorStep) line("qa", "质检", "#facc15", at(PHASE.review), "逐镜检查画面",
     task.review?.skipped ? "这次没能自动检查" : flagged ? `${flagged} 个镜头可能要重拍` : "每个镜头都没发现明显问题");
   line("editor", "剪辑", "#a78bfa", at(PHASE.finish), "拼接镜头、加字幕", "成片好了");
-  if (stuck && task.error) log.push({ id: "error", who: "原因", color: "#f87171", state: "fail", text: task.error });
   return { cards, agents, log };
 }
 
