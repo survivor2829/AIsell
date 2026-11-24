@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, createElement } from 'react';
-import { ArrowRight, ChevronDown, ChevronUp, PlayCircle, X, Upload, Sparkles, Film, Image as ImageIcon, Video } from 'lucide-react';
+import { ArrowRight, ChevronDown, ChevronUp, Maximize2, PlayCircle, X, Upload, Sparkles, Film, Image as ImageIcon, Video } from 'lucide-react';
 import type { TutorialTopic } from './tutorials-types';
 import { SpeedVideo } from './SpeedVideo';
 import { isWindowShown, onWindowShownChange } from './window-shown';
@@ -7,7 +7,8 @@ import './VideoExamples.css';
 
 export const VIDEO_EXAMPLES = [
   { topic: 'ai-editing', title: '学完觉得没用怎么办', module: '线索视频混剪', file: 'lead-mix', duration: '51秒' },
-  { topic: 'product-video', title: '普渡 CC1 Pro', module: '场景效果视频', file: 'cc1-pro', duration: '30秒' }
+  // 门面片（用户 2026-11-24）：新奔 SIBEN 3 张随手拍的产品照 → AI 导演组过程 → 实拍镜头，鼓点配乐。
+  { topic: 'product-video', title: '新奔 SIBEN 洗地机', module: '场景效果视频', file: 'siben', duration: '37秒' }
 ] as const;
 // 微信拓客各子模块的操作实录（宽屏，客户名单和号码已打码），教程分类为 wechat。
 export const WECHAT_DEMOS = [
@@ -37,6 +38,7 @@ function ExamplePlayer({ example, onClose }: { example: VideoExample; onClose: (
   const Player = isWechatDemo(example) ? SpeedVideo : 'video';
   const dialog = useRef<HTMLDialogElement>(null);
   const video = useRef<HTMLVideoElement>(null);
+  const stage = useRef<HTMLDivElement>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     const element = dialog.current;
@@ -46,9 +48,12 @@ function ExamplePlayer({ example, onClose }: { example: VideoExample; onClose: (
     return () => { playback?.pause(); element?.close(); };
   }, []);
   const label = isScreenRecording(example) ? '操作演示' : '成片示例';
+  // 放大看（用户 2026-11-24）：弹窗按窗口尽量放大，另可全屏。
+  // The stage, not the bare video: the WeChat demos keep their speed buttons in fullscreen.
+  const fullscreen = () => { void stage.current?.requestFullscreen?.().catch(() => {}); };
   return <dialog ref={dialog} className={`video-example-dialog${isScreenRecording(example) ? ' is-wide' : ''}${isBusinessDemo(example) ? ' is-1610' : ''}`} aria-label={`${example.module}${label}`} onClose={event => { if (!event.currentTarget.open) onClose(); }} onClick={event => { if (event.target === event.currentTarget) onClose(); }}>
-    <header><div><strong>{example.title}</strong><span>{example.module} · {example.duration} · {isBusinessDemo(example) ? '真实操作录屏 · 有讲解' : isWechatDemo(example) ? '真实操作录屏' : '离线示例'}</span></div><button type="button" aria-label={`关闭${label}`} onClick={onClose}><X size={22} /></button></header>
-    <div className="video-example-stage">
+    <header><div><strong>{example.title}</strong><span>{example.module} · {example.duration} · {isBusinessDemo(example) ? '真实操作录屏 · 有讲解' : isWechatDemo(example) ? '真实操作录屏' : '离线示例'}</span></div><div className="video-example-actions">{!failed && <button type="button" aria-label="全屏播放" title="全屏" onClick={fullscreen}><Maximize2 size={20} /></button>}<button type="button" aria-label={`关闭${label}`} onClick={onClose}><X size={22} /></button></div></header>
+    <div className="video-example-stage" ref={stage}>
       {failed ? <div className="video-example-error" role="alert"><p>这段示例暂时无法播放，请重试。</p><button type="button" onClick={() => setFailed(false)}>重新播放</button><button type="button" onClick={() => { onClose(); openTutorial(example); }}>查看操作教程</button></div>
         : <Player ref={video} src={asset(`${example.file}.mp4`)} poster={asset(`${example.file}.jpg`)} controls autoPlay playsInline preload="metadata" onError={() => setFailed(true)} />}
     </div>
@@ -59,7 +64,7 @@ function ExamplePlayer({ example, onClose }: { example: VideoExample; onClose: (
 // 成片示例 as 「一张图 → 一条视频」 (user choice B, 2026-11-18): what goes in on the left, the finished video on
 // the right, one big arrow between them, and one line beside them instead of three described steps.
 const COMPARE: Partial<Record<VideoExample['topic'], { source?: string; from: string; via: string; to: string; hook: [string, string] }>> = {
-  'product-video': { source: 'cc1-pro-source.jpg', from: '你只要给一张图', via: 'AI 帮你拍', to: '现场效果视频', hook: ['没条件拍？', '一张图就够了'] },
+  'product-video': { source: 'siben-source.jpg', from: '你只要给几张产品照', via: 'AI 帮你拍', to: '现场效果视频', hook: ['没条件拍？', '几张产品照就够了'] },
   'ai-editing': { from: '几段视频、图片', via: 'AI 帮你剪', to: '获客短视频', hook: ['素材放进来，', '剪成能获客的视频'] }
 };
 const BANNER_TEXT: Record<VideoExample['topic'], { result: string; steps: { title: string; detail: string }[] }> = {
@@ -243,6 +248,12 @@ export function DemoPlayer({ file, onClose }: { file: string; onClose: () => voi
   const example = [...WECHAT_DEMOS, ...BUSINESS_DEMOS].find((demo) => demo.file === file)
     || { topic: `wechat-${file}`, title: '操作演示', module: '操作演示', file, duration: '' } as unknown as VideoExample;
   return <ExamplePlayer example={example} onClose={onClose} />;
+}
+
+// 首页两只手机点开看大的（用户 2026-11-24）：按文件名找示例，带声音完整播放。
+export function ExampleVideoPlayer({ file, onClose }: { file: string; onClose: () => void }) {
+  const example = VIDEO_EXAMPLES.find((item) => item.file === file);
+  return example ? <ExamplePlayer example={example} onClose={onClose} /> : null;
 }
 
 export function WechatDemoReel() { return <DemoReel demos={WECHAT_DEMOS} label="微信拓客" />; }
