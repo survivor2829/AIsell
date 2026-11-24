@@ -218,6 +218,16 @@ function copyAppSource(appDir, edition) {
   const databaseDecryptorTarget = path.join(nativeLibTarget, DATABASE_DECRYPTOR_NAME);
   fs.copyFileSync(path.join(nativeLibDir, DATABASE_DECRYPTOR_NAME), databaseDecryptorTarget);
   if (sha256(databaseDecryptorTarget) !== DATABASE_DECRYPTOR_SHA256) throw new Error(`Packaged ${DATABASE_DECRYPTOR_NAME} hash mismatch`);
+  // 安全加固①：去掉注释与空白后再打包；对照表留在构建机（不进安装包），用来还原现场报错的源码行。
+  const { version } = JSON.parse(fs.readFileSync(path.join(desktopDir, "package.json"), "utf8"));
+  // Only the application component: base and updater files are verified by hash and must keep their bytes.
+  const { classify } = require("./build-component-release.cjs");
+  const layout = require("../component-layout.json");
+  const minified = require("./minify-app-source.cjs").minifyAppSource(appDir, {
+    version, mapsRoot: process.env.XIAOXI_SOURCE_MAP_ROOT || path.join(desktopDir, ".build", "source-maps"),
+    include: (relative) => classify(`resources/app/${relative}`, layout) === "application"
+  });
+  console.log(`Minified ${minified.files} app scripts (kept ${minified.skipped} base/updater scripts as they are): ${Math.round(minified.before / 1024)} KB -> ${Math.round(minified.after / 1024)} KB; source maps in ${minified.mapDir}`);
 }
 
 function gitText(args) {
