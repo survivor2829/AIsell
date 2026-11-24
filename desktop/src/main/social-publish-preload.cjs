@@ -10,7 +10,10 @@ function createSocialPublishApi(ipcRenderer) {
       copies: Object.fromEntries(Object.entries(payload?.copies && typeof payload.copies === "object" ? payload.copies : {}).map(([platform, copy]) => [String(platform), { title: String(copy?.title || ""), description: String(copy?.description || "") }]))
     }),
     covers: (ids) => invoke("covers", { ids: (Array.isArray(ids) ? ids : []).map(String) }),
-    suggest: (payload) => invoke("suggest", { hint: String(payload?.hint || ""), platforms: (Array.isArray(payload?.platforms) ? payload.platforms : []).map(String), videos: (Array.isArray(payload?.videos) ? payload.videos : []).map((video) => ({ title: String(video?.title || ""), name: String(video?.name || ""), context: String(video?.context || "") })) }),
+    suggest: (payload) => invoke("suggest", { hint: String(payload?.hint || ""), platforms: (Array.isArray(payload?.platforms) ? payload.platforms : []).map(String), videos: (Array.isArray(payload?.videos) ? payload.videos : []).map((video) => ({ id: String(video?.id || ""), title: String(video?.title || ""), name: String(video?.name || ""), context: String(video?.context || "") })) }),
+    references: () => invoke("references"),
+    saveReference: (text) => invoke("saveReference", { text: String(text || "") }),
+    removeReference: (referenceId) => invoke("removeReference", id(referenceId)),
     cancel: (jobId) => invoke("cancel", id(jobId)),
     retry: (jobId) => invoke("retry", id(jobId)),
     resolve: (jobId, published) => invoke("resolve", { ...id(jobId), published: published === true }),

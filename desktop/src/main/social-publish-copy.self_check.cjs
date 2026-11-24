@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { createCoverCache, copyPrompt, parseCopy, writeCopy } = require("./social-publish-copy.cjs");
+const { createCoverCache, createReferenceStore, copyPrompt, parseCopy, writeCopy } = require("./social-publish-copy.cjs");
 
 (async () => {
   // 每个平台一套文案：标题按各平台上限截断（小红书 20、抖音 30），话题去 #、去重、最多 7 个。
@@ -26,12 +26,27 @@ const { createCoverCache, copyPrompt, parseCopy, writeCopy } = require("./social
   assert.match(prompt, /小红书.*种草/); assert.match(prompt, /xiaohongshu.*不超过 20 个字/); assert.match(prompt, /channels/);
   assert.doesNotMatch(prompt, /douyin/);
   assert.match(prompt, /资料只有标题/, "没有口播时不让 AI 编造功能");
-  // 有口播/字幕原文和品牌时一起交给 AI，只许用其中的事实；要 3 个不同写法的标题、大类词+精准词话题。
-  const spoken = copyPrompt({ videos: [{ title: "洗地机", spoken: "一趟洗一大片，扫吸一体不扬尘", brand: "新奔" }], hint: "", platforms: ["douyin"] });
+  // 有口播/字幕原文和品牌时一起交给 AI，只许用其中的事实。
+  const spoken = copyPrompt({ videos: [{ title: "洗地机", spoken: "一趟洗一大片，扫吸一体不扬尘", brand: "新奔" }], hint: "", platforms: ["douyin"],
+    references: [{ text: "用户自己存的参考文案：车库地面三天一洗，人手不够怎么办" }] });
   assert.ok(spoken.includes("口播/字幕原文：一趟洗一大片，扫吸一体不扬尘")); assert.match(spoken, /品牌：新奔/);
-  assert.ok(spoken.includes("只能用口播/字幕原文")); assert.match(spoken, /titles：3 个写法不同的标题/); assert.match(spoken, /行业大类词/);
-  // 去 AI 味（用户 2026-11-24）：要求像真人写、戳痛点；附客户认可的文案只学写法；AI 腔标题被剔除。
-  assert.match(spoken, /不要 AI 腔/); assert.ok(spoken.includes("评论区扣报名")); assert.match(spoken, /不要照抄它的内容和事实/);
+  assert.ok(spoken.includes("只用口播/字幕原文")); assert.match(spoken, /3 个不同角度的标题/);
+  // more intelligence, less structure（用户 2026-11-24）：给目标、事实边界和客户认可的参考文案，不给写作公式。
+  assert.match(spoken, /说的就是我/); assert.match(spoken, /不要照抄内容和事实/);
+  assert.ok(spoken.indexOf("用户自己存的参考文案") < spoken.indexOf("评论区扣报名"), "用户存的参考排在内置参考前面");
+  assert.doesNotMatch(spoken, /正文 60 到 150 字|titles：3 个写法不同/, "不再套固定结构");
+  assert.deepEqual(parseCopy(JSON.stringify({ platforms: { douyin: { titles: ["一站式赋能物业保洁", "车库一趟洗完不用返工"] } } }), ["douyin"]).douyin.titles, ["车库一趟洗完不用返工"]);
+  // 参考文案库：最新在前、去重、最多 10 条、太短不存、可删除。
+  const refDir = fs.mkdtempSync(path.join(os.tmpdir(), "social-ref-"));
+  const store = createReferenceStore({ dir: refDir });
+  assert.deepEqual(store.list(), []);
+  assert.throws(() => store.add("太短"), { code: "SOCIAL_REFERENCE_SHORT" });
+  for (let index = 0; index < 12; index += 1) store.add(`第${index}条参考文案，车库保洁人手不够`);
+  store.add("第3条参考文案，车库保洁人手不够");
+  assert.equal(store.list().length, 10); assert.equal(store.list()[0].text, "第3条参考文案，车库保洁人手不够");
+  assert.equal(store.list().filter((item) => item.text === "第3条参考文案，车库保洁人手不够").length, 1);
+  store.remove(store.list()[0].id); assert.equal(store.list().length, 9);
+  fs.rmSync(refDir, { recursive: true, force: true });
   assert.deepEqual(parseCopy(JSON.stringify({ platforms: { douyin: { titles: ["一站式赋能物业保洁", "车库一趟洗完不用返工"] } } }), ["douyin"]).douyin.titles, ["车库一趟洗完不用返工"]);
   // 三个标题：截断、去重、去掉绝对化用语；都违规时保留，让用户自己改。
   const options = parseCopy(JSON.stringify({ platforms: { douyin: { titles: ["工厂地面一趟洗干净", "全网最好的洗地机", "工厂地面一趟洗干净", "拖把三小时，它半小时"], description: "d", topics: [] } } }), ["douyin"]);

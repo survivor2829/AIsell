@@ -193,3 +193,13 @@ html[data-beat="1"] .dist-steps li.is-wait i { opacity: .35; }
 .dist-title-options button { max-width: 100%; padding: 6px 10px; border: 1px solid var(--line, #dfe3ea); border-radius: 999px; background: #fff; color: var(--text, #283344); font-size: 13px; text-align: left; cursor: pointer; }
 .dist-title-options button[aria-pressed="true"] { border-color: var(--brand-red, #d9343f); color: var(--brand-red, #d9343f); background: var(--brand-soft, #fff2f3); font-weight: 700; }
 .dist-title-options button:focus-visible { outline: 2px solid var(--brand-red, #d9343f); outline-offset: 2px; }
+/* 参考文案：客户认可的文案存起来给 AI 学（用户 2026-11-24）。 */
+.dist-references { margin: 0 0 12px; border: 1px solid var(--line, #dfe3ea); border-radius: 10px; background: #fff; }
+.dist-references > summary { display: flex; align-items: center; gap: 10px; padding: 9px 12px; font-size: 13px; font-weight: 700; color: var(--muted, #697184); cursor: pointer; }
+.dist-references > summary .social-text-button { margin-left: auto; }
+.dist-reference-add { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; padding: 0 12px 10px; }
+.dist-reference-add textarea { width: 100%; resize: vertical; }
+.dist-references ul { display: grid; gap: 6px; margin: 0; padding: 0 12px 12px; list-style: none; }
+.dist-references li { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-radius: 8px; background: var(--surface-muted, #f6f7f9); }
+.dist-references li p { flex: 1; margin: 0; font-size: 13px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.dist-references li button { flex-shrink: 0; display: grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 6px; background: transparent; color: var(--muted, #697184); cursor: pointer; }

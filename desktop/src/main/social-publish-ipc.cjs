@@ -1,6 +1,6 @@
 const path = require("node:path");
 const { createSocialPublisher } = require("./social-publisher.cjs");
-const { createCoverCache, writeCopy } = require("./social-publish-copy.cjs");
+const { createCoverCache, createReferenceStore, writeCopy } = require("./social-publish-copy.cjs");
 const { createCoverFirst } = require("./social-cover-first.cjs");
 
 const FINISHED_ID = /^finished_[a-f0-9]{32}$/;
@@ -41,6 +41,8 @@ const reportPublishFailure = (deps, failure) => reportSocialFailure(deps, "socia
 
 function registerSocialPublishIpc({ ipcMain, dataDir, accounts, resolveFinishedVideo, resolveFinishedCover = async () => "", resolveFinishedFacts = async () => ({}), getMainWindow, ffmpegPath = "ffmpeg", copyClient, publisherOptions = {}, logger, evidenceDir, onState = () => {} }) {
   const covers = createCoverCache({ dir: path.join(dataDir, "covers"), ffmpegPath });
+  // Copies the user liked, given to the AI as references (user 2026-11-24: feed it good copy, not rules).
+  const references = createReferenceStore({ dir: dataDir });
   let publisher; let initializationError;
   try {
     if (!accounts) throw Object.assign(new Error("accounts unavailable"), { code: "SOCIAL_ACCOUNTS_UNAVAILABLE" });
@@ -94,8 +96,11 @@ function registerSocialPublishIpc({ ipcMain, dataDir, accounts, resolveFinishedV
         return { title: text(video?.title, 80), name: text(video?.name, 80), context: text(video?.context, 200), spoken: text(facts?.spoken_text, 1500), brand: text(facts?.brand_name, 40) };
       }));
       const platforms = (Array.isArray(payload?.platforms) ? payload.platforms : []).map(String).filter((platform) => PLATFORMS.includes(platform));
-      return writeCopy({ client: copyClient, videos, hint: text(payload?.hint, 300), platforms: platforms.length ? platforms : PLATFORMS });
+      return writeCopy({ client: copyClient, videos, hint: text(payload?.hint, 300), platforms: platforms.length ? platforms : PLATFORMS, references: references.list().slice(0, 5) });
     },
+    references: () => references.list(),
+    saveReference: (payload) => references.add(text(payload?.text, 2000)),
+    removeReference: (payload) => references.remove(String(payload?.id || "")),
     cancel: (payload) => publisher.cancel(String(payload?.id || "")),
     retry: (payload) => publisher.retry(String(payload?.id || "")),
     resolve: (payload) => publisher.resolve(String(payload?.id || ""), payload?.published === true),

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Check, ChevronDown, Globe2, Lock, RefreshCw, RotateCcw, Sparkles, Trash2, X } from "lucide-react";
 import type { SocialAccount, SocialAccountsState, SocialPlatformKey } from "./social-accounts-types";
-import type { SocialPublishJob, SocialPublishResult, SocialPublishState } from "./social-publish-types";
+import type { SocialCopyReference, SocialPublishJob, SocialPublishResult, SocialPublishState } from "./social-publish-types";
 import { PlatformIcon, PLATFORM_NAMES } from "./PlatformIcon";
 import { MascotHello } from "./MascotHello";
 import "./SocialPublishPanel.css";
@@ -51,6 +51,8 @@ export function SocialPublishPanel({ onManageAccounts }: { onManageAccounts: () 
   const [copies, setCopies] = useState<Partial<Record<SocialPlatformKey, Copy>>>({});
   const [tabPlatform, setTabPlatform] = useState<SocialPlatformKey>("douyin");
   const [hint, setHint] = useState("");
+  const [references, setReferences] = useState<SocialCopyReference[]>([]);
+  const [referenceDraft, setReferenceDraft] = useState("");
   const [visibility, setVisibility] = useState<"public" | "private">("public");
   const [pending, setPending] = useState("");
   const [writing, setWriting] = useState(false);
@@ -59,6 +61,15 @@ export function SocialPublishPanel({ onManageAccounts }: { onManageAccounts: () 
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const autoWritten = useRef("");
+  useEffect(() => { void publishApi?.references().then((result) => { if (result.ok && result.state) setReferences(result.state); }).catch(() => {}); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const changeReferences = async (operation: () => Promise<{ ok: boolean; error?: string; state?: SocialCopyReference[] }>, done = "") => {
+    try {
+      const result = await operation();
+      if (!result.ok || !result.state) { setError(result.error || "参考文案没有保存，请再试一次。"); return false; }
+      setReferences(result.state); if (done) setNotice(done); return true;
+    } catch { setError("参考文案没有保存，请再试一次。"); return false; }
+  };
+  const currentText = (copy: Copy) => [copy.title, copy.description, topicText(parseTopics(copy.topics))].filter((part) => part.trim()).join(" ");
   const batchIds = useRef<Set<string>>(new Set());
 
   const loadVideos = async () => {
@@ -291,6 +302,14 @@ export function SocialPublishPanel({ onManageAccounts }: { onManageAccounts: () 
             <label>正文<textarea rows={5} value={current.description} maxLength={800} placeholder="说说视频讲了什么、对谁有用" onChange={(event) => setCurrent({ description: event.target.value })} /></label>
             <label>话题<input value={current.topics} placeholder="用空格分开，例如：清洁设备 保洁" onChange={(event) => setCurrent({ topics: event.target.value })} /></label>
             {parseTopics(current.topics).length > 0 && <div className="dist-topics">{parseTopics(current.topics).map((topic) => <span key={topic}>#{topic}</span>)}</div>}
+            <details className="dist-references">
+              <summary>参考文案 {references.length > 0 ? `${references.length} 条` : ""}<button type="button" className="social-text-button" disabled={!current.title.trim() && !current.description.trim()} onClick={(event) => { event.preventDefault(); void changeReferences(() => publishApi!.saveReference(currentText(current)), "已存为参考，AI 下次写会学它。"); }}>把这条存为参考</button></summary>
+              <div className="dist-reference-add">
+                <textarea rows={3} value={referenceDraft} maxLength={600} placeholder="粘贴一条你觉得写得好的文案" onChange={(event) => setReferenceDraft(event.target.value)} />
+                <button type="button" disabled={referenceDraft.trim().length < 10} onClick={() => void changeReferences(() => publishApi!.saveReference(referenceDraft), "已存为参考。").then((ok) => { if (ok) setReferenceDraft(""); })}>存为参考</button>
+              </div>
+              {references.length > 0 && <ul>{references.map((item) => <li key={item.id}><p>{item.text}</p><button type="button" aria-label="删除这条参考" onClick={() => void changeReferences(() => publishApi!.removeReference(item.id))}><X size={14} /></button></li>)}</ul>}
+            </details>
             <label>给 AI 的补充说明<span className="social-optional">选填</span><input value={hint} maxLength={300} placeholder="例如：主推商用洗地机，面向物业" onChange={(event) => setHint(event.target.value)} /></label>
             <div className="dist-visibility" role="radiogroup" aria-label="可见范围">
               <button type="button" role="radio" aria-checked={visibility === "public"} className={visibility === "public" ? "is-on" : ""} onClick={() => setVisibility("public")}><Globe2 size={15} />公开</button>
