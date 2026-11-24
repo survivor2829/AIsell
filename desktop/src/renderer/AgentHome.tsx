@@ -175,6 +175,8 @@ type Metric = {
   value: string;
   unit?: string;
   detail: string;
+  // Shown even with a number: the customer has something to act on (AGENTS.md 界面设计).
+  actionable?: boolean;
   icon: ComponentType<{ size?: number; strokeWidth?: number }>;
   // 没有数字的入口：只留大字，整块可点（用户 2026-11-11：不要「可进入」这种废话）。
   target?: AgentHomeTarget;
@@ -489,7 +491,7 @@ function MetricStrip({ metrics, onOpen }: { metrics: Metric[]; onOpen: (target: 
             <div>
               <span>{metric.label}</span>
               <p><strong>{metric.value}</strong>{metric.unit && <small>{metric.unit}</small>}</p>
-              {metric.value === "—" && <em>{metric.detail}</em>}
+              {(metric.value === "—" || metric.actionable) && <em>{metric.detail}</em>}
             </div>
           </div>
         );
@@ -575,7 +577,7 @@ function buildProductionView(snapshot: ProductionSnapshot) {
   const value = (count: string | null) => snapshot.loading ? "—" : count === null ? "—" : count;
   const metrics: Metric[] = [
     { label: "我的素材", value: value(snapshot.assets), unit: snapshot.assets === null ? undefined : "份", detail: "当前可用图片与视频素材", icon: Folder },
-    { label: "待完成视频", value: value(snapshot.tasks), unit: snapshot.tasks === null ? undefined : "项", detail: snapshot.openTasks === null ? "尚未读取制作状态" : `${snapshot.openTasks} 项需要您确认或处理`, icon: Clapperboard },
+    { label: "待完成视频", value: value(snapshot.tasks), unit: snapshot.tasks === null ? undefined : "项", detail: snapshot.openTasks === null ? "尚未读取制作状态" : `${snapshot.openTasks} 项需要您确认或处理`, actionable: Number(snapshot.openTasks) > 0, icon: Clapperboard },
     { label: "可用成片", value: value(snapshot.finished), unit: snapshot.finished === null ? undefined : "条", detail: "本地文件仍可访问的成片", icon: Video }
   ];
   const latest = snapshot.latestTask;

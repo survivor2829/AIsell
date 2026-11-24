@@ -15,6 +15,7 @@ const {
   classifyContacts,
   createTask,
   identityKey,
+  publicContact,
   isBatchAuthorized,
   loadTaskState,
   readTaskState,
@@ -121,6 +122,65 @@ function resumableFreshEdit(task, multipart) {
     && current?.send_attempted === false);
 }
 
+// Why a contact no longer matched the task's snapshot (cfe8221b, 2026-11-21: 734 contacts skipped as
+// contact_snapshot_changed in two hours and the record could not say why). Field names, counts and
+// ages only, never the names themselves:
+//   missing_from_contacts      the contact is gone from the synced address book
+//   excluded_<reason>          still there but no longer touchable (disabled, duplicate name, ...)
+//   identity_changed           still touchable, but these fields differ from the snapshot
+const SNAPSHOT_FIELDS = ["wxid", "wechatId", "wechatAccountId", "name", "remark", "nickname"];
+function snapshotChange(current, liveContacts, liveClassification, at) {
+  const id = String(current.id);
+  const snapshot = current.contact || {};
+  const present = (Array.isArray(liveContacts) ? liveContacts : []).find((contact) => String(contact?.id) === id);
+  const excluded = (liveClassification.excluded || []).find((entry) => String(entry?.contact?.id) === id);
+  const eligible = (liveClassification.eligible || []).find((contact) => String(contact?.id) === id);
+  const hours = (value) => { const time = Date.parse(String(value || "")); return Number.isFinite(time) ? Math.round((at.getTime() - time) / 360000) / 10 : -1; };
+  // Compared in the snapshot's own form (publicContact: name falls back to remark/nickname).
+  const live = eligible ? publicContact(eligible) : null;
+  const changed = live ? SNAPSHOT_FIELDS.filter((field) => String(live[field] ?? "").trim() !== String(snapshot[field] ?? "").trim()) : [];
+  const kind = !present ? "missing_from_contacts"
+    : excluded ? `excluded_${String(excluded.reason_code || "unknown").replace(/[^a-z0-9_]/giu, "_")}`.slice(0, 48)
+      : "identity_changed";
+  const labels = { wxid: "微信内部号", wechatId: "微信号", wechatAccountId: "所属微信账号", name: "名称", remark: "备注", nickname: "昵称" };
+  const reason = !present ? "联系人已不在同步的通讯录里，已跳过"
+    : excluded ? `联系人现在不能触达（${excluded.reason || "已排除"}），已跳过`
+      : changed.length ? `联系人资料已变化（${changed.map((field) => labels[field]).join("、")}），为防发错人已跳过`
+        : "联系人已变化或不再允许触达，已跳过";
+  return {
+    reason,
+    details: {
+      change_kind: kind,
+      ...(changed.length ? { changed_fields_code: changed.join(".") } : {}),
+      contact_resynced: Boolean(present) && String(present.syncedAt ?? "") !== String(snapshot.syncedAt ?? ""),
+      snapshot_sync_age_hours: hours(snapshot.syncedAt),
+      live_sync_age_hours: hours(present?.syncedAt),
+      live_contact_count: Array.isArray(liveContacts) ? liveContacts.length : 0,
+      live_eligible_count: (liveClassification.eligible || []).length
+    }
+  };
+}
+
+// The core of a found-but-not-opened contact in one word, straight into the field report (user
+// 2026-11-24: a failure must say its actual cause, not only "not opened"):
+//   dropdown_stayed_after_retry  WeChat ignored both presses on the verified row
+//   dropdown_stayed_<why>        it ignored the press and no retry was allowed (WeChat-ID mode, input...)
+//   dropdown_closed              the dropdown went away, yet the chat title is not the contact's
+// plus the first foreign window over the row and WeChat's keyboard language at the press.
+function clickCause(click) {
+  if (!click || typeof click !== "object") return {};
+  const cause = click.dropdown_after_retry === true ? "dropdown_stayed_after_retry"
+    : click.dropdown_after_press === true ? `dropdown_stayed_${String(click.retry || "unknown").replace(/^skipped_/u, "")}`
+      : click.dropdown_after_press === false ? "dropdown_closed" : "";
+  const cover = (Array.isArray(click.covering) ? click.covering : [])
+    .map((window) => String(window?.process || window?.class || "").toLowerCase().replace(/[^a-z0-9_]/gu, "")).find(Boolean) || "";
+  return {
+    ...(cause ? { click_cause_code: cause.slice(0, 48) } : {}),
+    click_cover_code: cover ? cover.slice(0, 40) : "none",
+    ...(/^[0-9a-f]{4}$/u.test(String(click.keyboard_language || "")) ? { click_keyboard_code: click.keyboard_language } : {})
+  };
+}
+
 function finiteSearchEvidence(diagnostics = {}, includeAttempts = true) {
   const evidence = {};
   if (['wechat_id', 'name', 'name_fallback'].includes(diagnostics.search_query_type)) evidence.search_query_type = diagnostics.search_query_type;
@@ -172,6 +232,29 @@ function finiteSearchEvidence(diagnostics = {}, includeAttempts = true) {
   }
   if (Array.isArray(diagnostics.search_columns)) evidence.search_columns = diagnostics.search_columns.filter(Number.isFinite);
   if (Number.isFinite(diagnostics.popup_candidate_count)) evidence.popup_candidate_count = diagnostics.popup_candidate_count;
+  // Which rule picked the row, where it was pressed and what WeChat did after (47d2578f, 2026-11-24:
+  // the record of a found-but-not-opened contact could not say any of this).
+  if (/^[a-z_]{1,48}$/u.test(String(diagnostics.resolver_mode || ""))) evidence.resolver_mode = diagnostics.resolver_mode;
+  if (diagnostics.candidate_point && typeof diagnostics.candidate_point === "object") {
+    const point = Object.fromEntries(Object.entries(diagnostics.candidate_point)
+      .filter(([name, value]) => ["x", "y", "left", "top", "right", "bottom"].includes(name) && Number.isFinite(value)));
+    if (Object.keys(point).length) evidence.candidate_point = point;
+  }
+  const click = diagnostics.click_observation;
+  if (click && typeof click === "object") {
+    const name = (value) => /^[A-Za-z0-9_.:\- ]{1,64}$/u.test(String(value || "")) ? String(value) : "";
+    const flag = (value) => value === true ? true : value === false ? false : null;
+    evidence.click_observation = {
+      ...Object.fromEntries(["x", "y", "elapsed_ms"].filter((key) => Number.isFinite(click[key])).map((key) => [key, click[key]])),
+      over_dropdown: flag(click.over_dropdown), header_before: flag(click.header_before), header_changed: flag(click.header_changed),
+      dropdown_after_press: flag(click.dropdown_after_press), dropdown_after_retry: flag(click.dropdown_after_retry),
+      retry: /^[a-z_]{1,32}$/u.test(String(click.retry || "")) ? click.retry : "",
+      keyboard_language: /^[0-9a-f]{4}$/u.test(String(click.keyboard_language || "")) ? click.keyboard_language : "",
+      covering: (Array.isArray(click.covering) ? click.covering : click.covering && typeof click.covering === "object" ? [click.covering] : [])
+        .slice(0, 6).map((window) => ({ class: name(window?.class), process: name(window?.process),
+          layered: window?.layered === true, transparent: window?.transparent === true, topmost: window?.topmost === true }))
+    };
+  }
   const observed = diagnostics.ocr_observation;
   if (observed && typeof observed === "object") {
     const classes = new Set(["empty", "han", "letter", "number", "punctuation", "symbol", "other"]);
@@ -456,7 +539,7 @@ function createTouchWorkflow(options = {}) {
             identity_recoveries: Number(row.identity_recovery_attempts) || 0,
             pre_send_recoveries: Number(row.pre_send_recovery_attempts) || 0,
             environment_recovery: Boolean(row.environment_recovery_started_at),
-            rule_id: String(row.search_evidence?.rule_id || ""), ...details },
+            rule_id: String(row.search_evidence?.rule_id || ""), ...clickCause(row.search_evidence?.click_observation), ...details },
           { trace: true, ...(traceId ? { traceId } : {}), level: "error", code: `touch_${kind}_${reason}` });
       } catch { /* Diagnostics never stop the task. */ }
     };
@@ -576,9 +659,10 @@ function createTouchWorkflow(options = {}) {
         delete task.identity_skip_streak;
         delete task.pre_send_skip_streak;
         current.status = "identity_skipped";
-        current.reason = "联系人已变化或不再允许触达，已跳过";
+        const change = snapshotChange(current, liveContacts, liveClassification, now());
+        current.reason = change.reason;
         const deliveryStatus = skippedDelivery(current);
-        reportContact("skipped", "contact_snapshot_changed");
+        reportContact("skipped", "contact_snapshot_changed", change.details);
         recordSkippedResult(current, task.current_index, {
           reasonCode: "contact_snapshot_changed",
           blockedReason: current.reason,

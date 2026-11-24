@@ -35,7 +35,11 @@ export function ProductDetailExamples({ requested, onOpened }: { requested?: boo
         </button>)}
       </div>)}</div>
     </section>
-    <dialog ref={dialog} className="detail-example-dialog" onClose={() => setSelected(null)} onKeyDown={event => { if (event.key === "ArrowLeft") step(-1); if (event.key === "ArrowRight") step(1); }} aria-label={selected ? `${selected.name}生成范例` : "生成范例"}>
+    <dialog ref={dialog} className="detail-example-dialog" onClose={() => setSelected(null)} onKeyDown={event => {
+      // The zoom slider and the scrolled picture keep their own arrow keys.
+      if (event.defaultPrevented || (event.target as HTMLElement).closest("input, textarea, select, .detail-example-scroll")) return;
+      if (event.key === "ArrowLeft") step(-1); if (event.key === "ArrowRight") step(1);
+    }} aria-label={selected ? `${selected.name}生成范例` : "生成范例"}>
       <header>
         {siblings.length > 1 && <span className="detail-example-stepper"><button type="button" aria-label="上一个范例" onClick={() => step(-1)}><ChevronLeft size={20} /></button><span>{position + 1} / {siblings.length}</span><button type="button" aria-label="下一个范例" onClick={() => step(1)}><ChevronRight size={20} /></button></span>}
         <strong>{selected?.name} · 真实生成范例</strong><label>缩放 <input aria-label="范例缩放" type="range" min={50} max={200} step={25} value={zoom} onChange={event => setZoom(Number(event.target.value))} />{zoom}%</label><button type="button" aria-label="关闭范例" onClick={() => setSelected(null)}><X size={22} /></button>

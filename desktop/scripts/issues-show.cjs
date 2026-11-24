@@ -91,7 +91,9 @@ function show(directory) {
   const { capsule, client, evidence = [] } = JSON.parse(fs.readFileSync(path.join(directory, "capsule.json"), "utf8"));
   const out = [];
   out.push(`${capsule.module} · ${capsule.code}  （${capsule.source}，发生 ${capsule.occurrences} 次）`,
-    `版本 ${client.version}  电脑 ${client.installId}  首次 ${capsule.createdAt}  最近 ${capsule.lastSeenAt}`);
+    // client.version is the first occurrence's; a computer can change version the same day (cfe8221b went
+    // from 1.3.45 to 1.3.0 on 2026-11-21 and every afternoon record still read 1.3.45 here).
+    `版本 首次 ${client.version}${capsule.latest?.appVersion && capsule.latest.appVersion !== client.version ? ` → 最近 ${capsule.latest.appVersion}` : ""}  电脑 ${client.installId}  首次 ${capsule.createdAt}  最近 ${capsule.lastSeenAt}`);
   if (capsule.taskId || Object.keys(capsule.context || {}).length) out.push(`任务 ${capsule.taskId || "—"} ${JSON.stringify(capsule.context || {})}`);
   if (capsule.where) out.push(`位置 ${capsule.where}`);
   if (capsule.message) out.push("", "客户看到：", capsule.message);
