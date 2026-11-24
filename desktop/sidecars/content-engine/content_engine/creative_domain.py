@@ -3148,6 +3148,15 @@ class CreativeDomain:
             private_state["reuse_cover_generated_video_id"] = current["generated_video_id"] or private_state.get("reuse_cover_generated_video_id") or ""
         else:
             private_state.pop("reuse_cover_generated_video_id", None)
+            if private_state.get("narrated_batch_id"):
+                # A redone work picks its cover against the batch's covers as they are now.
+                from .narrated_batch import NarratedBatchDomain
+                batches = NarratedBatchDomain(self)
+                try:
+                    private_state["narrated_cover_avoid"] = batches.cover_avoid(
+                        batches._load(private_state["narrated_batch_id"]), private_state.get("narrated_candidate_id"))
+                except ContentEngineError:
+                    pass
         next_voice_persona_id = current["selected_voice_persona_id"]
         next_music_track_id = current["selected_music_track_id"]
         for field in ("qualityReport", "generatedVideoId", "attention"):

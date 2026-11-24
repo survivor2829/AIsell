@@ -377,6 +377,23 @@ class NarratedBatchDomain:
         require(row is not None, "narrated_batch_not_found", "找不到这次批量创作。")
         return json.loads(row[0])
 
+    def cover_avoid(self, b, candidate_id):
+        """Cover windows the batch's other finished works actually used, read from their
+        rendered recipes; works made before 1.3.57 have no choice recorded and used their first shot."""
+        from .cover_frame import recipe_cover_segment, segment_window
+        windows = []
+        for item in b.get("candidates") or []:
+            if item.get("candidate_id") == candidate_id or item.get("status") != "completed" or not item.get("generated_video_id"):
+                continue
+            row = self.db.execute("SELECT recipe_json FROM generated_videos WHERE id=?", (item["generated_video_id"],)).fetchone()
+            try:
+                segment = recipe_cover_segment(json.loads(row[0] or "{}")) if row else None
+            except (TypeError, ValueError):
+                segment = None
+            if segment and segment.get("asset_id"):
+                windows.append(list(segment_window(segment)))
+        return windows
+
     def _store(self, batch):
         batch["updated_at"] = self.d._now()
         self.db.execute("UPDATE narrated_batches_v1 SET state_json = ?, updated_at = ? WHERE id = ?",
@@ -4975,9 +4992,7 @@ class NarratedBatchDomain:
                  "video_template": (b.get("settings") or {}).get("video_template") or "topic_fixed",
                  "used_music_track_ids": [item["music_track_id"] for item in b["candidates"]
                                           if item.get("status") == "completed" and item.get("music_track_id")],
-                 "narrated_cover_avoid": [item["cover_window"] for item in b["candidates"]
-                                          if item.get("candidate_id") != c["candidate_id"]
-                                          and item.get("status") == "completed" and item.get("cover_window")],
+                 "narrated_cover_avoid": self.cover_avoid(b, c["candidate_id"]),
                  "narrated_minimum_duration_ms": b.get("settings", {}).get("minimum_duration_seconds", 0) * 1000,
                  "narrated_preserve_shot_duration": bool(b.get("_story_planning_version") == 2),
                  "narrated_candidate_id": c["candidate_id"], "narrated_snapshots": b["_snapshots"],
@@ -5075,10 +5090,6 @@ class NarratedBatchDomain:
                 c["duration_ms"] = generated["duration_ms"]
                 private = self.d._json_object(run["private_state_json"])
                 c["actual_shots"] = (private.get("material_timeline") or {}).get("selected_segments") or c["shots"]
-                from .cover_frame import cover_segment, segment_window
-                cover = cover_segment(c["actual_shots"], private.get("narrated_cover_avoid") or [])
-                if cover is not None:
-                    c["cover_window"] = list(segment_window(cover))
                 public = self.d._json_object(run["public_plan_json"])
                 selection = public.get("music") or public.get("musicSelection") or private.get("music_selection") or {}
                 if selection.get("mode") == "none" and selection.get("message"):

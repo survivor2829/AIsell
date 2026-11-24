@@ -28,6 +28,8 @@ class CoverFrameTest(unittest.TestCase):
     def test_timeline_shots_and_images_have_windows(self):
         self.assertEqual(("m1", 10, 20), segment_window({"asset_id": "m1", "source_start_ms": 10, "source_end_ms": 20}))
         self.assertEqual(("img", 0, 1), segment_window({"asset_id": "img", "start_ms": 0, "end_ms": 0}))
+        both = {"asset_id": "m1", "start_ms": 0, "end_ms": 3000, "source_start_ms": 5000, "source_end_ms": 8000}
+        self.assertEqual(("m1", 5000, 8000), segment_window(both))
 
     def test_recipe_uses_chosen_segment_and_old_recipes_the_first(self):
         shots = [shot("a", "m1", 0, 3000), shot("b", "m2", 0, 3000)]

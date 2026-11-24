@@ -9,8 +9,8 @@ then another time range of a used material, and only when neither is left a repe
 
 def segment_window(segment):
     """(asset_id, start_ms, end_ms) of a recipe segment or a timeline shot."""
-    start = int(segment.get("start_ms", segment.get("source_start_ms")) or 0)
-    end = int(segment.get("end_ms", segment.get("source_end_ms")) or 0)
+    start = int(segment.get("source_start_ms", segment.get("start_ms")) or 0)
+    end = int(segment.get("source_end_ms", segment.get("end_ms")) or 0)
     # Images carry no range: the whole file is one window.
     return str(segment.get("asset_id") or ""), start, max(end, start + 1)
 

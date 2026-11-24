@@ -80,7 +80,10 @@ def _clean_source_frame(domain, recipe, target):
         return False
     try:
         source = Path(domain._resolve_render_asset_path(segment["asset_id"]))
-        seek = [] if segment.get("media_kind") == "image" else ["-ss", f"{max(0, int(segment.get('start_ms') or 0)) / 1000 + 0.5:.3f}"]
+        start_ms = max(0, int(segment.get("start_ms") or 0))
+        end_ms = int(segment.get("end_ms") or 0)
+        offset_ms = 500 if not end_ms or end_ms - start_ms >= 1_000 else 0
+        seek = [] if segment.get("media_kind") == "image" else ["-ss", f"{(start_ms + offset_ms) / 1000:.3f}"]
         domain.analyzer._command([domain.analyzer.ffmpeg_path, "-y", *seek, "-i", str(source), "-frames:v", "1", "-q:v", "2", str(target)])
         return target.is_file() and target.stat().st_size > 0
     except (ContentEngineError, OSError, KeyError):
