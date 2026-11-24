@@ -3,8 +3,10 @@
 // the AI director looks at the photos and decides the rest. While it is made: a countdown, what the
 // director understood, each shot as it is filmed, and afterwards the AI check of every shot.
 import { useEffect, useState } from "react";
-import { AlertTriangle, Check, Clapperboard, Clock, Hourglass, ImagePlus, LoaderCircle, MapPin, Plus, RefreshCw, ScanEye, Sparkles, Subtitles, X } from "lucide-react";
+import { AlertTriangle, Check, Clapperboard, Clock, Hourglass, ImagePlus, LoaderCircle, MapPin, Plus, RefreshCw, ScanEye, X } from "lucide-react";
 import { SceneIcon } from "./SceneIcons";
+import { AgentStage } from "./AgentStage";
+import { sceneStageModel, type SceneStageTask } from "./scene-stage";
 
 type Item = { id: string; name: string };
 export type RealCatalog = {
@@ -127,21 +129,11 @@ export function CrewCard({ crew, atSheet = false }: { crew?: Crew | null; atShee
   </div></div>;
 }
 
-type ProgressTask = {
+type ProgressTask = SceneStageTask & {
   id: string; status: string; durationSeconds: number; shotsReady?: boolean[]; shotsRunning?: boolean[]; imagesReady?: Record<string, boolean>;
   sheetConfirmed?: boolean; sheetStep?: boolean; directorStep?: boolean; directed?: boolean; crew?: Crew | null;
   plan: { machine?: string; surface?: string; dirt?: string; shots: { index: number; title: string; caption?: string; seconds: number; place?: string }[] };
 };
-// What the AI director understood from the photos, shown as soon as it has decided (让智能看得见).
-function DirectorCard({ task }: { task: ProgressTask }) {
-  if (!task.directorStep) return null;
-  if (!task.directed) return task.status === "directing" ? <div className="rs-director is-working"><Sparkles size={22} /><div><b>AI 导演正在看产品图</b><span>判断这是什么设备、怎么动、在这个场所该拍什么，一般不到半分钟。</span></div></div> : null;
-  return <div className="rs-director"><Sparkles size={22} /><div><b>AI 导演看懂的</b>
-    {task.plan.machine && <span>设备：{task.plan.machine}</span>}
-    {task.plan.surface && <span>地面：{task.plan.surface}</span>}
-    {task.plan.dirt && <span>要清的脏污：{task.plan.dirt}</span>}
-    <span>分镜：{task.plan.shots.map((shot) => `${shot.index + 1}. ${shot.title}（${shot.seconds} 秒）`).join("　")}</span></div></div>;
-}
 export type ShotReview = { checkedAt: string; skipped?: boolean; shots: { index: number; ok: boolean; issue: string; redone?: boolean }[] };
 // AI 检查 (user 2026-11-19: check only): which shot looks wrong and why; the customer decides whether to redo one.
 export function ShotReviewPanel({ review, titles, canRedo, busy, finished = true, onRedo }: { review?: ShotReview | null; titles: string[]; canRedo: boolean; busy: boolean; finished?: boolean; onRedo: (index: number) => void }) {
@@ -162,22 +154,11 @@ export function ShotReviewPanel({ review, titles, canRedo, busy, finished = true
 }
 // Only the steps this video really has: no 定妆照 on videos started before it, no scene picture without a venue shot.
 export function RealShootProgress({ task, shotVideos }: { task: ProgressTask; shotVideos: Record<string, string> }) {
-  const finishing = ["assembling", "packaging"].includes(task.status);
-  const sheetDone = !task.sheetStep || task.sheetConfirmed;
-  const STAGES = [
-    ...(task.sheetStep ? [{ label: "定妆照", Icon: ImagePlus, done: Boolean(sheetDone) }] : []),
-    ...(task.directorStep ? [{ label: "AI 导演", Icon: Sparkles, done: Boolean(task.directed) }] : []),
-    ...(task.plan.shots.some((shot) => shot.place === "venue") ? [{ label: "画场地", Icon: MapPin, done: Boolean(sheetDone && task.imagesReady?.plate) }] : []),
-    { label: "拍镜头", Icon: Clapperboard, done: finishing || task.status === "completed" },
-    { label: "加字幕", Icon: Subtitles, done: task.status === "completed" }
-  ];
-  const stage = STAGES.findIndex((row) => !row.done) < 0 ? STAGES.length : STAGES.findIndex((row) => !row.done);
   const stuck = ["needs_attention", "outcome_unknown"].includes(task.status);
   return <div className="sv-progress">
-    <DirectorCard task={task} />
+    {/* AI 工作台（用户 2026-11-24）：每个 AI 角色在它真实处理的那一步上干活，取代原来的步骤条和导演卡。 */}
+    <AgentStage model={sceneStageModel(task)} label="AI 导演组工作台" />
     <CrewCard crew={task.crew} />
-    <ol className="sv-stages">{STAGES.map(({ label, Icon }, index) => <li key={label} className={index < stage ? "is-done" : index === stage ? "is-now" : ""}>
-      <span>{index < stage ? <Check size={18} strokeWidth={3} /> : <Icon size={18} />}</span>{label}</li>)}</ol>
     <div className="pv2-shots">{task.plan.shots.map((shot, index) => {
       const src = shotVideos[`${task.id}:${index}`], done = task.shotsReady?.[index], now = task.shotsRunning?.[index];
       const label = `${index + 1}. ${shot.title}`;

@@ -1,0 +1,51 @@
+/* AI 工作台：暗色看板 + 带名字的彩色光标 + 执行日志。 */
+.agent-stage { --stage-bg: #0b1020; --stage-line: #ffffff1f; --stage-text: #e2e8f0; --stage-muted: #94a3b8;
+  display: grid; gap: 10px; padding: 14px; border-radius: 16px; color: var(--stage-text);
+  background: radial-gradient(circle at 30% 0%, #1b2550 0%, var(--stage-bg) 65%); box-shadow: inset 0 0 0 1px var(--stage-line); }
+.agent-stage-board { position: relative; display: grid; gap: 10px; padding-bottom: 4px; }
+.agent-stage-board::before { content: ""; position: absolute; inset: -14px -14px 0; pointer-events: none; border-radius: 16px 16px 0 0;
+  background-image: linear-gradient(#ffffff08 1px, transparent 1px), linear-gradient(90deg, #ffffff08 1px, transparent 1px); background-size: 28px 28px; }
+.agent-stage-cards { position: relative; display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
+.agent-stage-cards li { display: grid; justify-items: start; align-content: start; gap: 4px; min-height: 74px; padding: 10px; border-radius: 12px;
+  background: #ffffff0d; box-shadow: inset 0 0 0 1px var(--stage-line); transition: background .3s, box-shadow .3s; }
+.agent-stage-cards b { font-size: 14px; font-weight: 800; line-height: 1.3; }
+.agent-stage-cards small { color: var(--stage-muted); font-size: 12px; line-height: 1.35; }
+.agent-stage-icon { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: #ffffff14; color: var(--stage-muted); }
+.agent-stage-cards .is-now { background: #38bdf81f; box-shadow: inset 0 0 0 1px #38bdf8aa, 0 0 18px #38bdf833; }
+.agent-stage-cards .is-now .agent-stage-icon { color: #7dd3fc; }
+.agent-stage-cards .is-done .agent-stage-icon { background: #22c55e2e; color: #4ade80; }
+.agent-stage-cards .is-fail { background: #ef44441f; box-shadow: inset 0 0 0 1px #f87171; }
+.agent-stage-cards .is-fail .agent-stage-icon { background: #ef444433; color: #fca5a5; }
+.agent-stage-cards .is-user { background: #facc151a; box-shadow: inset 0 0 0 1px #facc15aa; }
+.agent-stage-cards .is-user .agent-stage-icon { color: #fde047; }
+.agent-stage-cards .is-wait { opacity: .6; }
+.agent-stage-dock { border-top: 1px dashed var(--stage-line); }
+
+.agent-cursor { position: absolute; left: 0; top: 0; z-index: 2; display: flex; align-items: flex-start; gap: 2px; pointer-events: none;
+  transition: transform .9s cubic-bezier(.22, 1, .36, 1); }
+.agent-cursor svg { fill: var(--agent); stroke: #0b1020; stroke-width: 1.4; stroke-linejoin: round; filter: drop-shadow(0 0 6px var(--agent)); }
+.agent-cursor i { margin-top: 12px; padding: 1px 7px; border-radius: 6px; background: var(--agent); color: #0b1020; font-size: 11px; font-style: normal; font-weight: 800; white-space: nowrap; box-shadow: 0 0 10px color-mix(in srgb, var(--agent) 55%, transparent); }
+/* Working: the cursor keeps clicking on its card. Done or waiting: parked and dimmed. Failed: stopped, red. */
+.agent-cursor.is-now svg { animation: agent-click 1.1s ease-in-out infinite; }
+.agent-cursor.is-now::after { content: ""; position: absolute; left: -6px; top: -6px; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--agent); animation: agent-ring 1.1s ease-out infinite; }
+.agent-cursor.is-done, .agent-cursor.is-wait, .agent-cursor.is-user { opacity: .45; }
+.agent-cursor.is-done i::after { content: " ✓"; }
+.agent-cursor.is-fail svg { fill: #f87171; filter: drop-shadow(0 0 6px #f87171); }
+.agent-cursor.is-fail i { background: #f87171; }
+@keyframes agent-click { 0%, 100% { transform: translate(0, 0); } 30% { transform: translate(5px, 4px); } 45% { transform: translate(5px, 4px) scale(.86); } 60% { transform: translate(-3px, 2px); } }
+@keyframes agent-ring { 0% { transform: scale(.4); opacity: .9; } 100% { transform: scale(2.2); opacity: 0; } }
+
+.agent-stage-log { display: grid; gap: 3px; max-height: 168px; margin: 0; padding: 10px 12px; overflow: auto; list-style: none; border-radius: 10px; background: #05070fcc;
+  font: 500 12.5px/1.55 "Cascadia Mono", Consolas, "Microsoft YaHei", monospace; }
+.agent-stage-log li { display: flex; gap: 8px; color: var(--stage-muted); }
+.agent-stage-log b { flex-shrink: 0; min-width: 5.5em; color: var(--agent); font-weight: 700; }
+.agent-stage-log .is-now span { color: var(--stage-text); }
+.agent-stage-log .is-now span::after { content: "▍"; margin-left: 2px; animation: agent-blink 1s steps(1) infinite; }
+.agent-stage-log .is-fail span { color: #fca5a5; }
+.agent-stage-log .is-user span { color: #fde047; }
+@keyframes agent-blink { 50% { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-cursor { transition: none; }
+  .agent-cursor.is-now svg, .agent-cursor.is-now::after, .agent-stage-log .is-now span::after { animation: none; }
+}

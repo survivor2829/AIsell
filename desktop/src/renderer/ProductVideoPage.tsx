@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, Check, Clapperboard, Download, FileText, Hourglass, ImagePlus, LoaderCircle, Play, Plus, RefreshCw } from "lucide-react";
 import "./ProductVideoPage.css";
 import { ExampleBanner } from './VideoExamples';
+import { AgentStage } from "./AgentStage";
+import { sceneStageModel } from "./scene-stage";
 import { SceneIcon } from "./SceneIcons";
 import { formatWan } from "./BillingBadge";
 import { SheetConfirm, StoryVideoProgress, storyProgress, type StoryTask } from "./StoryVideoProgress";
@@ -237,10 +239,11 @@ export function ProductVideoPage() {
           </> : <>
             <div className="pv2-progress">
               <Ring value={progressOf(selected)} lines={[`镜头 ${selected.completedShots} / ${shots.length} 拍好`, finishing(selected) ? "正在配音合成" : running ? "做好会自动显示" : ""].filter(Boolean)} />
-              <div className="pv2-bars">{shots.map((shot, index) => { const state = shotState(index); return <div key={shot.index} className={`is-${state}`}>
+              {!selected.realPipeline && <div className="pv2-bars">{shots.map((shot, index) => { const state = shotState(index); return <div key={shot.index} className={`is-${state}`}>
                 <span>镜头 {index + 1}</span><em>{state === "done" ? "✓ 好了" : state === "now" ? "拍摄中" : state === "stuck" ? "停住了" : "排队"}</em>
-                <i><b style={{ width: state === "done" ? "100%" : state === "now" ? "45%" : "0%" }} /></i></div>; })}</div>
+                <i><b style={{ width: state === "done" ? "100%" : state === "now" ? "45%" : "0%" }} /></i></div>; })}</div>}
             </div>
+            {selected.realPipeline && STUCK.has(selected.status) && <AgentStage model={sceneStageModel(selected)} label="AI 导演组工作台" />}
             <div className="pv2-shots">{shots.map((shot, index) => { const src = shotVideos[`${selected.id}:${index}`]; const state = shotState(index);
               return state === "done" && src && src !== "error" ? <figure key={shot.index}><video src={src} muted controls preload="metadata" /><figcaption>镜头 {index + 1} ✓</figcaption></figure>
                 : <div key={shot.index} className={`pv2-shot-wait is-${state}`}>{state === "done" ? (src === "error" ? <Check size={28} /> : <LoaderCircle size={28} className="spin" />) : state === "now" ? <Clapperboard size={30} /> : state === "stuck" ? <AlertTriangle size={30} /> : <Hourglass size={28} />}<span>镜头 {index + 1} {state === "done" ? (src === "error" ? "画面打不开，成片里会有" : "加载画面") : state === "now" ? "拍摄中" : state === "stuck" ? "停住了" : "排队"}</span></div>; })}</div>

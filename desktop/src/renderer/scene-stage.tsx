@@ -1,0 +1,100 @@
+import { Clapperboard, Film, Image as ImageIcon, ImagePlus, MapPin, ScanEye, Sparkles } from "lucide-react";
+import type { StageAgent, StageCard, StageLog, StageModel, StageState } from "./AgentStage";
+
+// 场景效果视频（无人实拍 + AI 导演）的 AI 工作台：只从任务的真实状态推出看板、光标和日志。
+// 步骤顺序与主进程 advanceReal 一致：定妆照 → 等客户确认 → 导演写分镜 → 画场地 → 风险审查 → 并行拍镜头 → AI 检查 → 拼接加字幕。
+export type SceneStageTask = {
+  status: string; resumeStatus?: string; error?: string;
+  sheetStep?: boolean; sheetConfirmed?: boolean; directorStep?: boolean; directed?: boolean;
+  imagesReady?: Record<string, boolean>; shotsReady?: boolean[]; shotsRunning?: boolean[];
+  review?: { skipped?: boolean; shots: { ok: boolean; redone?: boolean }[] } | null;
+  crew?: { sides: string[]; survey: { widthM: number | null; canTurn: boolean } | null; risks: { index: number }[]; rewritten: boolean; fallback?: number[] } | null;
+  plan: { machine?: string; shots: { index: number; title: string; place?: string }[] };
+};
+
+const PHASE = { upload: 0, sheet: 1, confirm: 2, direct: 3, plate: 4, preflight: 5, shoot: 6, review: 7, finish: 8, done: 9 } as const;
+const STUCK = new Set(["needs_attention", "outcome_unknown"]);
+const CAMERA_COLORS = ["#fb923c", "#f59e0b", "#fbbf24", "#fdba74", "#f97316", "#fcd34d", "#fed7aa", "#ea580c"];
+
+function phaseOf(task: SceneStageTask, status: string) {
+  const plateNeeded = task.plan.shots.some((shot) => shot.place === "venue");
+  if (status === "uploading") return PHASE.upload;
+  if (status === "awaiting_sheet") return PHASE.confirm;
+  if (status === "directing") return PHASE.direct;
+  if (status === "imaging") {
+    if (task.sheetStep && !task.sheetConfirmed) return task.imagesReady?.sheet ? PHASE.confirm : PHASE.sheet;
+    if (task.directorStep && !task.directed) return PHASE.direct;
+    return plateNeeded && !task.imagesReady?.plate ? PHASE.plate : PHASE.preflight;
+  }
+  if (status === "submitting" || status === "generating") return PHASE.shoot;
+  if (status === "assembling") return task.directorStep && !task.review ? PHASE.review : PHASE.finish;
+  if (status === "packaging") return PHASE.finish;
+  if (status === "completed") return PHASE.done;
+  return PHASE.upload;
+}
+
+export function sceneStageModel(task: SceneStageTask): StageModel {
+  const stuck = STUCK.has(task.status);
+  const phase = phaseOf(task, stuck ? task.resumeStatus || "uploading" : task.status);
+  const plateNeeded = task.plan.shots.some((shot) => shot.place === "venue");
+  const at = (step: number): StageState => phase > step ? "done" : phase === step ? (stuck ? "fail" : "now") : "wait";
+  const shots = task.plan.shots;
+  const firstOpenShot = shots.findIndex((_, index) => !task.shotsReady?.[index]);
+  const shotState = (index: number): StageState => {
+    if (phase > PHASE.shoot || task.shotsReady?.[index]) return "done";
+    if (phase < PHASE.shoot) return "wait";
+    if (stuck) return index === firstOpenShot ? "fail" : "wait";
+    return task.shotsRunning?.[index] ? "now" : "wait";
+  };
+  const sheetState: StageState = phase === PHASE.confirm ? (stuck ? "fail" : "user") : at(PHASE.sheet);
+  const crew = task.crew;
+  const flagged = task.review?.shots.filter((shot) => !shot.ok && !shot.redone).length || 0;
+
+  const cards: StageCard[] = [
+    { id: "photos", label: "产品照", icon: <ImageIcon size={18} />, state: at(PHASE.upload) },
+    ...(task.sheetStep ? [{ id: "sheet", label: "定妆照", icon: <ImagePlus size={18} />, state: sheetState, detail: sheetState === "user" ? "等你确认" : undefined }] : []),
+    ...(task.directorStep ? [{ id: "board", label: "分镜", icon: <Sparkles size={18} />, state: phase === PHASE.preflight ? at(PHASE.preflight) : at(PHASE.direct),
+      detail: phase > PHASE.direct ? `${shots.length} 个镜头` : undefined }] : []),
+    ...(plateNeeded ? [{ id: "plate", label: "拍摄场地", icon: <MapPin size={18} />, state: at(PHASE.plate) }] : []),
+    ...shots.map((shot, index) => ({ id: `shot-${index}`, label: `镜头 ${index + 1}`, icon: <Clapperboard size={18} />, state: shotState(index), detail: shot.title })),
+    ...(task.directorStep ? [{ id: "review", label: "AI 检查", icon: <ScanEye size={18} />, state: at(PHASE.review),
+      detail: task.review && !task.review.skipped ? (flagged ? `${flagged} 个镜头要看` : "都没问题") : undefined }] : []),
+    { id: "final", label: "成片", icon: <Film size={18} />, state: at(PHASE.finish) }
+  ];
+
+  const agent = (id: string, name: string, color: string, card: string, state: StageState): StageAgent => ({ id, name, color, at: card, state });
+  const agents: StageAgent[] = [
+    agent("analyst", "产品分析师", "#22d3ee", task.sheetStep ? "sheet" : "photos", task.sheetStep ? (sheetState === "user" ? "done" : at(PHASE.sheet)) : at(PHASE.upload)),
+    ...(task.directorStep ? [agent("director", "导演", "#f472b6", "board", at(PHASE.direct))] : []),
+    ...(plateNeeded ? [agent("survey", "场景勘察", "#a3e635", "plate", at(PHASE.plate))] : []),
+    ...(task.directorStep ? [agent("risk", "风险审查", "#fb7185", "board", at(PHASE.preflight))] : []),
+    ...shots.map((_, index) => agent(`camera-${index}`, `摄影师 ${index + 1}`, CAMERA_COLORS[index % CAMERA_COLORS.length], `shot-${index}`, shotState(index))),
+    ...(task.directorStep ? [agent("qa", "质检", "#facc15", "review", at(PHASE.review))] : []),
+    agent("editor", "剪辑", "#a78bfa", "final", at(PHASE.finish))
+  ];
+
+  // Log: one line per step reached, in pipeline order; the step in progress reads as "now".
+  const log: StageLog[] = [];
+  const line = (id: string, who: string, color: string, state: StageState, now: string, done: string) => {
+    if (state === "wait") return;
+    log.push({ id, who, color, state, text: state === "done" ? done : state === "fail" ? `${now}，停住了` : now });
+  };
+  const sides = crew?.sides?.length ? `拍到${crew.sides.join("、")}` : "";
+  if (task.sheetStep) {
+    line("analyst", "产品分析师", "#22d3ee", sheetState === "user" ? "done" : at(PHASE.sheet), "看产品照，出四视角定妆照", ["定妆照出好了", sides].filter(Boolean).join(" · "));
+    if (phase >= PHASE.confirm) line("you", "你", "#fde047", sheetState === "user" ? "user" : phase > PHASE.confirm ? "done" : sheetState, "请看定妆照像不像，确认后开拍", "定妆照已确认");
+  }
+  if (task.directorStep) line("director", "导演", "#f472b6", at(PHASE.direct), "看定妆照，判断怎么拍、写分镜",
+    [task.plan.machine?.split(/[，,（(]/)[0], `${shots.length} 个镜头：${shots.map((shot) => shot.title).join(" / ")}`].filter(Boolean).join(" · "));
+  if (plateNeeded) line("survey", "场景勘察", "#a3e635", at(PHASE.plate), "画拍摄场地",
+    crew?.survey ? `场地宽约 ${crew.survey.widthM ?? "?"} 米 · ${crew.survey.canTurn ? "能转弯" : "只直行"}` : "场地画好了");
+  if (task.directorStep) line("risk", "风险审查", "#fb7185", at(PHASE.preflight), "逐镜查穿帮风险",
+    crew?.risks?.length ? `第 ${crew.risks.map((row) => row.index + 1).join("、")} 镜仍有风险` : crew?.fallback?.length ? `第 ${crew.fallback.map((index) => index + 1).join("、")} 镜换成稳妥拍法` : crew?.rewritten ? "让导演改过分镜，没有穿帮风险了" : "没发现穿帮风险");
+  shots.forEach((shot, index) => line(`camera-${index}`, `摄影师 ${index + 1}`, CAMERA_COLORS[index % CAMERA_COLORS.length], shotState(index), `拍镜头 ${index + 1}「${shot.title}」`, `镜头 ${index + 1}「${shot.title}」拍好了`));
+  if (task.directorStep) line("qa", "质检", "#facc15", at(PHASE.review), "逐镜检查画面",
+    task.review?.skipped ? "这次没能自动检查" : flagged ? `${flagged} 个镜头可能要重拍` : "每个镜头都没发现明显问题");
+  line("editor", "剪辑", "#a78bfa", at(PHASE.finish), "拼接镜头、加字幕", "成片好了");
+  if (stuck && task.error) log.push({ id: "error", who: "原因", color: "#f87171", state: "fail", text: task.error });
+  return { cards, agents, log };
+}
+
