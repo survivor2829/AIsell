@@ -428,7 +428,8 @@ def follow_script_footage(batch):
     return pool
 
 
-def follow_script_phrases(domain, batch, narration, *, avoid=(), history=(), headroom=1.0, offset=0.0, phrase_texts=None):
+def follow_script_phrases(domain, batch, narration, *, avoid=(), history=(), headroom=1.0, offset=0.0, phrase_texts=None,
+                          opening_avoid=()):
     """Give each confirmed sentence enough following footage, spread across the materials.
 
     No model or frame is consulted: shots keep material and source-time order, each
@@ -537,8 +538,71 @@ def follow_script_phrases(domain, batch, narration, *, avoid=(), history=(), hea
     require(fresh, 'narrated_duplicate', '镜头组合与已有作品过于相似，请补充素材。')
     distinct = [option for option in fresh if not any(near_duplicate(option[1], old) for old in avoid)]
     groups = (distinct or fresh)[0][0]
-    return [{'text': text.strip(), 'shot_ids': [pool[index]['segment_id'] for index in range(start, end)]}
-            for text, (start, end) in zip(texts, groups)]
+    phrases = [{'text': text.strip(), 'shot_ids': [pool[index]['segment_id'] for index in range(start, end)]}
+               for text, (start, end) in zip(texts, groups)]
+    return lead_with_hook(phrases, pool, opening_avoid)
+
+
+HOOK_PUNCTUATION = re.compile(r'[\W_]+')  # punctuation and spaces; Chinese characters count as word characters
+
+
+def _bigrams(text):
+    text = HOOK_PUNCTUATION.sub('', str(text or ''))
+    return {text[index:index + 2] for index in range(len(text) - 1)}
+
+
+def lead_with_hook(phrases, pool, opening_avoid=()):
+    """Open on the shot that best shows the first sentence (user 2026-11-24: 前三秒要抓人).
+
+    A batch's works opened on the same first window of the first material, often an idle
+    walk-in, while a shot where someone says the very pain point sat later. The first
+    sentence is matched against what each unused shot says and shows (its own speech,
+    tags, description); the best match that no other work of the batch opens on goes
+    first. Only shots not already placed and not overlapping a placed source range are
+    used, so later paragraphs keep their footage and no window repeats. No match: as before.
+    """
+    if not phrases or not phrases[0]['shot_ids']:
+        return phrases
+    wanted = _bigrams((phrases[0]['text'] or '')[:40])
+    if len(wanted) < 2:
+        return phrases
+    placed = {shot_id for phrase in phrases for shot_id in phrase['shot_ids']}
+    by_id = {shot['segment_id']: shot for shot in pool}
+    ranges = [(by_id[shot_id]['asset_id'], by_id[shot_id]['source_start_ms'], by_id[shot_id]['source_end_ms'])
+              for shot_id in placed if shot_id in by_id]
+    taken = [(shot.get('asset_id'), shot.get('source_start_ms'), shot.get('source_end_ms')) for shot in opening_avoid if isinstance(shot, dict)]
+
+    def overlaps(shot, windows):
+        return any(shot['asset_id'] == asset and shot['source_start_ms'] < end and start < shot['source_end_ms']
+                   for asset, start, end in windows)
+
+    def seen(shot):
+        return _bigrams(' '.join([str(shot.get('verifiable_text') or ''), str(shot.get('description') or ''),
+                                  ' '.join(str(tag) for tag in shot.get('tags') or [])]))
+
+    # Words most of the footage shares (the product, the venue) say nothing about which
+    # shot fits; only the rarer ones ("水痕", "订单") point at the moment the sentence names.
+    seen_by_id = {shot['segment_id']: seen(shot) for shot in pool}
+    frequency = {}
+    for words in seen_by_id.values():
+        for word in words & wanted:
+            frequency[word] = frequency.get(word, 0) + 1
+    common = max(2, len(pool) // 5)
+    wanted = {word for word in wanted if frequency.get(word, 0) <= common}
+    scored = []
+    for shot in pool:
+        if shot['segment_id'] in placed or shot.get('media_kind') != 'video' or shot.get('replay_of'):
+            continue
+        if overlaps(shot, ranges) or overlaps(shot, taken):
+            continue
+        score = len(wanted & seen_by_id[shot['segment_id']])
+        if score >= 4:  # about five characters said alike; a shared topic word alone is not a hook
+            scored.append((score, float(shot.get('quality_score') or 0), shot['segment_id']))
+    if not scored:
+        return phrases
+    best = max(scored)[2]
+    first = dict(phrases[0], shot_ids=[best] + phrases[0]['shot_ids'])
+    return [first] + phrases[1:]
 
 
 def material_paragraph_counts(footage, paragraphs):
@@ -564,9 +628,11 @@ def material_paragraph_counts(footage, paragraphs):
     return counts
 
 
-def follow_script_candidate(domain, batch, narration, title, direction, *, avoid=(), history=(), headroom=1.0, offset=0.0, phrase_texts=None):
+def follow_script_candidate(domain, batch, narration, title, direction, *, avoid=(), history=(), headroom=1.0, offset=0.0, phrase_texts=None,
+                            opening_avoid=()):
     """A renderable candidate in the same state as one that passed review, marked follow_script."""
-    phrases = follow_script_phrases(domain, batch, narration, avoid=avoid, history=history, headroom=headroom, offset=offset, phrase_texts=phrase_texts)
+    phrases = follow_script_phrases(domain, batch, narration, avoid=avoid, history=history, headroom=headroom, offset=offset, phrase_texts=phrase_texts,
+                                    opening_avoid=opening_avoid)
     prepared = domain._normalize_candidate({'title': title, 'phrases': phrases,
                                             'shot_ids': [ref for phrase in phrases for ref in phrase['shot_ids']],
                                             **direction}, batch, list(history))
@@ -599,7 +665,9 @@ def arrange_follow_script(domain, batch, candidate):
         avoid=[] if confirmed else others, history=[] if confirmed else domain._history(batch['batch_id']),
         # A measured voice overflow needs more footage for the same words.
         headroom=1.2 if candidate.get('_voice_capacity_retry') else 1.0,
-        offset=stagger_offset(batch, index), phrase_texts=previous_texts if reuse_phrases else None)
+        offset=stagger_offset(batch, index), phrase_texts=previous_texts if reuse_phrases else None,
+        # Every work of the batch opens on its own shot, confirmed copies included.
+        opening_avoid=[shots[0] for shots in others if shots])
     updated.update({key: copy.deepcopy(candidate[key]) for key in
                     ('candidate_id', 'revision', 'narration', '_confirmed_script', 'source_script_id',
                      'production_index', '_brief_review_hash', '_user_supplied') if key in candidate})
@@ -655,7 +723,7 @@ def rewrite_variation(domain, batch, selected):
             return '与原文或已有改写过于相似；请换开头、表达和段落顺序。'
         try:
             follow_script_candidate(domain, batch, narration.strip(), title.strip(), direction,
-                                    avoid=avoid, history=history, offset=offset)
+                                    avoid=avoid, history=history, offset=offset, opening_avoid=[shots[0] for shots in avoid if shots])
         except (ContentEngineError, KeyError, TypeError, ValueError) as invalid:
             return str(getattr(invalid, 'message', invalid))
         return None
@@ -679,7 +747,7 @@ def rewrite_variation(domain, batch, selected):
     problem = issue(result)
     require(problem is None, 'narrated_variation_invalid', f'AI 改写未通过格式检查，已跳过本条：{problem}')
     candidate = follow_script_candidate(domain, batch, result['narration'].strip(), result['title'].strip(),
-                                        direction, avoid=avoid, history=history, offset=offset)
+                                        direction, avoid=avoid, history=history, offset=offset, opening_avoid=[shots[0] for shots in avoid if shots])
     candidate['narration'] = result['narration'].strip()
     batch['candidates'].append(candidate)
     bind_planned_candidate(batch, candidate)
