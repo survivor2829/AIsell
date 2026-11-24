@@ -213,6 +213,21 @@ console.log("WeChat 4.2 search popup self-check passed");
   const unread = observe([line("联 系 人", 92, 83, 140, 95), line("何 气 牛 财", 136, 118, 200, 131), line("搜 一 搜 何 气 生 财", 92, 179, 230, 191)]);
   const picked = firstLocalRowFallback(unread, byName("✳💰何气生财"), { status: "not_found", rule_id: "search-r015" });
   assert.equal(picked?.mode, "name_first_local_row"); assert.ok(picked.candidate.y > 95 && picked.candidate.y < 179, "the contact row, never 搜一搜");
+  // Field 47d2578f (2026-11-24): a short box at the row's right end, 2 px above the name, was
+  // pressed instead of the name and WeChat did not open the chat. The name's own line is pressed.
+  const rightEndBox = observe([line("联 系 人", 92, 83, 140, 95), line("1 3 8 0 0 0 0 2 2 2 2 王", 136, 130, 240, 144),
+    line("A i", 368, 128, 383, 143), line("搜 索 网 络 结 果", 92, 180, 200, 191)]);
+  const name = firstLocalRowFallback(rightEndBox, byName("13800002222王"), { status: "not_found", rule_id: "search-r015" });
+  assert.equal(name?.mode, "name_first_local_row");
+  assert.deepEqual([name.candidate.left, name.candidate.right, name.candidate.x], [136, 240, 188], "the name, not the row's right end");
+  // Real dropdown of the test account (2026-11-24): the name equals the query and stays the row's line.
+  const realRow = observe([line("常 便 用", 104, 82, 139, 94), line("城 胜 [ 呲 牙 ]", 136, 130, 200, 143), line("群 聊", 92, 178, 116, 190),
+    line("i 局 2", 400, 348, 424, 361), line("搜 索 网 络 结 果", 118, 438, 190, 450)]);
+  const real = firstLocalRowFallback(realRow, byName("城胜[呲牙]"), { status: "not_found", rule_id: "search-r015" });
+  assert.deepEqual([real?.candidate.left, real?.candidate.x, real?.candidate.y], [136, 168, 137]);
+  // Only the ⓘ left in the row (the name unread): nothing is pressed rather than the info button.
+  const onlyInfo = observe([line("联 系 人", 92, 83, 140, 95), line("A i", 368, 128, 383, 143), line("搜 索 网 络 结 果", 92, 180, 200, 191)]);
+  assert.equal(firstLocalRowFallback(onlyInfo, byName("13800002222王"), { status: "not_found", rule_id: "search-r015" }), null);
   // Only network rows: nothing is clicked.
   const networkOnly = observe([line("搜 一 搜 何 气 生 财", 92, 118, 230, 131), line("搜 索 网 络 结 果", 92, 150, 200, 163)]);
   assert.equal(firstLocalRowFallback(networkOnly, byName("何气生财"), { status: "not_found", rule_id: "search-r015" }), null);
