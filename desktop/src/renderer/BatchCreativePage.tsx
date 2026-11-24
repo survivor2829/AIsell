@@ -541,7 +541,7 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
         lines={[scriptFlow && !batch.script_confirmation ? `已有 ${options.length} 份文案` : `已做好 ${completed} / ${batch.target_count || "待定"} 条`]}
         rows={[]} hideStages />
       {/* AI 工作台（用户 2026-11-24）：素材理解、编剧、配音、配乐、封面、剪辑各是一个光标，取代原来的阶段条和每条进度行。 */}
-      <AgentStage model={mixStageModel({ batch, candidates: batch.script_confirmation ? shownCandidates : [], running: running || submitting, stopped: !running && !submitting && !ended, ended, scriptCount: options.length })} label="AI 剪辑组工作台" />
+      <AgentStage model={mixStageModel({ batch, candidates: shownCandidates, running, submitting, ended, scriptCount: options.length })} label="AI 剪辑组工作台" />
       <div className="batch-progress-content">
         {ended && <p className="batch-progress-message" role="status">{completed ? "已完成的作品可以查看和导出。" : "本次没有产出成片。"}请先查看下方原因，再决定是否调整素材和文案；软件不会自动重试。</p>}
         {!ended && (submitting || activity) && <div className="batch-live-progress">

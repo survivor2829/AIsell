@@ -45,7 +45,7 @@ export function AgentStage({ model, label }: { model: StageModel; label: string 
           const slot = crowd.indexOf(agent);
           // Lower right of the card, clear of its title and detail line.
           // Kept inside the board so the name tag never hangs off the right edge.
-          next[agent.id] = { x: Math.min(box.left - root.left + box.width * 0.58 - slot * 10, root.width - CURSOR_WIDTH), y: box.top - root.top + box.height - 26 - slot * 6 };
+          next[agent.id] = { x: Math.max(0, Math.min(box.left - root.left + box.width * 0.58, root.width - CURSOR_WIDTH) - slot * 12), y: box.top - root.top + box.height - 26 - slot * 8 };
         } else if (dockBox) {
           const index = parked.indexOf(agent);
           const perRow = Math.max(1, Math.floor((dockBox.width - 8) / DOCK_SLOT));
