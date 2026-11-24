@@ -2301,6 +2301,16 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertEqual(3, len(self.renderer.rendered_recipes) - before)
         self.assertTrue(all(r["audio_mode"] == "tts_only" for r in self.renderer.rendered_recipes))
 
+    def test_works_of_one_batch_take_covers_from_different_shots(self):
+        from content_engine.cover_frame import recipe_cover_segment, segment_window
+        b = self.run_samples(self.create(3))
+        self.assertEqual(3, sum(c["status"] == "completed" for c in b["candidates"]))
+        windows = [segment_window(recipe_cover_segment(r)) for r in self.renderer.rendered_recipes]
+        self.assertEqual(3, len(windows))
+        for first, second in itertools.combinations(windows, 2):
+            self.assertFalse(first[0] == second[0] and first[1] < second[2] and second[1] < first[2],
+                             (first, second))
+
     def test_insufficient_fifty_renders_available_samples_and_keeps_target(self):
         b = self.run_samples(self.create(50))
         self.assertEqual("completed_with_errors", b["status"])

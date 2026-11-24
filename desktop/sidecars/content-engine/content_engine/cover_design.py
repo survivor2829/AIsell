@@ -71,9 +71,11 @@ def next_design(row, recipe):
             "style": style, "request_id": str(uuid.uuid4())}
 
 def _clean_source_frame(domain, recipe, target):
-    """A frame of the first source clip (no captions or title bars), for mixed videos."""
+    """A frame of the work's cover clip (no captions or title bars), for mixed videos."""
+    from .cover_frame import recipe_cover_segment
     segments = recipe.get("visual_segments") or ([recipe["voice_segment"]] if recipe.get("voice_segment") else [])
-    segment = next((item for item in segments if item.get("asset_id")), None)
+    chosen = recipe_cover_segment(recipe) if recipe.get("visual_segments") else None
+    segment = chosen if chosen and chosen.get("asset_id") else next((item for item in segments if item.get("asset_id")), None)
     if segment is None:
         return False
     try:

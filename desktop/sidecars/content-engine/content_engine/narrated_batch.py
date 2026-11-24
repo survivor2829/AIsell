@@ -4975,6 +4975,9 @@ class NarratedBatchDomain:
                  "video_template": (b.get("settings") or {}).get("video_template") or "topic_fixed",
                  "used_music_track_ids": [item["music_track_id"] for item in b["candidates"]
                                           if item.get("status") == "completed" and item.get("music_track_id")],
+                 "narrated_cover_avoid": [item["cover_window"] for item in b["candidates"]
+                                          if item.get("candidate_id") != c["candidate_id"]
+                                          and item.get("status") == "completed" and item.get("cover_window")],
                  "narrated_minimum_duration_ms": b.get("settings", {}).get("minimum_duration_seconds", 0) * 1000,
                  "narrated_preserve_shot_duration": bool(b.get("_story_planning_version") == 2),
                  "narrated_candidate_id": c["candidate_id"], "narrated_snapshots": b["_snapshots"],
@@ -5072,6 +5075,10 @@ class NarratedBatchDomain:
                 c["duration_ms"] = generated["duration_ms"]
                 private = self.d._json_object(run["private_state_json"])
                 c["actual_shots"] = (private.get("material_timeline") or {}).get("selected_segments") or c["shots"]
+                from .cover_frame import cover_segment, segment_window
+                cover = cover_segment(c["actual_shots"], private.get("narrated_cover_avoid") or [])
+                if cover is not None:
+                    c["cover_window"] = list(segment_window(cover))
                 public = self.d._json_object(run["public_plan_json"])
                 selection = public.get("music") or public.get("musicSelection") or private.get("music_selection") or {}
                 if selection.get("mode") == "none" and selection.get("message"):

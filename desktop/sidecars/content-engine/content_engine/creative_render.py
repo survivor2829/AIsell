@@ -2174,8 +2174,8 @@ class FFmpegCreativeRenderer:
         if kind == "course":
             segment = recipe.get("voice_segment") or None
         elif kind == "mix":
-            visuals = recipe.get("visual_segments") or []
-            segment = visuals[0] if visuals else None
+            from .cover_frame import recipe_cover_segment
+            segment = recipe_cover_segment(recipe)
         if not segment or not segment.get("asset_id"):
             return Path(fallback), 0.5
         source = Path(resolve_asset_path(segment["asset_id"]))

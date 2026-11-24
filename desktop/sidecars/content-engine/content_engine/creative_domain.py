@@ -6343,6 +6343,12 @@ class CreativeDomain:
                 if source_id else {"mode": "local_frame", "status": "pending"})
         if supplemental_image is not None:
             recipe["supplemental_image"] = supplemental_image
+        if recipe["packaging"]["cover"].get("mode") != "reuse":
+            # A batch's works share their opening shot; each cover avoids the earlier ones.
+            from .cover_frame import cover_segment
+            chosen = cover_segment(visual_segments, private_state.get("narrated_cover_avoid") or [])
+            if chosen is not None and chosen.get("segment_id"):
+                recipe["cover_segment_id"] = chosen["segment_id"]
         recipe["skeleton_id"] = self._skeleton_id(recipe)
         return recipe
 
