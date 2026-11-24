@@ -1,6 +1,5 @@
 import { AlertTriangle, ArrowLeft, ArrowRight, Ban, Bot, CalendarClock, Check, CheckCircle2, ChevronRight, CircleHelp, Clock3, ImagePlus, List, ListTodo, Pause, Pencil, Play, Plus, Repeat2, Send, SkipForward, ThumbsUp, Trash2, Unlink, X } from "lucide-react";
-import { AgentStage } from "./AgentStage";
-import { touchStageModel } from "./touch-stage";
+import { touchRole } from "./touch-stage";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { momentsProgressLabel } from "./MomentsCampaignPanel";
 import { XiaoxiSprite, type SpriteActivity } from "./XiaoxiSprite";
@@ -681,12 +680,6 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
       {!state.enabled && bulkRetryTasks.length > 0 && <button type="button" className="text-button" data-xiaoxi-workflow-start disabled={busy || planLocked} onClick={() => void retryAll()}>全部重新加入并继续（{bulkRetryTasks.length} 项 / {bulkRetryContacts} 人）</button>}
     </div>
 
-    {/* AI 工作台（用户 2026-11-24）：触达进行中时，按执行器报的当前步骤显示写话术/找人/核对/发送/核验谁在干。 */}
-    {state.enabled && current?.type === "touch" && state.currentExecution?.taskId === current.id && <AgentStage label="AI 触达组工作台" model={touchStageModel({
-      stage: state.currentExecution.stage, partKind: state.currentExecution.partKind, partIndex: state.currentExecution.partIndex, partTotal: state.currentExecution.partTotal,
-      textSent: state.currentExecution.textSent, contactIndex: state.currentExecution.contactIndex, contactTotal: state.currentExecution.contactTotal,
-      hasImages: Boolean(current.images?.length), aiPolish: Boolean(current.aiPolish), done: current.progress.done, total: current.progress.total, skipped: current.skipped_records?.length || 0,
-      stepLabel: TOUCH_STAGE_LABELS[state.currentExecution.stage] || "正在处理" })} />}
     {(error || state.error) && <div className="workflow-alert" role="alert">{error || state.error}</div>}
     {state.classificationQuality?.status === "needs_review" && <div className="workflow-alert" role="alert">
       当前构建的失败分级表待补全：本轮已暂停 {state.classificationQuality.unknownPauseCount} 次。未知码：{state.classificationQuality.unknownReasonCodes.join("、")}。请导出诊断信息交技术人员处理。
@@ -944,11 +937,18 @@ export function FloatingWorkflowWindow() {
   const moments = sync || state.phase === "replying" ? null : state.momentsProgress;
   const wechatActive = Boolean(state.enabled || sync?.running);
   const outside = (state.external || [])[0];
+  // 触达时小玺说出谁在干哪一步（用户 2026-11-24）：角色按执行器真实报的段与步骤，下面一行是第几位、哪一段、用时。
+  const execution = state.currentExecution;
+  const touchStep = current?.type === "touch" && execution?.taskId === current.id ? execution : null;
+  const role = touchStep ? touchRole(touchStep) : "";
+  const stepTitle = role && touchStep ? `${role}：${TOUCH_STAGE_LABELS[touchStep.stage] || "正在处理"}` : "";
+  const touchDetail = touchStep ? [touchStep.contactIndex && touchStep.contactTotal ? `第 ${touchStep.contactIndex}/${touchStep.contactTotal} 位客户` : "",
+    touchStep.partKind === "image" ? `第 ${Math.max(1, (touchStep.partIndex || 2) - 1)} 张图片` : TOUCH_PART_LABELS[touchStep.partKind] || ""].filter(Boolean).join(" · ") : "";
   const activity: SpriteActivity | null = wechatActive ? {
     kind: "wechat",
-    title: sync?.running ? (SYNC_STAGE_LABELS[sync.stage] || "正在读取微信联系人") : workflowStatusText(state),
+    title: sync?.running ? (SYNC_STAGE_LABELS[sync.stage] || "正在读取微信联系人") : stepTitle || workflowStatusText(state),
     detail: moments && current ? `已赞 ${moments.liked} · 已评 ${moments.commented}`
-      : executionDetail || (state.waitingTaskId ? waitingDetail : "") || (current && current.title !== TASK_LABELS[current.type] ? current.title : ""),
+      : (stepTitle && touchDetail) || executionDetail || (state.waitingTaskId ? waitingDetail : "") || (current && current.title !== TASK_LABELS[current.type] ? current.title : ""),
     ...(!sync && state.phase !== "replying" && displayed && displayed.progress?.total > 0 ? { done: displayed.progress.done, total: displayed.progress.total } : {}),
     pausable: state.enabled && state.phase !== "pausing",
     spacePause: state.spacePauseReady === true
