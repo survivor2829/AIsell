@@ -36,6 +36,12 @@
 .home-reel { border-radius: clamp(24px, 1.8vw, 38px); }
 .home-phone { position: relative; width: clamp(150px, min(17vw, 31vh), 420px); aspect-ratio: 9 / 16; overflow: hidden; border: clamp(4px, .35vw, 7px) solid #fff; border-radius: clamp(24px, 1.8vw, 38px); box-shadow: 0 18px 36px #17203326; background: #f3e6e8; }
 .home-phone img, .home-phone video { display: block; width: 100%; height: 100%; object-fit: cover; }
+button.home-phone { padding: 0; cursor: zoom-in; transition: transform .18s ease, box-shadow .18s ease; }
+button.home-phone:hover { transform: translateY(-3px) scale(1.02); box-shadow: 0 24px 44px #1720333a; }
+button.home-phone:focus-visible { outline: 3px solid var(--brand-red, #d9343f); outline-offset: 3px; }
+.home-phone-zoom { position: absolute; right: 10px; bottom: 10px; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: #000000a0; color: #fff; opacity: .85; transition: opacity .18s; }
+button.home-phone:hover .home-phone-zoom { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { button.home-phone, button.home-phone:hover { transition: none; transform: none; } }
 .home-phone span { position: absolute; left: 10px; top: 10px; display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: #000000a0; color: #fff; font-size: clamp(12px, .8vw, 15px); font-weight: 800; }
 .home-phone span::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #ff3b3b; }
 
