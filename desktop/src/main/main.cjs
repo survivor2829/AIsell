@@ -1088,6 +1088,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       ...runtime,
       logger,
       createSpacePauseHotkey: require("./space-pause-hotkey.cjs").createSpacePauseHotkey,
+      createInputMethodGuard: (guardOptions) => require("../../rpa/active_touch/wechat_input_method.cjs").createWechatInputMethodGuard(guardOptions),
       appVersion: components.businessVersion(app),
       buildId: build.buildId || process.env.XIAOXI_BUILD_ID || "",
       buildCommit: build.buildCommit || process.env.XIAOXI_BUILD_COMMIT || "",
