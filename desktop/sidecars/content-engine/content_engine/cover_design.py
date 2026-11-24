@@ -71,14 +71,19 @@ def next_design(row, recipe):
             "style": style, "request_id": str(uuid.uuid4())}
 
 def _clean_source_frame(domain, recipe, target):
-    """A frame of the first source clip (no captions or title bars), for mixed videos."""
+    """A frame of the work's cover clip (no captions or title bars), for mixed videos."""
+    from .cover_frame import recipe_cover_segment
     segments = recipe.get("visual_segments") or ([recipe["voice_segment"]] if recipe.get("voice_segment") else [])
-    segment = next((item for item in segments if item.get("asset_id")), None)
+    chosen = recipe_cover_segment(recipe) if recipe.get("visual_segments") else None
+    segment = chosen if chosen and chosen.get("asset_id") else next((item for item in segments if item.get("asset_id")), None)
     if segment is None:
         return False
     try:
         source = Path(domain._resolve_render_asset_path(segment["asset_id"]))
-        seek = [] if segment.get("media_kind") == "image" else ["-ss", f"{max(0, int(segment.get('start_ms') or 0)) / 1000 + 0.5:.3f}"]
+        start_ms = max(0, int(segment.get("start_ms") or 0))
+        end_ms = int(segment.get("end_ms") or 0)
+        offset_ms = 500 if not end_ms or end_ms - start_ms >= 1_000 else 0
+        seek = [] if segment.get("media_kind") == "image" else ["-ss", f"{(start_ms + offset_ms) / 1000:.3f}"]
         domain.analyzer._command([domain.analyzer.ffmpeg_path, "-y", *seek, "-i", str(source), "-frames:v", "1", "-q:v", "2", str(target)])
         return target.is_file() and target.stat().st_size > 0
     except (ContentEngineError, OSError, KeyError):

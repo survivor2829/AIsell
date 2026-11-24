@@ -3148,6 +3148,15 @@ class CreativeDomain:
             private_state["reuse_cover_generated_video_id"] = current["generated_video_id"] or private_state.get("reuse_cover_generated_video_id") or ""
         else:
             private_state.pop("reuse_cover_generated_video_id", None)
+            if private_state.get("narrated_batch_id"):
+                # A redone work picks its cover against the batch's covers as they are now.
+                from .narrated_batch import NarratedBatchDomain
+                batches = NarratedBatchDomain(self)
+                try:
+                    private_state["narrated_cover_avoid"] = batches.cover_avoid(
+                        batches._load(private_state["narrated_batch_id"]), private_state.get("narrated_candidate_id"))
+                except ContentEngineError:
+                    pass
         next_voice_persona_id = current["selected_voice_persona_id"]
         next_music_track_id = current["selected_music_track_id"]
         for field in ("qualityReport", "generatedVideoId", "attention"):
@@ -6343,6 +6352,12 @@ class CreativeDomain:
                 if source_id else {"mode": "local_frame", "status": "pending"})
         if supplemental_image is not None:
             recipe["supplemental_image"] = supplemental_image
+        if recipe["packaging"]["cover"].get("mode") != "reuse":
+            # A batch's works share their opening shot; each cover avoids the earlier ones.
+            from .cover_frame import cover_segment
+            chosen = cover_segment(visual_segments, private_state.get("narrated_cover_avoid") or [])
+            if chosen is not None and chosen.get("segment_id"):
+                recipe["cover_segment_id"] = chosen["segment_id"]
         recipe["skeleton_id"] = self._skeleton_id(recipe)
         return recipe
 

@@ -2301,6 +2301,26 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertEqual(3, len(self.renderer.rendered_recipes) - before)
         self.assertTrue(all(r["audio_mode"] == "tts_only" for r in self.renderer.rendered_recipes))
 
+    def test_works_of_one_batch_take_covers_from_different_shots(self):
+        from content_engine.cover_frame import recipe_cover_segment, segment_window
+        b = self.run_samples(self.create(3))
+        self.assertEqual(3, sum(c["status"] == "completed" for c in b["candidates"]))
+        windows = [segment_window(recipe_cover_segment(r)) for r in self.renderer.rendered_recipes]
+        self.assertEqual(3, len(windows))
+        for first, second in itertools.combinations(windows, 2):
+            self.assertFalse(first[0] == second[0] and first[1] < second[2] and second[1] < first[2],
+                             (first, second))
+        # A work made before 1.3.57 (no recorded choice) counts as its first shot.
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        b = domain._load(b["batch_id"])
+        first = b["candidates"][0]
+        recipe = json.loads(domain.db.execute("SELECT recipe_json FROM generated_videos WHERE id=?",
+                                              (first["generated_video_id"],)).fetchone()[0])
+        recipe.pop("cover_segment_id", None)
+        domain.db.execute("UPDATE generated_videos SET recipe_json=? WHERE id=?", (json.dumps(recipe), first["generated_video_id"]))
+        avoid = domain.cover_avoid(b, "someone-else")
+        self.assertIn(list(segment_window(recipe["visual_segments"][0])), avoid)
+
     def test_insufficient_fifty_renders_available_samples_and_keeps_target(self):
         b = self.run_samples(self.create(50))
         self.assertEqual("completed_with_errors", b["status"])
