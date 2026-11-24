@@ -893,6 +893,12 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         if (result?.finished_video_id !== finishedVideoId) throw new Error("finished video mismatch");
         return require("./content-engine-ipc.cjs").resolvedAbsolutePath(result);
       },
+      // What the finished video says, for writing its publish copy; an older engine gives nothing.
+      resolveFinishedFacts: async (finishedVideoId) => {
+        const result = await contentEngineController.resolveFinishedPath(finishedVideoId);
+        if (result?.finished_video_id !== finishedVideoId) throw new Error("finished video mismatch");
+        return { spoken_text: String(result.spoken_text || ""), brand_name: String(result.brand_name || "") };
+      },
       // The finished video's own cover, published with it; an engine without cover paths gives none.
       resolveFinishedCover: async (finishedVideoId) => {
         const result = await contentEngineController.resolveFinishedPath(finishedVideoId);

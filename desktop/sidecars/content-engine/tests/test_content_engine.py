@@ -375,6 +375,43 @@ class ServiceTests(unittest.TestCase):
         cover.unlink()
         self.assertEqual("", self.service.resolve_finished_path(finished["finished_video_id"])["cover_path"], "a missing cover file is left out")
 
+    def test_finished_resolution_carries_what_the_video_says_for_copy(self):
+        # Publish copy written from the title alone was too vague (customers, 2026-11-24).
+        output = self.root / "exports" / "spoken.mp4"
+        output.parent.mkdir(exist_ok=True)
+        output.write_bytes(b"finished")
+        recipe = {"captions": [{"text": "洗地机一趟"}, {"text": "洗一大片。"}], "packaging": {"brand": {"name": "新奔"}}}
+        connection = self.service.connection
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute(
+            "INSERT INTO generated_videos (id, project_id, kind, status, selection_signature, recipe_json, duration_ms, thumbnail_path, created_at, updated_at)"
+            " VALUES ('generated_video_s', 'project_x', 'mix', 'completed', 's', ?, 1000, NULL, 'now', 'now')", (json.dumps(recipe),))
+        connection.execute("PRAGMA foreign_keys=ON")
+        finished = self.service.register_finished(str(output), metadata={"generated_video_id": "generated_video_s"})
+        resolved = self.service.resolve_finished_path(finished["finished_video_id"])
+        self.assertEqual("洗地机一趟洗一大片。", resolved["spoken_text"])
+        self.assertEqual("新奔", resolved["brand_name"])
+        # A video without a recipe (scene video) uses the subtitles beside it.
+        scene = self.root / "exports" / "scene.mp4"
+        scene.write_bytes(b"finished")
+        scene.with_suffix(".srt").write_text(chr(10).join(["1", "00:00:00,000 --> 00:00:02,000", "扫吸一体", "",
+                                                         "2", "00:00:02,000 --> 00:00:04,000", "不扬尘", ""]), encoding="utf-8")
+        plain = self.service.register_finished(str(scene), metadata={})
+        resolved = self.service.resolve_finished_path(plain["finished_video_id"])
+        self.assertEqual("扫吸一体不扬尘", resolved["spoken_text"])
+        self.assertEqual("", resolved["brand_name"])
+        # Cue text that is only digits stays; English cues keep a space; odd metadata never fails publishing.
+        digits = self.root / "exports" / "digits.mp4"
+        digits.write_bytes(b"finished")
+        digits.with_suffix(".srt").write_text(chr(10).join(["1", "00:00:00,000 --> 00:00:01,000", "30", "",
+                                                          "2", "00:00:01,000 --> 00:00:02,000", "分钟洗完 clean", "",
+                                                          "3", "00:00:02,000 --> 00:00:03,000", "fast", ""]), encoding="utf-8")
+        odd = self.service.register_finished(str(digits), metadata={})
+        connection.execute("UPDATE finished_videos SET metadata_json='[]' WHERE id=?", (odd["finished_video_id"],))
+        resolved = self.service.resolve_finished_path(odd["finished_video_id"])
+        self.assertEqual(str(digits.resolve()), resolved["absolute_path"])
+        self.assertEqual("30分钟洗完 clean fast", resolved["spoken_text"])
+
     def test_pause_is_idempotent_and_resume_clears_restart_error(self):
         private_path = str((self.root / "private" / "lesson.mp4").resolve())
         task = self.service.create_task("course_clipping", {})
