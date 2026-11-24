@@ -46,7 +46,10 @@ function failureDetails(status, roots) {
     syscall_kind: identifier(failure.syscall),
     location_kind: identifier(locationKind(failure.path, roots)),
     cleanup_code: identifier(failure.cleanupCode),
-    frames_code: frames(failure.stack)
+    frames_code: frames(failure.stack),
+    // "python.exe:own" — which processes never exited (update_workers_still_running).
+    remaining_code: (Array.isArray(failure.processes) ? failure.processes : []).slice(0, 12)
+      .map((row) => identifier(`${row?.name}:${row?.kind}`, "x")).filter(Boolean)
   };
   // Empty values would reach the report as hashes of nothing.
   return Object.fromEntries(Object.entries(details).filter(([, value]) => Array.isArray(value) ? value.length : value));
