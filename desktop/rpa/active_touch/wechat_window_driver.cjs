@@ -1273,25 +1273,26 @@ if (-not (Test-XiaoxiUserIdle)) { Stop-ForActiveUser $matched.pid $hWnd; exit }
 # Field (47d2578f, 2026-11-24): WeChat's 搜一搜 side panel was left open (the customer's own search) and its
 # changing content made a chat that had not changed fail the pre-send check (atomic_conversation_changed,
 # 13 times in an hour; the panel is on every one of those screenshots). The panel is a browser tab of
-# WeChat's helper process embedded in the main window. Only that panel, only when its page is 搜一搜,
-# and only its own tab 关闭 button (UI Automation, no mouse) is pressed, once; a cheap Win32 check
-# skips everything when no panel is embedded, and the walk never enters the web page.
-if (-not ("XiaoxiEmbeddedPanel" -as [type])) {
+# WeChat's helper process embedded in the main window. Its search tabs (搜一搜, AI搜索) are closed one by one
+# with each tab's own 关闭 button (UI Automation, no mouse); a page that is not a WeChat search stops it.
+# A cheap Win32 check skips everything when no panel is embedded; the walk never enters the web page.
+if (-not ("XiaoxiSearchPanelWindow" -as [type])) {
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
-public static class XiaoxiEmbeddedPanel {
+public static class XiaoxiSearchPanelWindow {
   delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
   [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, EnumProc proc, IntPtr lParam);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
-  [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr hWnd);
-  // The first visible direct child of WeChat's window that belongs to another process (the embedded panel).
+  [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+  // The embedded panel: a visible window directly under WeChat's window (GA_PARENT; GetParent answers 0
+  // for it) that belongs to another process.
   public static IntPtr Find(IntPtr main, uint wechatPid) {
     IntPtr found = IntPtr.Zero;
     EnumChildWindows(main, (h, l) => {
       uint pid;
-      if (GetParent(h) == main && IsWindowVisible(h) && GetWindowThreadProcessId(h, out pid) != 0 && pid != wechatPid) { found = h; return false; }
+      if (GetAncestor(h, 1) == main && IsWindowVisible(h) && GetWindowThreadProcessId(h, out pid) != 0 && pid != wechatPid) { found = h; return false; }
       return true;
     }, IntPtr.Zero);
     return found;
@@ -1299,37 +1300,47 @@ public static class XiaoxiEmbeddedPanel {
 }
 "@
 }
-function Close-WechatSearchPanel([IntPtr]$mainWindow, [int]$wechatPid) {
-  $panelWindow = [XiaoxiEmbeddedPanel]::Find($mainWindow, [uint32]$wechatPid)
-  if ($panelWindow -eq [IntPtr]::Zero) { return "none" }
+# One look at the panel's frame: the page title of the selected tab and that tab's own close button.
+# Only the selected tab shows a close button; a web page (Document) is never entered.
+function Read-WechatSearchPanel([IntPtr]$panelWindow) {
   if (-not $script:windowUiaLoaded) { Add-Type -AssemblyName UIAutomationClient; $script:windowUiaLoaded = $true }
   $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
   $pending = [System.Collections.Generic.Queue[System.Windows.Automation.AutomationElement]]::new()
   $pending.Enqueue([System.Windows.Automation.AutomationElement]::FromHandle($panelWindow))
-  $isSearchPanel = $false; $tabClose = $null; $visited = 0
-  # Bounded walk of the panel's own frame; a web page (Document) is never entered.
+  $title = ""; $close = $null; $visited = 0
   while ($pending.Count -gt 0 -and $visited -lt 300) {
     $element = $pending.Dequeue(); $visited++
     $current = $element.Current
-    if ($current.ControlType -eq [System.Windows.Automation.ControlType]::Document) {
-      if ([string]$current.Name -match "搜一搜") { $isSearchPanel = $true }
-      continue
-    }
-    if (-not $tabClose -and $current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and [string]$current.Name -eq "关闭" -and
+    if ($current.ControlType -eq [System.Windows.Automation.ControlType]::Document) { if (-not $title) { $title = [string]$current.Name }; continue }
+    if (-not $close -and $current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and [string]$current.Name -eq "关闭" -and
         [string]$current.ClassName -eq "ImageButton" -and -not $current.IsOffscreen -and $current.IsEnabled) {
       $parent = $walker.GetParent($element)
-      if ($parent -and [string]$parent.Current.ClassName -eq "Tab") { $tabClose = $element }
+      if ($parent -and [string]$parent.Current.ClassName -eq "Tab") { $close = $element }
     }
     $child = $walker.GetFirstChild($element)
     while ($null -ne $child) { $pending.Enqueue($child); $child = $walker.GetNextSibling($child) }
   }
-  if (-not $isSearchPanel) { return "other_panel" }
-  if (-not $tabClose) { return "close_missing" }
-  $invoke = $null
-  if (-not $tabClose.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) { return "close_missing" }
-  $invoke.Invoke()
-  Start-Sleep -Milliseconds 300
-  return "closed"
+  return @{ title = $title; close = $close }
+}
+# WeChat's own search pages: "<query> - 搜一搜" and "AI搜索 - <title>". Anything else in the panel
+# (an article the customer opened) stops the closing, and nothing of it is pressed.
+function Test-WechatSearchPageTitle([string]$title) {
+  return $title -match "- *搜一搜$" -or $title -match "^AI搜索 *-"
+}
+function Close-WechatSearchPanel([IntPtr]$mainWindow, [int]$wechatPid) {
+  $closed = 0
+  for ($round = 0; $round -lt 5; $round++) {
+    $panelWindow = [XiaoxiSearchPanelWindow]::Find($mainWindow, [uint32]$wechatPid)
+    if ($panelWindow -eq [IntPtr]::Zero) { if ($closed) { return "closed_$closed" } else { return "none" } }
+    $panel = Read-WechatSearchPanel $panelWindow
+    if (-not (Test-WechatSearchPageTitle $panel.title)) { if ($closed) { return "closed_$($closed)_other_left" } else { return "other_page" } }
+    if (-not $panel.close) { return "close_missing" }
+    $invoke = $null
+    if (-not $panel.close.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) { return "close_missing" }
+    $invoke.Invoke(); $closed++
+    Start-Sleep -Milliseconds 300
+  }
+  return "closed_$($closed)_more_left"
 }
 $windowDiagnostic.search_panel = "error"
 try { $windowDiagnostic.search_panel = Close-WechatSearchPanel $hWnd ([int]$matched.pid) } catch {}
@@ -2508,6 +2519,19 @@ try {
 } catch {}
 if (-not $headerBefore) { try { $headerBefore = Get-ConversationHeaderHash $expectedHWnd } catch {} }
 $clickEvidence.header_before = [bool]$headerBefore
+# The verified row's own pixels: a retry presses only a row that still looks exactly the same (late
+# network rows can push the list down inside the same dropdown window).
+function Get-SearchRowHash {
+  $rowBitmap = $null; $rowStream = $null; $rowSha = $null
+  try {
+${WECHAT_SCREEN_PIXELS_POWERSHELL}
+    $rowBitmap = [System.Drawing.Bitmap]::new(160, 16); $rowStream = [System.IO.MemoryStream]::new(); $rowSha = [System.Security.Cryptography.SHA256]::Create()
+    if (-not [XiaoxiScreenPixels]::Copy($rowBitmap, [Math]::Max(0, $clickX - 80), [Math]::Max(0, $clickY - 8))) { return "" }
+    $rowBitmap.Save($rowStream, [System.Drawing.Imaging.ImageFormat]::Png)
+    return [Convert]::ToBase64String($rowSha.ComputeHash($rowStream.ToArray()))
+  } catch { return "" } finally { if ($rowSha) { $rowSha.Dispose() }; if ($rowStream) { $rowStream.Dispose() }; if ($rowBitmap) { $rowBitmap.Dispose() } }
+}
+$rowHashBefore = Get-SearchRowHash
 # Field (47d2578f, 2026-11-24, search_result_not_opened 44 times in 90 minutes; 166/407/647 on older
 # versions): the dropdown listed the verified contact, the click was sent, and WeChat neither opened
 # the chat nor closed the dropdown. A press that arrives the instant the cursor jumps onto the row can
@@ -2533,6 +2557,9 @@ function Test-SearchDropdownStillUnderClick {
   $probe = New-Object Win32WechatSearchResultClick+POINT; $probe.X=$clickX; $probe.Y=$clickY
   return [Win32WechatSearchResultClick]::WindowFromPoint($probe).ToInt64() -eq $dropdownHWnd
 }
+if ([Win32WechatSearchResultClick]::GetForegroundWindow().ToInt64() -ne $expectedHWnd) { @{ ok=$false; reason="wechat_window_not_foreground"; clickObservation=$clickEvidence } | ConvertTo-Json -Compress -Depth 6; exit }
+if ([uint64][Win32WechatSearchResultClick]::GetLastInputTick() -ne $expectedInputTick) { @{ ok=$false; reason="wechat_external_input_detected"; safety_diagnostics=@{ phase="before_search_result_press" } } | ConvertTo-Json -Compress -Depth 4; exit }
+if ([Win32WechatSearchResultClick]::WindowFromPoint($point).ToInt64() -ne $hit.ToInt64()) { @{ ok=$false; reason="wechat_target_changed"; safety_diagnostics=@{ phase="before_search_result_press" } } | ConvertTo-Json -Compress -Depth 4; exit }
 [void](Invoke-SearchResultPress)
 # Field (user, 2026-11-14): a cursor left on the clicked row sits where the next search's dropdown
 # draws a row; WeChat highlights the hovered row and the next result check could fail. Once the click
@@ -2568,7 +2595,7 @@ $resultClickRetried = $false
 $clickEvidence.dropdown_after_press = [bool](Test-SearchDropdownStillUnderClick)
 # Never in the WeChat-ID modes: they prove the landing only by a changed header, with no name check
 # after it, so a press that strayed onto another row would not be caught.
-$clickEvidence.retry = $(if (-not $clickEvidence.dropdown_after_press) { "not_needed" } elseif ($requireHeaderChange) { "skipped_wechat_id_mode" } elseif ([Win32WechatSearchResultClick]::GetForegroundWindow().ToInt64() -ne $expectedHWnd) { "skipped_not_foreground" } elseif ([uint64][Win32WechatSearchResultClick]::GetLastInputTick() -ne $ownedInputTick) { "skipped_user_input" } else { "attempted" })
+$clickEvidence.retry = $(if (-not $clickEvidence.dropdown_after_press) { "not_needed" } elseif ($requireHeaderChange) { "skipped_wechat_id_mode" } elseif ([Win32WechatSearchResultClick]::GetForegroundWindow().ToInt64() -ne $expectedHWnd) { "skipped_not_foreground" } elseif ([uint64][Win32WechatSearchResultClick]::GetLastInputTick() -ne $ownedInputTick) { "skipped_user_input" } elseif (-not $rowHashBefore -or (Get-SearchRowHash) -ne $rowHashBefore) { "skipped_row_changed" } else { "attempted" })
 if ($clickEvidence.retry -eq "attempted") {
   $resultClickRetried = [bool](Invoke-SearchResultPress $true)
   Start-Sleep -Milliseconds 150
@@ -2584,18 +2611,18 @@ if ($clickEvidence.retry -eq "attempted") {
 }
 $landingHWnd = [Win32WechatSearchResultClick]::GetForegroundWindow()
 [uint32]$landingPid = 0; [void][Win32WechatSearchResultClick]::GetWindowThreadProcessId($landingHWnd, [ref]$landingPid)
-if ([int]$landingPid -ne $expectedPid) { @{ ok=$false; reason="wechat_window_not_foreground"; actionAttempted=$true } | ConvertTo-Json -Compress; exit }
+if ([int]$landingPid -ne $expectedPid) { @{ ok=$false; reason="wechat_window_not_foreground"; actionAttempted=$true; clickObservation=$clickEvidence } | ConvertTo-Json -Compress -Depth 6; exit }
 $landingInspection = @{ inspected=$false; matched=$false }
 try { $landingInspection = Get-NetworkLookupLanding ([System.Windows.Automation.AutomationElement]::FromHandle($landingHWnd)) } catch {}
 if (-not $landingInspection.inspected) {
   $ruleId = Write-XiaoxiFailure "wx1-r047" "wechat_search_result_landing_unverified"
-  @{ ok=$false; reason="wechat_search_result_landing_unverified"; rule_id=$ruleId; error="点击后无法核验落点界面，任务已暂停"; send_attempted=$false; actionAttempted=$true } | ConvertTo-Json -Compress
+  @{ ok=$false; reason="wechat_search_result_landing_unverified"; rule_id=$ruleId; error="点击后无法核验落点界面，任务已暂停"; send_attempted=$false; actionAttempted=$true; clickObservation=$clickEvidence } | ConvertTo-Json -Compress -Depth 6
   exit
 }
 if ($landingInspection.matched) {
   $currentTick = [uint64][Win32WechatSearchResultClick]::GetLastInputTick()
   $ruleId = Write-XiaoxiFailure "wx1-r046" "wechat_search_network_lookup_misclick"
-  if ($currentTick -ne $ownedInputTick) { @{ ok=$false; reason="wechat_search_network_lookup_misclick"; rule_id=$ruleId; error="已确认误入网络查找资料页；检测到人工输入，未自动关闭，任务已暂停"; send_attempted=$false; landing_recovered=$false; actionAttempted=$true; poisoned_candidate=@{ fingerprint=$candidateFingerprint; mode=$candidateMode }; safety_diagnostics=@{ phase="before_network_lookup_recovery"; expected_input_tick=$ownedInputTick; current_input_tick=$currentTick } } | ConvertTo-Json -Compress -Depth 4; exit }
+  if ($currentTick -ne $ownedInputTick) { @{ ok=$false; reason="wechat_search_network_lookup_misclick"; rule_id=$ruleId; error="已确认误入网络查找资料页；检测到人工输入，未自动关闭，任务已暂停"; send_attempted=$false; landing_recovered=$false; actionAttempted=$true; poisoned_candidate=@{ fingerprint=$candidateFingerprint; mode=$candidateMode }; safety_diagnostics=@{ phase="before_network_lookup_recovery"; expected_input_tick=$ownedInputTick; current_input_tick=$currentTick }; clickObservation=$clickEvidence } | ConvertTo-Json -Compress -Depth 6; exit }
   [Win32WechatSearchResultClick]::keybd_event(0x1B,0,0,[UIntPtr]::Zero); [Win32WechatSearchResultClick]::keybd_event(0x1B,0,2,[UIntPtr]::Zero)
   Start-Sleep -Milliseconds 150
   $recoveredHWnd = [Win32WechatSearchResultClick]::GetForegroundWindow()
@@ -2604,14 +2631,14 @@ if ($landingInspection.matched) {
   try { $recoveryInspection = Get-NetworkLookupLanding ([System.Windows.Automation.AutomationElement]::FromHandle($recoveredHWnd)) } catch {}
   $landingRecovered = [int]$recoveredPid -eq $expectedPid -and $recoveryInspection.inspected -and -not $recoveryInspection.matched
   $recoveryMessage = $(if ($landingRecovered) { "误点网络查找入口，已关闭资料弹窗" } else { "误点网络查找入口，资料弹窗关闭未确认" })
-  @{ ok=$false; reason="wechat_search_network_lookup_misclick"; rule_id=$ruleId; error=$recoveryMessage; send_attempted=$false; landing_recovered=$landingRecovered; actionAttempted=$true; poisoned_candidate=@{ fingerprint=$candidateFingerprint; mode=$candidateMode } } | ConvertTo-Json -Compress -Depth 4
+  @{ ok=$false; reason="wechat_search_network_lookup_misclick"; rule_id=$ruleId; error=$recoveryMessage; send_attempted=$false; landing_recovered=$landingRecovered; actionAttempted=$true; poisoned_candidate=@{ fingerprint=$candidateFingerprint; mode=$candidateMode }; clickObservation=$clickEvidence } | ConvertTo-Json -Compress -Depth 6
   exit
 }
-if ($landingHWnd.ToInt64() -ne $expectedHWnd) { @{ ok=$false; reason="wechat_window_not_foreground"; actionAttempted=$true } | ConvertTo-Json -Compress; exit }
+if ($landingHWnd.ToInt64() -ne $expectedHWnd) { @{ ok=$false; reason="wechat_window_not_foreground"; actionAttempted=$true; clickObservation=$clickEvidence } | ConvertTo-Json -Compress -Depth 6; exit }
 if ($requireHeaderChange) {
   $headerAfter = ""
   try { $headerAfter = Get-ConversationHeaderHash $expectedHWnd } catch {}
-  if (-not $headerAfter -or $headerAfter -ceq $headerBefore) { @{ ok=$false; reason="wechat_search_result_landing_unverified"; rule_id=(Write-XiaoxiFailure "wx1-r047" "wechat_search_result_landing_unverified"); error="点击后会话区域未变化，任务已暂停以防触达上一位"; send_attempted=$false; actionAttempted=$true } | ConvertTo-Json -Compress; exit }
+  if (-not $headerAfter -or $headerAfter -ceq $headerBefore) { @{ ok=$false; reason="wechat_search_result_landing_unverified"; rule_id=(Write-XiaoxiFailure "wx1-r047" "wechat_search_result_landing_unverified"); error="点击后会话区域未变化，任务已暂停以防触达上一位"; send_attempted=$false; actionAttempted=$true; clickObservation=$clickEvidence } | ConvertTo-Json -Compress -Depth 6; exit }
 }
 # The chat header compared before/after (it also changes when the dropdown over its left edge closes).
 $headerAfterEvidence = ""; try { $headerAfterEvidence = Get-ConversationHeaderHash $expectedHWnd } catch {}
@@ -2626,7 +2653,21 @@ function attachClickEvidence(searchEvidence, resolution, clicked) {
   const candidate = resolution?.candidate || {};
   searchEvidence.candidate_point = Object.fromEntries(["x", "y", "left", "top", "right", "bottom"]
     .filter((key) => Number.isFinite(Number(candidate[key]))).map((key) => [key, Math.round(Number(candidate[key]))]));
-  if (clicked?.clickObservation && typeof clicked.clickObservation === "object") searchEvidence.click_observation = clicked.clickObservation;
+  const click = clicked?.clickObservation;
+  if (!click || typeof click !== "object") return;
+  // Finite values only, already here: the single-task path stores and logs search_evidence as it is.
+  const identifier = (value) => /^[A-Za-z0-9_.:-]{1,64}$/u.test(String(value || "")) ? String(value) : "";
+  const flag = (value) => value === true ? true : value === false ? false : null;
+  searchEvidence.click_observation = {
+    ...Object.fromEntries(["x", "y", "elapsed_ms"].filter((key) => Number.isFinite(Number(click[key]))).map((key) => [key, Number(click[key])])),
+    ...Object.fromEntries(["over_dropdown", "header_before", "header_changed", "dropdown_after_press", "dropdown_after_retry"]
+      .filter((key) => key in click).map((key) => [key, flag(click[key])])),
+    retry: /^[a-z_]{1,32}$/u.test(String(click.retry || "")) ? click.retry : "",
+    keyboard_language: /^[0-9a-f]{4}$/u.test(String(click.keyboard_language || "")) ? click.keyboard_language : "",
+    covering: (Array.isArray(click.covering) ? click.covering : click.covering && typeof click.covering === "object" ? [click.covering] : [])
+      .slice(0, 6).map((window) => ({ class: identifier(window?.class), process: identifier(window?.process),
+        layered: window?.layered === true, transparent: window?.transparent === true, topmost: window?.topmost === true }))
+  };
 }
 
 function searchCandidateFingerprint(mode, candidate) {

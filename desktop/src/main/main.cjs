@@ -1290,6 +1290,9 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     };
     Promise.resolve(readyWindow.__xiaoxiLoaded).catch(() => {}).then(pageRendered).then(async ready => {
       if (!ready) return;
+      // Read before markHealthy(): it clears a rollback's failure text once the start is healthy.
+      let selectionFailureAtStart = "";
+      try { selectionFailureAtStart = String(components.readJson(components.updatePaths(app.getPath("userData")).selection, {})?.failure || ""); } catch { /* Reported without it. */ }
       components.markHealthy(); cloudMaintenance?.refreshLocalState();
       // Retry only previously registered retirement, after the real page works.
       // Unclassified historical backups and current/candidate versions stay protected.
@@ -1308,7 +1311,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         require("./version-history.cjs").recordVersionHistory({
           file: path.join(userData, "data", "version-history.json"),
           version: components.businessVersion(app), installerVersion: app.getVersion(),
-          selectionFailure: components.readJson(components.updatePaths(userData).selection, {})?.failure,
+          selectionFailure: selectionFailureAtStart,
           log: (details) => logger.event("update", "app.version_downgraded", details, { level: "error", code: `app_version_downgraded_${details.downgrade_kind}` })
         });
       } catch { /* Reporting never blocks the started app. */ }

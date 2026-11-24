@@ -122,6 +122,61 @@ function resumableFreshEdit(task, multipart) {
     && current?.send_attempted === false);
 }
 
+// What the send drivers already said about a pre-send failure (stage, paste method, send-button state,
+// input-point source, script line, exception type ...). Until 2026-11-24 a pre-send skip recorded only
+// {reasonCode, deliveryStatus}: image_paste_not_accepted, atomic_conversation_changed and
+// message_input_failed reached the field reports with no cause, although the driver had returned one.
+// Kept: numbers, booleans and ASCII identifiers (customer names and chat text are never ASCII-only
+// identifiers here), under keys that cannot hold contact data; one level of nesting.
+const UNSAFE_EVIDENCE_KEY = /(?:message|text|title|name|nickname|remark|wechat_?id|wxid|account|customer|user|contact|phone|mobile|path|file|dir|raw|exception|content|clipboard_?text|draft|token|secret|key|url|query)/iu;
+const DRIVER_EVIDENCE_KEY = /^(?:ok|reason|blocked_reason|rule_?id|errorid)$|(?:stage|phase|method|color|offset|source|ratio|attempts|line|type|hresult|attempted|verified|mode|_ms|elapsedms|count|index|exhausted|operation|status)$/u;
+// A WeChat id or a phone-length digit run is contact data whatever the key is called.
+const UNSAFE_EVIDENCE_VALUE = /(?:^wxid_|\d{7,})/iu;
+function finiteDriverEvidence(source, depth = 0) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return {};
+  const kept = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (Object.keys(kept).length >= 40) break;
+    if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(key) || UNSAFE_EVIDENCE_KEY.test(key)) continue;
+    // Only keys that name a diagnostic (stage, method, colour, source, ratio, count, line, type, time,
+    // state ...); an unknown key such as "expected" or "target" may hold a contact and is dropped.
+    if (!(value && typeof value === "object") && !DRIVER_EVIDENCE_KEY.test(key.toLowerCase())) continue;
+    if (typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) kept[key] = value;
+    else if (typeof value === "string" && /^[A-Za-z0-9_.:\-]{1,80}$/u.test(value) && !UNSAFE_EVIDENCE_VALUE.test(value)) kept[key] = value;
+    else if (depth === 0 && value && typeof value === "object" && !Array.isArray(value)) {
+      const nested = finiteDriverEvidence(value, 1);
+      if (Object.keys(nested).length) kept[key] = nested;
+    }
+  }
+  return kept;
+}
+function preSendEvidence(result) {
+  const sources = { result, diagnostics: result?.diagnostics, send_diagnostics: result?.send_diagnostics || result?.state?.send_diagnostics };
+  const evidence = {};
+  for (const [name, source] of Object.entries(sources)) {
+    const kept = finiteDriverEvidence(name === "result" ? Object.fromEntries(Object.entries(source || {})
+      .filter(([key]) => !["diagnostics", "send_diagnostics", "state"].includes(key))) : source);
+    if (Object.keys(kept).length) evidence[name] = kept;
+  }
+  return evidence;
+}
+// The few fields that say the most go straight onto the field-report event (diagnostics keeps
+// *_stage / *_kind / *_code strings readable); the rest is in the passport.
+function preSendCause(evidence) {
+  const pick = (...keys) => { for (const source of [evidence.result, evidence.send_diagnostics, evidence.diagnostics]) for (const key of keys) {
+    const value = source?.[key]; if (value !== undefined && value !== "") return value; } return undefined; };
+  const stage = pick("driverStage", "driver_stage", "stage", "failure_stage", "phase");
+  const errorType = pick("errorType", "error_type");
+  const line = pick("source_line", "sourceLine", "errorLine", "script_line");
+  const send = pick("sendAttempted", "send_attempted");
+  return {
+    ...(typeof stage === "string" ? { pre_send_stage: stage.slice(0, 48) } : {}),
+    ...(typeof errorType === "string" ? { pre_send_error_kind: errorType.slice(0, 64) } : {}),
+    ...((typeof line === "number" && Number.isInteger(line)) || (typeof line === "string" && /^\d+$/u.test(line)) ? { pre_send_line: Number(line) } : {}),
+    ...(typeof send === "boolean" ? { pre_send_attempted: send } : {})
+  };
+}
+
 // Why a contact no longer matched the task's snapshot (cfe8221b, 2026-11-21: 734 contacts skipped as
 // contact_snapshot_changed in two hours and the record could not say why). Field names, counts and
 // ages only, never the names themselves:
@@ -167,11 +222,16 @@ function snapshotChange(current, liveContacts, liveClassification, at) {
 //   dropdown_stayed_<why>        it ignored the press and no retry was allowed (WeChat-ID mode, input...)
 //   dropdown_closed              the dropdown went away, yet the chat title is not the contact's
 // plus the first foreign window over the row and WeChat's keyboard language at the press.
+const CLICK_EXPLAINED_REASONS = new Set(["search_result_not_opened", "search_result_identity_unverified",
+  "wechat_search_result_landing_unverified", "wechat_search_network_lookup_misclick"]);
 function clickCause(click) {
   if (!click || typeof click !== "object") return {};
+  const retry = String(click.retry || "");
   const cause = click.dropdown_after_retry === true ? "dropdown_stayed_after_retry"
-    : click.dropdown_after_press === true ? `dropdown_stayed_${String(click.retry || "unknown").replace(/^skipped_/u, "")}`
-      : click.dropdown_after_press === false ? "dropdown_closed" : "";
+    : click.dropdown_after_retry === false ? "dropdown_closed_after_retry"
+      : retry === "skipped_dropdown_closed" ? "dropdown_closed_before_retry"
+        : click.dropdown_after_press === true ? `dropdown_stayed_${(retry || "unknown").replace(/^skipped_/u, "")}`
+          : click.dropdown_after_press === false ? "dropdown_closed" : "";
   const cover = (Array.isArray(click.covering) ? click.covering : [])
     .map((window) => String(window?.process || window?.class || "").toLowerCase().replace(/[^a-z0-9_]/gu, "")).find(Boolean) || "";
   return {
@@ -539,7 +599,10 @@ function createTouchWorkflow(options = {}) {
             identity_recoveries: Number(row.identity_recovery_attempts) || 0,
             pre_send_recoveries: Number(row.pre_send_recovery_attempts) || 0,
             environment_recovery: Boolean(row.environment_recovery_started_at),
-            rule_id: String(row.search_evidence?.rule_id || ""), ...clickCause(row.search_evidence?.click_observation), ...details },
+            rule_id: String(row.search_evidence?.rule_id || ""),
+            // The click that opened (or did not open) the chat explains only search and landing failures;
+            // on a later pre-send or delivery failure the same row's click evidence would mislead.
+            ...(CLICK_EXPLAINED_REASONS.has(reason) ? clickCause(row.search_evidence?.click_observation) : {}), ...details },
           { trace: true, ...(traceId ? { traceId } : {}), level: "error", code: `touch_${kind}_${reason}` });
       } catch { /* Diagnostics never stop the task. */ }
     };
@@ -863,7 +926,8 @@ function createTouchWorkflow(options = {}) {
         return response("needs_attention", { error: pauseMessage, reasonCode: "touch_early_failure_paused",
           result: { deliveryStatus: "not_attempted", skipped: true, reasonCode, failedContacts: count } });
       };
-      const preSendSkip = (reasonCode, reason, classification = "") => {
+      const preSendSkip = (reasonCode, reason, classification = "", failedResult = null) => {
+        const driverEvidence = preSendEvidence(failedResult);
         const key = `pre_send:${reasonCode}`;
         const streak = task.pre_send_skip_streak;
         const count = (streak?.key === key ? streak.count : 0) + 1;
@@ -886,10 +950,10 @@ function createTouchWorkflow(options = {}) {
               { trace: true, traceId: sendOperation.traceId, level: "warn", code: `touch_skipped_again_${String(reasonCode).replace(/[^a-z0-9_]/giu, "_").slice(0, 48)}` });
           } catch { /* Diagnostics never stop the task. */ }
         } else {
-          reportContact("skipped", reasonCode, { stage: "pre_send", classification, passport_recorded: true }, sendOperation.traceId);
+          reportContact("skipped", reasonCode, { stage: "pre_send", classification, passport_recorded: true, ...preSendCause(driverEvidence) }, sendOperation.traceId);
           passport?.recordFailure("active_touch", passportTaskId, {
             stage: "pre_send", reasonCode, traceId: sendOperation.traceId,
-            rawReading: { reasonCode, deliveryStatus }, expected: { status: "sent_verified" }
+            rawReading: { reasonCode, deliveryStatus, ...(Object.keys(driverEvidence).length ? { driver: driverEvidence } : {}) }, expected: { status: "sent_verified" }
           });
         }
         // Retried pre-send skips failing the same way again: the cause is still there, so the
@@ -1183,7 +1247,7 @@ function createTouchWorkflow(options = {}) {
           : { ...finiteSearchEvidence(searchDiagnostics), ...(ruleId ? { rule_id: ruleId } : {}), fingerprint };
         if (["image_send_pre_click_timeout", "image_paste_not_accepted"].includes(failureReason)
           && result?.pre_send_retry_exhausted === true) {
-          return preSendSkip(failureReason, String(result.error || "图片发送前检查仍未通过") + "，已跳过当前联系人");
+          return preSendSkip(failureReason, String(result.error || "图片发送前检查仍未通过") + "，已跳过当前联系人", "", result);
         }
         if (failureReason === "wechat_search_network_lookup_misclick" && !reasonCode) {
           current.poisoned = poisonedSearchCandidate(result, now().toISOString());
@@ -1306,7 +1370,7 @@ function createTouchWorkflow(options = {}) {
             return pauseForWechatWindow(failurePolicy.reasonCode);
           }
           if (environmentElapsedMs >= ENVIRONMENT_RECOVERY_MAX_MS) {
-            return preSendSkip(failurePolicy.reasonCode, "运行环境持续不可用，消息未发送；等待十分钟后已加入可重试名单", failurePolicy.classification);
+            return preSendSkip(failurePolicy.reasonCode, "运行环境持续不可用，消息未发送；等待十分钟后已加入可重试名单", failurePolicy.classification, result);
           }
           current.status = "generated";
           current.reason = "运行环境暂不可用，消息尚未发送，等待恢复";
@@ -1340,7 +1404,7 @@ function createTouchWorkflow(options = {}) {
           }
           return preSendSkip(failurePolicy.reasonCode,
             String(result.error || failurePolicy.reasonCode) + "，两次自动恢复仍失败，已跳过当前联系人",
-            failurePolicy.classification);
+            failurePolicy.classification, result);
         }
         current.status = "generated";
         current.retry_blocked = false;
