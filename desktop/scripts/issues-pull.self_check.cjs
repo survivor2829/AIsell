@@ -126,6 +126,17 @@ function detail(id, { code = "auto_mix_music_not_audible", module = "content_eng
   assert.match(report([], [], { now, apimartRoute: { state: "ok", checked_at: at } }), /- 生图通道：APIMart 节点正常（检查于 2026-11-13 07:59 UTC）/);
   assert.match(report([], [], { now, apimartRoute: { state: "ok", checked_at: at - 3600 } }), /超过 15 分钟没有更新/);
   assert.match(report([], [], { now, apimartRoute: null }), /## ⚠️ 生图通道：服务器本机连不上网关/);
+  // 账号用量提醒：暴涨、负数底线、限流各一行；没有异常时只一句。
+  const usage = report([], [], { now, usageAlerts: [
+    { reason: "spike", todayCny: 120, dailyAverageCny: 5, balanceCny: 300, accountId: 7, phoneTail: "1234" },
+    { reason: "debt_floor", debtFloor: true, balanceCny: -50, todayCny: 0, accountId: 8, phoneTail: "" },
+    { reason: "rate_limited", rateLimited: 4, todayCny: 0, accountId: 9 }] });
+  assert.match(usage, /## ⚠️ 账号用量异常 3 个/);
+  assert.match(usage, /账号 7（尾号 1234）：今天用了 120 元，平时一天约 5 元/);
+  assert.match(usage, /账号 8：已扣到负数底线（余额 -50 元）/);
+  assert.match(usage, /账号 9：今天被限流挡了 4 次/);
+  assert.match(report([], [], { now, usageAlerts: [] }), /- 账号用量：没有异常/);
+  assert.match(report([], [], { now, usageAlerts: null }), /网关还没有用量提醒/);
   assert.match(report([], [], { now, apimartRoute: { state: "unchecked", checked_at: 0 } }), /还没完成第一次 APIMart 节点检查/);
   assert.match(report([], [], { now, apimartRoute: { state: "degraded", checked_at: at } }), /未知的节点状态 `degraded`/);
   assert.doesNotMatch(report([], [], { now }), /生图通道/, "callers that do not pass a route are unchanged");

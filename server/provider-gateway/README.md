@@ -11,6 +11,11 @@
   网关每 5 分钟沿客户生图的同一出站路径（配置了专用节点就走节点）不带密钥请求一次 APIMart：
   2xx–4xx 应答或被拒绝的重定向算 `ok`，5xx 或连接失败为 `unreachable`（只记错误类型）。
   这个检查不计费，请求本身不会触发检查；`npm.cmd run issues:pull` 的日报开头会显示结果。
+- `GET /v1/gateway-internal/usage-alerts`：同样只在服务器本机可达。列出当天用量远超平时（今天 ≥ 50 元且 ≥ 近 7 天日均 5 倍）、
+  已扣到负数底线、或今天被按账号限流挡过的账号（只给账号编号和手机尾号）；`npm.cmd run issues:pull` 的日报开头会显示。
+- 负数底线与按账号限流（2026-11-24）：余额 ≤ -50 元（`XIAOXI_GATEWAY_DEBT_FLOOR_CNY`）时连做到一半的任务也停止付费；
+  每个账号每分钟最多发起 120 次新的付费请求（`XIAOXI_GATEWAY_ACCOUNT_PAID_PER_MINUTE`，重放已有请求不计），超出返回 429
+  `account_rate_limited`，`X-Xiaoxi-Error-Origin: gateway_rate_limit`，客户端按原有限流退避。
 - `POST /v1/provider-gateway/session`：提交当前软件的已签名授权码和安装元数据，
   返回短期会话令牌及能力布尔值。授权码只在内存中校验，不写日志或数据库；
   为跨重启读取回执，仅保存会话令牌摘要、过期时间和授权主体，不保存令牌原文。
