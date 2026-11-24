@@ -507,7 +507,7 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
   const failedState = Boolean(batch && ["failed", "needs_attention", "outcome_unknown", "insufficient_materials", "completed_with_errors"].includes(batch.status));
   const resourceFailures = Object.entries(resources).filter(([, message]) => message && message !== RESOURCE_READING);
   return <div className={`page batch-page${visualFlow ? " is-visual-flow" : ""}`}>
-    <header className="batch-page-header"><div><h1>线索视频混剪</h1><p>把零散素材，做成讲清卖点的获客短视频。</p></div><div className="batch-header-actions"><button type="button" disabled={busy || saving || running || paused} onClick={onOpenMaterials}>我的素材</button><button type="button" onClick={onOpenHistory}>制作记录</button><button disabled={busy || saving || restoring || running} onClick={() => void run(async () => {
+    <header className="batch-page-header"><div /><div className="batch-header-actions"><button type="button" disabled={busy || saving || running || paused} onClick={onOpenMaterials}>我的素材</button><button type="button" onClick={onOpenHistory}>制作记录</button><button disabled={busy || saving || restoring || running} onClick={() => void run(async () => {
       // A paused batch refuses edits, so its unsaved changes are dropped rather than saved (2026-11-18).
       if (paused) draftQueue.cancelPending(); else await draftQueue.flush();
       clearToNewBatch();
