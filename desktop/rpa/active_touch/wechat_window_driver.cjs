@@ -1273,25 +1273,26 @@ if (-not (Test-XiaoxiUserIdle)) { Stop-ForActiveUser $matched.pid $hWnd; exit }
 # Field (47d2578f, 2026-11-24): WeChat's 搜一搜 side panel was left open (the customer's own search) and its
 # changing content made a chat that had not changed fail the pre-send check (atomic_conversation_changed,
 # 13 times in an hour; the panel is on every one of those screenshots). The panel is a browser tab of
-# WeChat's helper process embedded in the main window. Only that panel, only when its page is 搜一搜,
-# and only its own tab 关闭 button (UI Automation, no mouse) is pressed, once; a cheap Win32 check
-# skips everything when no panel is embedded, and the walk never enters the web page.
-if (-not ("XiaoxiEmbeddedPanel" -as [type])) {
+# WeChat's helper process embedded in the main window. Its search tabs (搜一搜, AI搜索) are closed one by one
+# with each tab's own 关闭 button (UI Automation, no mouse); a page that is not a WeChat search stops it.
+# A cheap Win32 check skips everything when no panel is embedded; the walk never enters the web page.
+if (-not ("XiaoxiSearchPanelWindow" -as [type])) {
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
-public static class XiaoxiEmbeddedPanel {
+public static class XiaoxiSearchPanelWindow {
   delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
   [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, EnumProc proc, IntPtr lParam);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
-  [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr hWnd);
-  // The first visible direct child of WeChat's window that belongs to another process (the embedded panel).
+  [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+  // The embedded panel: a visible window directly under WeChat's window (GA_PARENT; GetParent answers 0
+  // for it) that belongs to another process.
   public static IntPtr Find(IntPtr main, uint wechatPid) {
     IntPtr found = IntPtr.Zero;
     EnumChildWindows(main, (h, l) => {
       uint pid;
-      if (GetParent(h) == main && IsWindowVisible(h) && GetWindowThreadProcessId(h, out pid) != 0 && pid != wechatPid) { found = h; return false; }
+      if (GetAncestor(h, 1) == main && IsWindowVisible(h) && GetWindowThreadProcessId(h, out pid) != 0 && pid != wechatPid) { found = h; return false; }
       return true;
     }, IntPtr.Zero);
     return found;
@@ -1299,43 +1300,47 @@ public static class XiaoxiEmbeddedPanel {
 }
 "@
 }
-function Close-WechatSearchPanel([IntPtr]$mainWindow, [int]$wechatPid) {
-  $panelWindow = [XiaoxiEmbeddedPanel]::Find($mainWindow, [uint32]$wechatPid)
-  if ($panelWindow -eq [IntPtr]::Zero) { return "none" }
+# One look at the panel's frame: the page title of the selected tab and that tab's own close button.
+# Only the selected tab shows a close button; a web page (Document) is never entered.
+function Read-WechatSearchPanel([IntPtr]$panelWindow) {
   if (-not $script:windowUiaLoaded) { Add-Type -AssemblyName UIAutomationClient; $script:windowUiaLoaded = $true }
   $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
   $pending = [System.Collections.Generic.Queue[System.Windows.Automation.AutomationElement]]::new()
   $pending.Enqueue([System.Windows.Automation.AutomationElement]::FromHandle($panelWindow))
-  $documents = 0; $searchDocument = $false; $tabs = 0; $tabClose = $null; $visited = 0
-  # Bounded walk of the panel's own frame; a web page (Document) is never entered.
+  $title = ""; $close = $null; $visited = 0
   while ($pending.Count -gt 0 -and $visited -lt 300) {
     $element = $pending.Dequeue(); $visited++
     $current = $element.Current
-    if ($current.ControlType -eq [System.Windows.Automation.ControlType]::Document) {
-      $documents++
-      # The page title WeChat gives its search: "<query> - 搜一搜". An article that merely mentions it does not end so.
-      if ([string]$current.Name -match "[-–—]+ *搜一搜$") { $searchDocument = $true }
-      continue
-    }
-    if ([string]$current.ClassName -eq "Tab") { $tabs++ }
-    if (-not $tabClose -and $current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and [string]$current.Name -eq "关闭" -and
+    if ($current.ControlType -eq [System.Windows.Automation.ControlType]::Document) { if (-not $title) { $title = [string]$current.Name }; continue }
+    if (-not $close -and $current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and [string]$current.Name -eq "关闭" -and
         [string]$current.ClassName -eq "ImageButton" -and -not $current.IsOffscreen -and $current.IsEnabled) {
       $parent = $walker.GetParent($element)
-      if ($parent -and [string]$parent.Current.ClassName -eq "Tab") { $tabClose = $element }
+      if ($parent -and [string]$parent.Current.ClassName -eq "Tab") { $close = $element }
     }
     $child = $walker.GetFirstChild($element)
     while ($null -ne $child) { $pending.Enqueue($child); $child = $walker.GetNextSibling($child) }
   }
-  # Only a panel that holds nothing but the search: with any other tab or page open, the customer's
-  # own content could be the one closed, so nothing is pressed.
-  if ($tabs -ne 1 -or $documents -ne 1) { return "several_tabs" }
-  if (-not $searchDocument) { return "other_panel" }
-  if (-not $tabClose) { return "close_missing" }
-  $invoke = $null
-  if (-not $tabClose.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) { return "close_missing" }
-  $invoke.Invoke()
-  Start-Sleep -Milliseconds 300
-  return "closed"
+  return @{ title = $title; close = $close }
+}
+# WeChat's own search pages: "<query> - 搜一搜" and "AI搜索 - <title>". Anything else in the panel
+# (an article the customer opened) stops the closing, and nothing of it is pressed.
+function Test-WechatSearchPageTitle([string]$title) {
+  return $title -match "- *搜一搜$" -or $title -match "^AI搜索 *-"
+}
+function Close-WechatSearchPanel([IntPtr]$mainWindow, [int]$wechatPid) {
+  $closed = 0
+  for ($round = 0; $round -lt 5; $round++) {
+    $panelWindow = [XiaoxiSearchPanelWindow]::Find($mainWindow, [uint32]$wechatPid)
+    if ($panelWindow -eq [IntPtr]::Zero) { if ($closed) { return "closed_$closed" } else { return "none" } }
+    $panel = Read-WechatSearchPanel $panelWindow
+    if (-not (Test-WechatSearchPageTitle $panel.title)) { if ($closed) { return "closed_$($closed)_other_left" } else { return "other_page" } }
+    if (-not $panel.close) { return "close_missing" }
+    $invoke = $null
+    if (-not $panel.close.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) { return "close_missing" }
+    $invoke.Invoke(); $closed++
+    Start-Sleep -Milliseconds 300
+  }
+  return "closed_$($closed)_more_left"
 }
 $windowDiagnostic.search_panel = "error"
 try { $windowDiagnostic.search_panel = Close-WechatSearchPanel $hWnd ([int]$matched.pid) } catch {}
