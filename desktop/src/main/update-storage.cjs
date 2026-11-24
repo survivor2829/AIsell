@@ -200,6 +200,9 @@ function updateFailure(error, phase) {
   if (typeof error?.stack === "string") failure.stack = error.stack.slice(0, 4000);
   for (const key of ["requiredBytes", "availableBytes"]) if (Number.isFinite(error?.[key])) failure[key] = error[key];
   if (/^[a-zA-Z][a-zA-Z0-9_]{0,95}$/.test(error?.cleanupCode || "")) failure.cleanupCode = error.cleanupCode;
+  // Which processes kept the update waiting: executable names and kinds only.
+  if (Array.isArray(error?.processes)) failure.processes = error.processes.slice(0, 12)
+    .map(row => ({ name: String(row?.name || "x").slice(0, 60), kind: ["own", "external", "unknown"].includes(row?.kind) ? row.kind : "unknown" }));
   return failure;
 }
 function formatUpdateFailure(failure) {

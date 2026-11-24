@@ -212,6 +212,91 @@ if (!process.versions.electron) {
     assert.equal(stages[0][0], "waiting", "an app process recorded before the helper started is never the helper's own");
   }
 
+  // Field report 2026-11-23: the helper waited 120 s on "4 processes" nobody could name, then failed with
+  // its progress bar still moving. Programs outside the install and profile never block; our own stuck
+  // processes are ended after the grace; whatever is left is named in the failure and its field report.
+  async function checkWaitStopsOwnWorkersOnly() {
+    const { createRequire } = require("node:module");
+    const { promisify } = require("node:util");
+    const helperFile = path.resolve(__dirname, "../src/main/update-helper.cjs");
+    const load = createRequire(helperFile);
+    const now = Date.now(), date = offset => `/Date(${now + offset})/`;
+    const join = path.win32.join, installed = join("C:", "Program Files", "AI Fixture"), profile = join("C:", "Users", "fixture", "AppData", "Roaming", "ai-fixture");
+    const appRow = { pid: 5000, parent: 4, created: date(-60000) };
+    const worker = { ProcessId: 5100, ParentProcessId: 5000, CreationDate: date(-50000), ExecutablePath: join(installed, "resources", "tools", "ffmpeg.exe"), Name: "ffmpeg.exe" };
+    const wechat = { ProcessId: 5200, ParentProcessId: 5100, CreationDate: date(-40000), ExecutablePath: join("D:", "WeChat", "Weixin.exe"), Name: "Weixin.exe" };
+    const sidecar = { ProcessId: 5300, ParentProcessId: 5000, CreationDate: date(-45000), ExecutablePath: join(profile, "runtime", "python.exe"), Name: "python.exe" };
+    const hidden = { ProcessId: 5400, ParentProcessId: 5000, CreationDate: date(-45000), ExecutablePath: null, Name: "Mystery.exe" };
+    const self = { ProcessId: process.pid, ParentProcessId: 5000, CreationDate: date(-1000), ExecutablePath: join(installed, "helper.exe"), Name: "helper.exe" };
+    let snapshot = [], killed = [];
+    const execFile = () => assert.fail("the helper must use the promise interface");
+    execFile[promisify.custom] = async (command, args) => {
+      if (/taskkill/i.test(command)) { const pid = Number(args[1]); killed.push(pid); snapshot = snapshot.filter(row => row.ProcessId !== pid); return { stdout: "" }; }
+      return { stdout: JSON.stringify([self, ...snapshot]) };
+    };
+    const helperModule = { exports: {} };
+    new Function("require", "module", fs.readFileSync(helperFile, "utf8"))(
+      request => request === "node:child_process" ? { execFile, spawn() { throw Error("unexpected_process_start"); } } : load(request), helperModule);
+    const job = () => ({ parentPid: appRow.pid, processes: [appRow] });
+    const roots = { roots: [installed, profile] };
+    const stages = [];
+
+    snapshot = [worker, wechat]; killed = [];
+    const ignoredWait = helperModule.exports.waitForExit(job(), (...stage) => stages.push(stage), 60000, { ...roots, forceStopAfterMs: 0 });
+    await ignoredWait;
+    assert.deepEqual(killed, [5100], "our own stuck worker is ended once the grace has passed");
+    assert.equal(stages.some(stage => stage[1] === "正在结束未退出的软件进程" && stage[2].includes("ffmpeg.exe")), true, "the window names what it ends");
+    assert.equal(snapshot.some(row => row.ProcessId === wechat.ProcessId), true, "WeChat started by the app is neither ended nor waited on");
+
+    // WeChat stays a tracked child of the exited worker the app had recorded.
+    snapshot = [wechat]; killed = []; stages.length = 0;
+    const done = await helperModule.exports.waitForExit({ ...job(), processes: [appRow, { pid: worker.ProcessId, parent: worker.ParentProcessId, created: worker.CreationDate }] },(...stage) => stages.push(stage), 60000, roots);
+    assert.deepEqual(done.ignored, [{ name: "weixin.exe", label: "Weixin.exe", kind: "external" }], "an external program does not hold back the update");
+    assert.deepEqual(stages, [], "nothing to wait for");
+
+    snapshot = [sidecar]; killed = []; stages.length = 0;
+    await assert.rejects(helperModule.exports.waitForExit(job(), (...stage) => stages.push(stage), 1500, roots), { message: "update_workers_still_running" });
+    assert.deepEqual(killed, [], "inside the grace nothing is ended");
+    assert.equal(stages[0][2].includes("python.exe"), true, "the waiting window names the remaining process");
+
+    snapshot = [hidden]; killed = []; stages.length = 0;
+    const failure = await helperModule.exports.waitForExit(job(), () => {}, 1500, { ...roots, forceStopAfterMs: 0 }).catch(error => error);
+    assert.equal(failure.message, "update_workers_still_running", "a process whose path Windows hides is still waited on");
+    assert.deepEqual(killed, [], "and never force-ended");
+    assert.deepEqual(failure.processes, [{ name: "mystery.exe", label: "Mystery.exe", kind: "unknown" }]);
+    const recorded = require("../src/main/update-storage.cjs").updateFailure(failure, "waiting");
+    assert.deepEqual(recorded.processes, [{ name: "mystery.exe", kind: "unknown" }], "the status file keeps names and kinds only");
+    assert.deepEqual(require("../src/main/update-failure-report.cjs").failureDetails({ phase: "error", failure: recorded }).remaining_code,
+      ["mystery.exe:unknown"], "the field report says which processes never exited");
+
+    // While the app's main process is still quitting, nothing is ended however long the grace is.
+    const mainAlive = { ProcessId: appRow.pid, ParentProcessId: 4, CreationDate: appRow.created, ExecutablePath: join(installed, "AI获客 V1.0版本.exe"), Name: "AI获客 V1.0版本.exe" };
+    snapshot = [mainAlive, { ...worker }]; killed = [];
+    const quitting = await helperModule.exports.waitForExit(job(), () => {}, 1500,
+      { ...roots, appExecutable: mainAlive.ExecutablePath, forceStopAfterMs: 0 }).catch(error => error);
+    assert.deepEqual(killed, [], "the app's quit cleanup is never cut short, and the main process is never ended");
+    assert.deepEqual(quitting.processes.map(row => row.name).sort(), ["app", "ffmpeg.exe"], "the app's own Chinese-named executable is reported as app");
+
+    // Workers outside our folders: an account browser on a profile under ours, and a system PowerShell RPA host.
+    const accountBrowser = { ProcessId: 5500, ParentProcessId: 5000, CreationDate: date(-45000), ExecutablePath: join("C:", "Program Files", "Google", "Chrome", "chrome.exe"),
+      Name: "chrome.exe", CommandLine: `chrome.exe --user-data-dir="${join(profile, "data", "social_accounts", "profiles", "a1")}"` };
+    const rpaHost = { ProcessId: 5600, ParentProcessId: 5000, CreationDate: date(-45000), ExecutablePath: join("C:", "Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      Name: "powershell.exe", CommandLine: "powershell.exe -NoProfile -EncodedCommand AAAA" };
+    snapshot = [accountBrowser, rpaHost]; killed = [];
+    await helperModule.exports.waitForExit(job(), () => {}, 60000, { ...roots, forceStopAfterMs: 0 });
+    assert.deepEqual(killed.sort(), [5500, 5600], "a browser on our profile and an RPA host are waited on and ended like our own workers");
+
+    // Without roots nothing is classified away: the old wait-for-everything behaviour.
+    snapshot = [{ ...worker }]; killed = [];
+    const noRoots = await helperModule.exports.waitForExit(job(), () => {}, 1500, { forceStopAfterMs: 0 }).catch(error => error);
+    assert.equal(noRoots.message, "update_workers_still_running", "a call without roots keeps waiting");
+    assert.deepEqual(killed, [], "and ends nothing");
+
+    // A failed update must stop the bar: author CSS display:block used to override the hidden attribute.
+    const source = fs.readFileSync(helperFile, "utf8");
+    assert.match(source, /progress\[hidden\],#actions\[hidden\]\{display:none\}/u, "a hidden progress bar really disappears");
+  }
+
   async function checkFailedBackupStopsInstaller(userData, failureMode = "existing-backup") {
     const crypto = require("node:crypto");
     const { createRequire } = require("node:module");
@@ -334,6 +419,7 @@ if (!process.versions.electron) {
       assert.deepEqual(fs.readFileSync(path.join(userData, relative)), content, `source remains unchanged: ${relative}`);
     }
     await checkProcessTreeIgnoresReusedPids();
+    await checkWaitStopsOwnWorkersOnly();
     await checkBackupCapacityAndFailure(userData);
     await checkCopyAccounting();
     await checkFailedBackupStopsInstaller(userData);

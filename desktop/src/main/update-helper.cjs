@@ -19,14 +19,16 @@ const UPDATE_WINDOW_WORDS = { waiting: ["等软件歇一下，我就开始", nul
 async function processSnapshot() {
   let result;
   try { result = await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-    "[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate,ExecutablePath,Name | ConvertTo-Json -Compress"],
-    { windowsHide: true, maxBuffer: 8 * 1024 ** 2, timeout: PROCESS_QUERY_TIMEOUT_MS }); }
+    "[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate,ExecutablePath,Name,CommandLine | ConvertTo-Json -Compress"],
+    { windowsHide: true, maxBuffer: 32 * 1024 ** 2, timeout: PROCESS_QUERY_TIMEOUT_MS }); }
   catch (error) {
     if (error.killed) throw Object.assign(Error("update_process_snapshot_timeout"), { cause: error });
     throw error;
   }
   const rows = JSON.parse(result.stdout.replace(/^\uFEFF/, ""));
-  return (Array.isArray(rows) ? rows : [rows]).map(row => ({ pid: row.ProcessId, parent: row.ParentProcessId, created: row.CreationDate, executable: row.ExecutablePath, name: row.Name }));
+  return (Array.isArray(rows) ? rows : [rows]).map(row => ({ pid: row.ProcessId, parent: row.ParentProcessId, created: row.CreationDate, executable: row.ExecutablePath, name: row.Name,
+    // Read in memory only, to tell our workers from programs we merely launched; never stored or reported.
+    ...(typeof row.CommandLine === "string" ? { commandLine: row.CommandLine } : {}) }));
 }
 // CreationDate is "/Date(ms)/" from Windows PowerShell or ISO text; null when unknown.
 function createdAt(row) {
@@ -63,9 +65,46 @@ function descendants(rows, rootPid, seed = []) {
   }
   return [...selected.values()];
 }
-async function waitForExit(job, onStage, timeoutMs = 120000) {
-  let tracked = job.processes, until = Date.now() + timeoutMs;
-  const recorded = new Set(job.processes.map(identity));
+// Field report 2026-11-23: the helper waited on "4 processes" no customer could name, then gave up after
+// 120 s. A process of the app's tree is our worker when it runs from the install or the profile, names
+// either on its command line (an account browser's --user-data-dir), or is a script host the app runs
+// its own work in (RPA PowerShell, Python). Anything else the app merely launched — WeChat, a browser
+// opened on a link — holds none of our files and no longer blocks the update. A process whose path
+// Windows will not tell us is still waited on, but never ended.
+const SCRIPT_HOSTS = new Set(["powershell.exe", "pwsh.exe", "cmd.exe", "conhost.exe", "python.exe", "pythonw.exe", "node.exe", "wscript.exe", "cscript.exe"]);
+function isWithin(file, root) {
+  const relative = path.relative(path.resolve(root).toLowerCase(), path.resolve(file).toLowerCase());
+  return relative === "" || (!!relative && relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative));
+}
+function processKind(row, roots = []) {
+  if (!row.executable || !roots.length) return "unknown";
+  if (roots.some(root => root && isWithin(row.executable, root))) return "own";
+  if (SCRIPT_HOSTS.has(path.basename(row.executable).toLowerCase())) return "own";
+  const command = String(row.commandLine || "").replace(/\//g, "\\").toLowerCase();
+  return command && roots.some(root => root && command.includes(path.resolve(root).toLowerCase())) ? "own" : "external";
+}
+// Never a customer path. label is the file name shown in the window; name is the report's identifier
+// ("app" for the app's own executable, whose file name is Chinese).
+function processSummary(row, roots, appExecutable) {
+  const label = String(row.name || (row.executable ? path.basename(row.executable) : "") || "unknown").slice(0, 60), lower = label.toLowerCase();
+  const isApp = !!appExecutable && !!row.executable && path.resolve(row.executable).toLowerCase() === path.resolve(appExecutable).toLowerCase();
+  return { name: isApp ? "app" : /^[a-z0-9][a-z0-9_.-]{0,59}$/u.test(lower) ? lower : "x", label, kind: processKind(row, roots) };
+}
+function describeRemaining(rows, roots) {
+  const counts = new Map();
+  for (const row of rows) { const { label } = processSummary(row, roots); counts.set(label, (counts.get(label) || 0) + 1); }
+  return [...counts].map(([name, count]) => count > 1 ? `${name} ×${count}` : name).join("、");
+}
+// Counted from the moment the app's main process has gone: its quit cleanup (sidecars, databases) runs
+// first and is never cut short. Our processes still running this long after it are stuck, not working.
+// The main process itself is never ended here.
+const FORCE_STOP_AFTER_MS = 30000;
+async function waitForExit(job, onStage, timeoutMs = 120000, { roots = [], appExecutable = "", forceStopAfterMs = FORCE_STOP_AFTER_MS } = {}) {
+  let tracked = job.processes, parentGoneAt = null;
+  const started = Date.now(), until = started + timeoutMs;
+  const recorded = new Set(job.processes.map(identity)), stopped = new Set();
+  const parent = job.processes.find(row => row.pid === job.parentPid);
+  const summary = row => processSummary(row, roots, appExecutable);
   while (true) {
     if (job.authorizationFile && readJson(job.authorizationFile.replace(/\.json$/, ".cancel.json"))) throw Error("update_request_cancelled");
     const rows = await processSnapshot();
@@ -75,10 +114,26 @@ async function waitForExit(job, onStage, timeoutMs = 120000) {
     const recordedBefore = row => since !== null && recorded.has(identity(row)) && createdAt(row) !== null && createdAt(row) < since;
     const own = new Set(descendants(rows.filter(row => !recordedBefore(row)), process.pid).map(row => row.pid));
     tracked = descendants(rows, job.parentPid, tracked).filter(row => !own.has(row.pid));
-    const alive = tracked.filter(row => rows.some(candidate => candidate.pid === row.pid && candidate.created === row.created));
-    if (!alive.length) return;
-    if (Date.now() > until) throw Error("update_workers_still_running");
-    onStage("waiting", "等待软件和工作进程退出", `仍有 ${alive.length} 个相关进程正在退出，请保留此窗口。`);
+    const alive = rows.filter(row => tracked.some(value => value.pid === row.pid && value.created === row.created));
+    const blocking = alive.filter(row => processKind(row, roots) !== "external");
+    if (!blocking.length) return { ignored: alive.map(summary) };
+    if (Date.now() > until) throw Object.assign(Error("update_workers_still_running"), { processes: blocking.map(summary) });
+    const parentAlive = parent ? rows.some(row => identity(row) === identity(parent)) : false;
+    if (!parentAlive && parentGoneAt === null) parentGoneAt = Date.now();
+    const stoppable = blocking.filter(row => processKind(row, roots) === "own" && row.pid !== job.parentPid && !stopped.has(identity(row)));
+    if (parentGoneAt !== null && Date.now() - parentGoneAt >= forceStopAfterMs && stoppable.length) {
+      onStage("waiting", "正在结束未退出的软件进程", `${describeRemaining(stoppable, roots)} 退出超时，正在结束它们，然后继续更新。`);
+      // Recheck identity right before taskkill: a PID freed since the snapshot may already name another process.
+      const current = new Set((await processSnapshot()).map(identity));
+      for (const row of stoppable) {
+        stopped.add(identity(row));
+        if (!current.has(identity(row))) continue;
+        try { await promisify(execFile)("taskkill.exe", ["/PID", String(row.pid), "/F"], { windowsHide: true }); }
+        catch { /* Exited meanwhile or not ours to stop: the next round decides. */ }
+      }
+    } else {
+      onStage("waiting", "等待软件和工作进程退出", `仍有 ${blocking.length} 个相关进程正在退出（${describeRemaining(blocking, roots)}），请保留此窗口。`);
+    }
     await sleep(1000);
   }
 }
@@ -119,7 +174,8 @@ async function stopLaunch(pid, tracked, onStage) {
     tracked = descendants(rows, pid, tracked);
     const alive = tracked.filter(row => rows.some(current => identity(current) === identity(row)));
     if (!alive.length) return;
-    if (Date.now() > until) throw Error("update_workers_still_running");
+    // Its own code: the new version may already be selected, so "nothing changed" would be wrong.
+    if (Date.now() > until) throw Error("update_launch_still_running");
     for (const row of alive) {
       const current = (await processSnapshot()).find(value => identity(value) === identity(row));
       if (!current) continue;
@@ -293,7 +349,8 @@ async function prepareHelperRuntime(options) {
 async function createUpdateJob({ userData, prepared, currentVersion, channel = "test" }) {
   await require("./update-backups.cjs").retryRetiringBackups(userData).catch(error => console.warn(`Backup cleanup deferred: ${error.message}`));
   const paths = updatePaths(userData); fs.mkdirSync(paths.jobs, { recursive: true });
-  const id = crypto.randomUUID(), snapshot = await processSnapshot(), processes = descendants(snapshot, process.pid);
+  // Command lines stay out of the job file: they are only read live by the helper.
+  const id = crypto.randomUUID(), snapshot = await processSnapshot(), processes = descendants(snapshot, process.pid).map(({ commandLine, ...row }) => row);
   if (!processes.some(row => row.pid === process.pid)) throw Error("update_process_snapshot_failed");
   const installedRoot = global.__xiaoxiComponents?.installedRoot || path.dirname(process.execPath);
   const applicationRoot = global.__xiaoxiComponents?.applicationRoot || path.join(installedRoot, "resources", "app");
@@ -340,8 +397,19 @@ async function runHelper({ jobFile, userData }) {
   await app.whenReady();
   const window = new BrowserWindow({ width: 640, height: 340, resizable: false, autoHideMenuBar: true, title: `${productBrand.displayName} · 软件更新`,
     webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, partition: "xiaoxi-update-helper" } });
-  await window.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><style>body{margin:0;padding:32px;font:15px 'Microsoft YaHei',sans-serif;color:#273442;background:#fff5f7}h1{font-size:23px;margin:14px 0}p{line-height:1.7;color:#596371}small{color:#8b3454}progress{display:block;width:100%;height:18px;margin-top:20px;accent-color:#e60000}.hero{display:flex;align-items:center;gap:18px;margin-top:6px}.hero h1{margin:0 0 4px}.hero p{margin:0}#pet{flex:none;overflow:visible}#pet .b{transform-origin:100px 180px;animation:b 1.1s ease-in-out infinite alternate}#pet .t{transform-origin:100px 34px;animation:t 1.6s ease-in-out infinite}#pet .e{transform-origin:100px 96px;animation:e 4.2s linear infinite}@keyframes b{from{transform:translateY(0) scale(1.02,.98)}to{transform:translateY(-8px) scale(.98,1.02)}}@keyframes t{0%,100%{transform:rotate(-5deg)}50%{transform:rotate(7deg)}}@keyframes e{0%,94%,100%{transform:scaleY(1)}97%{transform:scaleY(.08)}}</style><small>${productBrand.displayName}　${job.currentVersion} → ${job.targetVersion}</small><div class="hero"><svg id="pet" viewBox="0 0 200 200" width="104" height="104"><g class="b"><path class="t" d="M72 34C70 14 92 2 122 -6C112 8 128 18 130 34C110 24 90 24 72 34Z" fill="#f03a1f"/><path d="M100 26C150 26 186 54 186 96C186 140 146 166 100 166C54 166 14 140 14 96C14 54 50 26 100 26Z" fill="#fff" stroke="#2e2a2c" stroke-width="5"/><ellipse cx="58" cy="92" rx="36" ry="40" fill="#fff" stroke="#c6c6cd" stroke-width="3"/><ellipse cx="142" cy="92" rx="36" ry="40" fill="#fff" stroke="#c6c6cd" stroke-width="3"/><g class="e"><ellipse cx="66" cy="96" rx="20" ry="26" fill="#3f1b18"/><ellipse cx="134" cy="96" rx="20" ry="26" fill="#3f1b18"/><circle cx="73" cy="83" r="7" fill="#fff"/><circle cx="141" cy="83" r="7" fill="#fff"/></g><path d="M80 134Q100 150 120 134" fill="none" stroke="#2e2a2c" stroke-width="5" stroke-linecap="round"/><ellipse cx="44" cy="132" rx="11" ry="5" fill="#ffb1bb"/><ellipse cx="156" cy="132" rx="11" ry="5" fill="#ffb1bb"/></g></svg><div><h1 id="title">我准备换上新本领啦</h1><p id="detail">更新窗口会在软件退出后继续显示进度。</p></div></div><progress id="busy" max="100"></progress></html>`));
-  let finished = false, currentPhase = "ready";
+  await window.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><style>body{margin:0;padding:32px;font:15px 'Microsoft YaHei',sans-serif;color:#273442;background:#fff5f7}h1{font-size:23px;margin:14px 0}p{line-height:1.7;color:#596371}small{color:#8b3454}progress{display:block;width:100%;height:18px;margin-top:20px;accent-color:#e60000}progress[hidden],#actions[hidden]{display:none}#actions{margin-top:22px;display:flex;gap:12px}#actions button{font:15px 'Microsoft YaHei',sans-serif;padding:8px 20px;border-radius:6px;border:1px solid #e60000;cursor:pointer}#relaunch{background:#e60000;color:#fff}#close{background:#fff;color:#e60000}.hero{display:flex;align-items:center;gap:18px;margin-top:6px}.hero h1{margin:0 0 4px}.hero p{margin:0}#pet{flex:none;overflow:visible}#pet .b{transform-origin:100px 180px;animation:b 1.1s ease-in-out infinite alternate}#pet .t{transform-origin:100px 34px;animation:t 1.6s ease-in-out infinite}#pet .e{transform-origin:100px 96px;animation:e 4.2s linear infinite}@keyframes b{from{transform:translateY(0) scale(1.02,.98)}to{transform:translateY(-8px) scale(.98,1.02)}}@keyframes t{0%,100%{transform:rotate(-5deg)}50%{transform:rotate(7deg)}}@keyframes e{0%,94%,100%{transform:scaleY(1)}97%{transform:scaleY(.08)}}</style><small>${productBrand.displayName}　${job.currentVersion} → ${job.targetVersion}</small><div class="hero"><svg id="pet" viewBox="0 0 200 200" width="104" height="104"><g class="b"><path class="t" d="M72 34C70 14 92 2 122 -6C112 8 128 18 130 34C110 24 90 24 72 34Z" fill="#f03a1f"/><path d="M100 26C150 26 186 54 186 96C186 140 146 166 100 166C54 166 14 140 14 96C14 54 50 26 100 26Z" fill="#fff" stroke="#2e2a2c" stroke-width="5"/><ellipse cx="58" cy="92" rx="36" ry="40" fill="#fff" stroke="#c6c6cd" stroke-width="3"/><ellipse cx="142" cy="92" rx="36" ry="40" fill="#fff" stroke="#c6c6cd" stroke-width="3"/><g class="e"><ellipse cx="66" cy="96" rx="20" ry="26" fill="#3f1b18"/><ellipse cx="134" cy="96" rx="20" ry="26" fill="#3f1b18"/><circle cx="73" cy="83" r="7" fill="#fff"/><circle cx="141" cy="83" r="7" fill="#fff"/></g><path d="M80 134Q100 150 120 134" fill="none" stroke="#2e2a2c" stroke-width="5" stroke-linecap="round"/><ellipse cx="44" cy="132" rx="11" ry="5" fill="#ffb1bb"/><ellipse cx="156" cy="132" rx="11" ry="5" fill="#ffb1bb"/></g></svg><div><h1 id="title">我准备换上新本领啦</h1><p id="detail">更新窗口会在软件退出后继续显示进度。</p></div></div><progress id="busy" max="100"></progress><div id="actions" hidden><button id="relaunch" onclick="document.title='xiaoxi-relaunch'">重新打开软件</button><button id="close" onclick="document.title='xiaoxi-close'">关闭窗口</button></div></html>`));
+  let finished = false, currentPhase = "ready", relaunchOffered = false;
+  // A failed update leaves the customer without the app: the window offers to reopen it (the old version,
+  // which retries the update on its own) instead of an animated bar that looked like it was still working.
+  window.on("page-title-updated", (event, title) => {
+    event.preventDefault();
+    if (!finished || !relaunchOffered) return;
+    if (title === "xiaoxi-relaunch") {
+      relaunchOffered = false;
+      try { const reopened = spawn(job.executable, [], { detached: true, stdio: "ignore", windowsHide: false, cwd: path.dirname(job.executable) }); reopened.on("error", () => {}); reopened.unref(); } catch { /* The customer can still open it from the desktop. */ }
+      setTimeout(() => app.quit(), 300);
+    } else if (title === "xiaoxi-close") app.quit();
+  });
   const timings = [];
   let measuredPhase = "ready", phaseStarted = performance.now();
   window.on("close", event => { if (!finished) event.preventDefault(); });
@@ -358,13 +426,13 @@ async function runHelper({ jobFile, userData }) {
       detail += `\n更新记录未能保存（${updateFailure(error, currentPhase).code}），请保留此窗口的错误信息。`;
     }
     // Only what the window says is warmer; the status file above, errors and any rollback keep the exact wording.
-    const warm = !persistenceError && !/恢复|回退|结束新版/.test(title + detail) ? UPDATE_WINDOW_WORDS[phase] : null;
+    const warm = !persistenceError && !/恢复|回退|结束/.test(title + detail) ? UPDATE_WINDOW_WORDS[phase] : null;
     const shown = warm ? [warm[0], warm[1] ?? detail] : [title, detail];
-    if (!window.isDestroyed()) void window.webContents.executeJavaScript(`document.getElementById('title').textContent=${JSON.stringify(shown[0])};document.getElementById('detail').textContent=${JSON.stringify(shown[1])};document.getElementById('busy').hidden=${JSON.stringify(phase === "error")};${phase === "complete" ? "document.getElementById('busy').value=100;document.getElementById('detail').textContent+=' 更新完成 100%。';" : "document.getElementById('busy').removeAttribute('value');"}`).catch(() => {});
+    if (!window.isDestroyed()) void window.webContents.executeJavaScript(`document.getElementById('title').textContent=${JSON.stringify(shown[0])};document.getElementById('detail').textContent=${JSON.stringify(shown[1])};document.getElementById('busy').hidden=${JSON.stringify(phase === "error")};document.getElementById('actions').hidden=${JSON.stringify(!(phase === "error" && relaunchOffered))};${phase === "complete" ? "document.getElementById('busy').value=100;document.getElementById('detail').textContent+=' 更新完成 100%。';" : "document.getElementById('busy').removeAttribute('value');"}`).catch(() => {});
     if (persistenceError && phase !== "error") throw persistenceError;
   };
   const activeJobFile = path.join(paths.directory, "active-job.json");
-  let installationStarted = false, candidate = null;
+  let installationStarted = false, candidate = null, authorized = false;
   let releaseMaintenance;
   try {
     releaseMaintenance = await require("./update-process-lock.cjs").acquireProcessLock(path.join(paths.directory, "maintenance.lock"), { timeoutMs: 120000 });
@@ -372,10 +440,10 @@ async function runHelper({ jobFile, userData }) {
     writeJsonAtomic(activeJobFile, { id: job.id, pid: process.pid });
     writeJsonAtomic(path.join(paths.jobs, job.id + ".ready.json"), { pid: process.pid });
     await waitForAuthorization(full, job);
-    job.authorizationFile = full;
+    job.authorizationFile = full; authorized = true;
     const config = require("./cloud-config.cjs").cloudConfig({ channel: job.channel || "test" });
     stage("waiting", "等待软件和工作进程退出", "退出完成后将继续安装更新。");
-    await waitForExit(job, stage);
+    await waitForExit(job, stage, undefined, { roots: [job.installedRoot, userData], appExecutable: job.executable });
     const prepared = job.prepared;
     let dataBackup;
     stage("verifying", "正在校验更新", "正在核对签名和完整版本文件。");
@@ -463,9 +531,14 @@ async function runHelper({ jobFile, userData }) {
         error = Error("update_start_rolled_back");
       } catch (restoreError) { error = Object.assign(Error("update_restore_failed"), { cause: restoreError }); }
     }
-    const messages = { update_workers_still_running: "仍有工作进程占用，更新尚未安装。退出相关任务后重新检查更新。", update_start_rolled_back: "新版本启动失败，已恢复上一版本，可重新检查更新。", update_start_failed: "更新启动未完成，请重试。" };
+    const remaining = Array.isArray(error?.processes) && error.processes.length
+      ? `（${[...new Set(error.processes.map(row => row.label || row.name))].join("、")}）` : "";
+    const messages = { update_workers_still_running: `本次更新没有安装：软件的部分进程${remaining}一直没有退出。软件和数据都保持原样，点“重新打开软件”会再次尝试更新；仍不行请重启电脑后再更新。`, update_start_rolled_back: "新版本启动失败，已恢复上一版本，可重新检查更新。", update_start_failed: "更新启动未完成，请重试。",
+      update_launch_still_running: "新版本没能正常启动，它的进程也没有按时结束。请重启电脑后再打开软件；仍打不开时用官网完整安装包覆盖安装，数据会保留。" };
     const failure = updateFailure(error, currentPhase);
     finished = true;
+    // Once authorized the app has quit. Rollbacks reopen it themselves; a failed restore is not reopened blindly.
+    relaunchOffered = authorized && !["update_start_rolled_back", "update_restore_failed", "update_launch_still_running"].includes(failure.code);
     stage("error", "更新未完成", messages[failure.code] || formatUpdateFailure(failure), failure);
   } finally {
     // Failure to remove a receipt must never hide the original failure or lock its window.
