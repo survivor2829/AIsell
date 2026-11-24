@@ -128,15 +128,21 @@ function resumableFreshEdit(task, multipart) {
 // message_input_failed reached the field reports with no cause, although the driver had returned one.
 // Kept: numbers, booleans and ASCII identifiers (customer names and chat text are never ASCII-only
 // identifiers here), under keys that cannot hold contact data; one level of nesting.
-const UNSAFE_EVIDENCE_KEY = /(?:message|text|title|name|nickname|remark|wechat_?id|wxid|path|file|dir|raw|exception|content|clipboard_?text|draft|token|secret|key|url|query)/iu;
+const UNSAFE_EVIDENCE_KEY = /(?:message|text|title|name|nickname|remark|wechat_?id|wxid|account|customer|user|contact|phone|mobile|path|file|dir|raw|exception|content|clipboard_?text|draft|token|secret|key|url|query)/iu;
+const DRIVER_EVIDENCE_KEY = /^(?:ok|reason|blocked_reason|rule_?id|errorid)$|(?:stage|phase|method|color|offset|source|ratio|attempts|line|type|hresult|attempted|verified|mode|_ms|elapsedms|count|index|exhausted|operation|status)$/u;
+// A WeChat id or a phone-length digit run is contact data whatever the key is called.
+const UNSAFE_EVIDENCE_VALUE = /(?:^wxid_|\d{7,})/iu;
 function finiteDriverEvidence(source, depth = 0) {
   if (!source || typeof source !== "object" || Array.isArray(source)) return {};
   const kept = {};
   for (const [key, value] of Object.entries(source)) {
     if (Object.keys(kept).length >= 40) break;
     if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(key) || UNSAFE_EVIDENCE_KEY.test(key)) continue;
+    // Only keys that name a diagnostic (stage, method, colour, source, ratio, count, line, type, time,
+    // state ...); an unknown key such as "expected" or "target" may hold a contact and is dropped.
+    if (!(value && typeof value === "object") && !DRIVER_EVIDENCE_KEY.test(key.toLowerCase())) continue;
     if (typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) kept[key] = value;
-    else if (typeof value === "string" && /^[A-Za-z0-9_.:\-]{1,80}$/u.test(value)) kept[key] = value;
+    else if (typeof value === "string" && /^[A-Za-z0-9_.:\-]{1,80}$/u.test(value) && !UNSAFE_EVIDENCE_VALUE.test(value)) kept[key] = value;
     else if (depth === 0 && value && typeof value === "object" && !Array.isArray(value)) {
       const nested = finiteDriverEvidence(value, 1);
       if (Object.keys(nested).length) kept[key] = nested;
@@ -166,7 +172,7 @@ function preSendCause(evidence) {
   return {
     ...(typeof stage === "string" ? { pre_send_stage: stage.slice(0, 48) } : {}),
     ...(typeof errorType === "string" ? { pre_send_error_kind: errorType.slice(0, 64) } : {}),
-    ...(Number.isFinite(Number(line)) && line !== undefined ? { pre_send_line: Number(line) } : {}),
+    ...((typeof line === "number" && Number.isInteger(line)) || (typeof line === "string" && /^\d+$/u.test(line)) ? { pre_send_line: Number(line) } : {}),
     ...(typeof send === "boolean" ? { pre_send_attempted: send } : {})
   };
 }
@@ -216,11 +222,16 @@ function snapshotChange(current, liveContacts, liveClassification, at) {
 //   dropdown_stayed_<why>        it ignored the press and no retry was allowed (WeChat-ID mode, input...)
 //   dropdown_closed              the dropdown went away, yet the chat title is not the contact's
 // plus the first foreign window over the row and WeChat's keyboard language at the press.
+const CLICK_EXPLAINED_REASONS = new Set(["search_result_not_opened", "search_result_identity_unverified",
+  "wechat_search_result_landing_unverified", "wechat_search_network_lookup_misclick"]);
 function clickCause(click) {
   if (!click || typeof click !== "object") return {};
+  const retry = String(click.retry || "");
   const cause = click.dropdown_after_retry === true ? "dropdown_stayed_after_retry"
-    : click.dropdown_after_press === true ? `dropdown_stayed_${String(click.retry || "unknown").replace(/^skipped_/u, "")}`
-      : click.dropdown_after_press === false ? "dropdown_closed" : "";
+    : click.dropdown_after_retry === false ? "dropdown_closed_after_retry"
+      : retry === "skipped_dropdown_closed" ? "dropdown_closed_before_retry"
+        : click.dropdown_after_press === true ? `dropdown_stayed_${(retry || "unknown").replace(/^skipped_/u, "")}`
+          : click.dropdown_after_press === false ? "dropdown_closed" : "";
   const cover = (Array.isArray(click.covering) ? click.covering : [])
     .map((window) => String(window?.process || window?.class || "").toLowerCase().replace(/[^a-z0-9_]/gu, "")).find(Boolean) || "";
   return {
@@ -588,7 +599,10 @@ function createTouchWorkflow(options = {}) {
             identity_recoveries: Number(row.identity_recovery_attempts) || 0,
             pre_send_recoveries: Number(row.pre_send_recovery_attempts) || 0,
             environment_recovery: Boolean(row.environment_recovery_started_at),
-            rule_id: String(row.search_evidence?.rule_id || ""), ...clickCause(row.search_evidence?.click_observation), ...details },
+            rule_id: String(row.search_evidence?.rule_id || ""),
+            // The click that opened (or did not open) the chat explains only search and landing failures;
+            // on a later pre-send or delivery failure the same row's click evidence would mislead.
+            ...(CLICK_EXPLAINED_REASONS.has(reason) ? clickCause(row.search_evidence?.click_observation) : {}), ...details },
           { trace: true, ...(traceId ? { traceId } : {}), level: "error", code: `touch_${kind}_${reason}` });
       } catch { /* Diagnostics never stop the task. */ }
     };

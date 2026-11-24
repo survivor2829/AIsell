@@ -928,7 +928,8 @@ async function checkPreSendSkipCarriesDriverEvidence() {
           driverStage: "paste", paste_method: "ctrl_v", send_button_color: "gray", input_point_source: "composer_uia",
           input_x_ratio: 0.42, clipboardWriteAttempts: 2, source_line: 287, errorType: "TimeoutException", sendAttempted: false,
           conversation_title: "客户一", message: "您好", source_file: "C:/Users/someone/desktop/rpa/x.cjs", conversation_token: "abc123",
-          raw_exception: "at line 3", diagnostics: { paste_wait_ms: 60000, dialog_seen: false, recipient_name: "客户一" } }
+          raw_exception: "at line 3", accountId: "wxid_owner", expected: "wxid_customer_1", lastQuery: "15370331855", hint: "15370331855", label: "Tony",
+          diagnostics: { paste_wait_ms: 60000, dialog_seen: false, recipient_name: "客户一" } }
         : { ok: true, state: { real_send_status: "sent_verified" } }
     });
     const record = { id: "pre-send-evidence", payload: workflow.prepareWorkflowTask({ script: "您好", contactIds: [contact.id], imageIds: ["image-1"] }) };
@@ -942,14 +943,14 @@ async function checkPreSendSkipCarriesDriverEvidence() {
       result: { ok: false, send_attempted: false, blocked_reason: "image_paste_not_accepted", pre_send_retry_exhausted: true,
         driverStage: "paste", paste_method: "ctrl_v", send_button_color: "gray", input_point_source: "composer_uia",
         input_x_ratio: 0.42, clipboardWriteAttempts: 2, source_line: 287, errorType: "TimeoutException", sendAttempted: false },
-      diagnostics: { paste_wait_ms: 60000, dialog_seen: false }
-    }, "the driver's own findings, without titles, text, paths, tokens or exception text");
+      diagnostics: { paste_wait_ms: 60000 }
+    }, "only named diagnostics: no titles, text, paths, tokens, exception text or unknown keys");
     const event = events.find((details) => details.stage === "pre_send");
     assert.equal(event.pre_send_stage, "paste");
     assert.equal(event.pre_send_error_kind, "TimeoutException");
     assert.equal(event.pre_send_line, 287);
     assert.equal(event.pre_send_attempted, false);
-    for (const secret of ["客户一", "您好", "someone", "abc123"]) {
+    for (const secret of ["客户一", "您好", "someone", "abc123", "wxid_", "15370331855", "Tony"]) {
       assert.equal(JSON.stringify(failures).includes(secret), false, `passport never holds ${secret}`);
     }
   } finally { unsubscribe(); }
