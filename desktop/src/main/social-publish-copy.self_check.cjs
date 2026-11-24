@@ -32,7 +32,7 @@ const { createCoverCache, createReferenceStore, copyPrompt, parseCopy, writeCopy
   assert.ok(spoken.includes("口播/字幕原文：一趟洗一大片，扫吸一体不扬尘")); assert.match(spoken, /品牌：新奔/);
   assert.ok(spoken.includes("有口播/字幕原文的以原文为准")); assert.match(spoken, /3 个不同角度的标题/);
   // more intelligence, less structure（用户 2026-11-24）：给目标、事实边界和客户认可的参考文案，不给写作公式。
-  assert.match(spoken, /说的就是我/); assert.match(spoken, /都是别人家的生意/);
+  assert.match(spoken, /说的就是我/); assert.match(spoken, /都是别人家的生意/); assert.match(spoken, /正文 100 字左右/);
   assert.ok(spoken.indexOf("用户自己存的参考文案") < spoken.indexOf("评论区扣报名"), "用户存的参考排在内置参考前面");
   assert.doesNotMatch(spoken, /正文 60 到 150 字|titles：3 个写法不同/, "不再套固定结构");
   assert.deepEqual(parseCopy(JSON.stringify({ platforms: { douyin: { titles: ["一站式赋能物业保洁", "车库一趟洗完不用返工"] } } }), ["douyin"]).douyin.titles, ["车库一趟洗完不用返工"]);
