@@ -6,6 +6,7 @@
   <meta name="csrf-token" content="{{ csrf_token() }}">
   <title>小玺AI · 工作台</title>
   <link rel="stylesheet" href="/static/css/design-system.css?v=2">
+  <link rel="stylesheet" href="/static/css/agent-stage.css?v=1">
   <script src="/static/vendor/sortable-1.15.6.min.js"></script>
   <style>
     /* ── Reset ─────────────────────────────────────────────── */
@@ -2539,6 +2540,8 @@
       if (ui.bar) ui.bar.style.width = `${Number(state.progress_pct || 0)}%`;
       if (ui.subText) ui.subText.textContent = `${modeBadge} · ${state.progress_msg || state.status}`;
       renderAiRefineProgressBlocks(state, ui);
+      // AI 工作台：策划、设计师、拼版各是一个光标，跟着这份真实状态走。
+      if (window.AgentStage && ui.loading) window.AgentStage.render(ui.loading, state);
       if (taskRecord.status !== state.status) {
         taskRecord = persistAiRefineTask({ ...taskRecord, status: state.status }) || taskRecord;
       }
@@ -2988,6 +2991,7 @@
     if (!resumePersistedAiRefineTask()) restoreLatestAiResult();
   });
 </script>
+<script src="/static/agent-stage.js?v=1"></script>
 {% if desktop_mode %}<script src="/static/desktop-scroll.js" defer></script>{% endif %}
 </body>
 </html>
