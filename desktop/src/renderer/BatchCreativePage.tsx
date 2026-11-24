@@ -12,6 +12,8 @@ import { CARRIED_ASSETS_WAIT, carriedAssetsAutosave, createDraftQueue, createPen
 import { type RecoveryVoice, approvedVoiceIds as approvedIn } from "./batch-voice-recovery";
 import { LayoutTemplate, Clapperboard, ArrowLeft, ArrowRight, Plus } from "lucide-react";
 import { MixCount, MixPlayer, MixProgress, MixSteps, type MixRow } from "./MixWidgets";
+import { AgentStage } from "./AgentStage";
+import { mixStageModel } from "./mix-stage";
 import { ExampleBanner } from './VideoExamples';
 
 type VoiceItem = RecoveryVoice & { displayName: string; provider?: string; digitalHumanDefault?: boolean; productApproved?: boolean; autoSelectPriority?: number };
@@ -537,7 +539,9 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
       <MixProgress percent={ended ? (completed ? 100 : progressPercent) : progressPercent} phase={submitting ? "analysis" : activity?.phase} finished={ended && batch.status === "completed"} stopped={!running && !submitting && !ended}
         title={ended ? (batch.status === "completed" ? "本次制作已完成" : "本次任务已结束") : submitting ? "正在提交任务" : activity?.phase_label || (running ? "正在处理" : batchStatus[batch.status] || "处理中")}
         lines={[scriptFlow && !batch.script_confirmation ? `已有 ${options.length} 份文案` : `已做好 ${completed} / ${batch.target_count || "待定"} 条`]}
-        rows={batch.script_confirmation ? shownCandidates.map((c, index): MixRow => ({ key: c.candidate_id, label: `第 ${index + 1} 条`, state: c.status === "completed" ? "done" : ["failed", "skipped"].includes(c.status) ? "failed" : running && activity?.item_index === index + 1 && makingPhase ? "now" : "wait" })) : []} />
+        rows={[]} hideStages />
+      {/* AI 工作台（用户 2026-11-24）：素材理解、编剧、配音、配乐、封面、剪辑各是一个光标，取代原来的阶段条和每条进度行。 */}
+      <AgentStage model={mixStageModel({ batch, candidates: shownCandidates, running, submitting, ended, scriptCount: options.length })} label="AI 剪辑组工作台" />
       <div className="batch-progress-content">
         {ended && <p className="batch-progress-message" role="status">{completed ? "已完成的作品可以查看和导出。" : "本次没有产出成片。"}请先查看下方原因，再决定是否调整素材和文案；软件不会自动重试。</p>}
         {!ended && (submitting || activity) && <div className="batch-live-progress">

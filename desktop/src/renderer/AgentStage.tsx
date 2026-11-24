@@ -14,6 +14,7 @@ export type StageModel = { cards: StageCard[]; agents: StageAgent[]; log: StageL
 type Point = { x: number; y: number };
 const DOCK_SLOT = 92;
 const DOCK_ROW = 24;
+const CURSOR_WIDTH = 104;
 
 export function AgentStage({ model, label }: { model: StageModel; label: string }) {
   const board = useRef<HTMLDivElement>(null);
@@ -43,7 +44,8 @@ export function AgentStage({ model, label }: { model: StageModel; label: string 
           const crowd = model.agents.filter((other) => other.at === agent.at && onCard(other));
           const slot = crowd.indexOf(agent);
           // Lower right of the card, clear of its title and detail line.
-          next[agent.id] = { x: box.left - root.left + box.width * 0.58 - slot * 10, y: box.top - root.top + box.height - 26 - slot * 6 };
+          // Kept inside the board so the name tag never hangs off the right edge.
+          next[agent.id] = { x: Math.max(0, Math.min(box.left - root.left + box.width * 0.58, root.width - CURSOR_WIDTH) - slot * 12), y: box.top - root.top + box.height - 26 - slot * 8 };
         } else if (dockBox) {
           const index = parked.indexOf(agent);
           const perRow = Math.max(1, Math.floor((dockBox.width - 8) / DOCK_SLOT));

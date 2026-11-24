@@ -3538,6 +3538,33 @@ class CreativeDomain:
             self._auto_mix_run_value(self._auto_mix_run_row(run_id=row["id"]))
         )
 
+    def _report_narrated_step(self, private_state, stage, percent):
+        """Tell a batch which step of the current work is running (voice, music, render), so its
+        workbench shows who is working; only the engine's real steps are reported."""
+        if not private_state.get("narrated_batch_id"):
+            return
+        try:
+            from .narrated_batch import NarratedBatchDomain
+            narrated = NarratedBatchDomain(self)
+            batch = narrated._load(private_state["narrated_batch_id"])
+            job = batch.get("_active_production_job") or {}
+            total = max(1, len(batch.get("production_jobs") or []))
+            index = max(0, int(job.get("production_index") or 1) - 1)
+            item = next((candidate for candidate in batch.get("candidates") or []
+                         if candidate.get("candidate_id") == job.get("candidate_id")), {})
+            production_percent = round((index + max(0, min(100, percent)) / 100) * 100 / total)
+            narrated._activity(
+                batch, stage, index, total,
+                phase="production", phase_label="配音与剪辑",
+                overall_percent=60 + round(production_percent * 0.35),
+                phase_percent=production_percent,
+                item_index=index + 1, item_total=total,
+                item_name=item.get("title") or f"第 {index + 1} 条作品",
+            )
+        except Exception:
+            # Progress reporting must never invalidate the work itself.
+            return
+
     def _run_auto_mix_v2(self, task_id, payload):
         run_id = str(payload.get("run_id") or "")
         row = self._auto_mix_run_row(run_id=run_id)
@@ -3653,6 +3680,7 @@ class CreativeDomain:
             voice_persona_id=persona["id"],
         )
 
+        self._report_narrated_step(private_state, "正在配音", 2)
         try:
             voice_bundle = self._auto_mix_voice_bundle(
                 task_id, row, persona, public_plan, private_state
@@ -3754,6 +3782,7 @@ class CreativeDomain:
             )
             music_reused = music is not None
             if music is None:
+                self._report_narrated_step(private_state, "正在挑选配乐", 6)
                 music = self._select_auto_mix_music(
                     public_plan.get("musicBrief") or {},
                     required_duration_ms=voice_bundle["duration_ms"],
@@ -3855,29 +3884,7 @@ class CreativeDomain:
         )
         self._set_task(task_id, "rendering", progress=0.86)
         def render_progress(stage, percent):
-            if not private_state.get("narrated_batch_id"):
-                return
-            try:
-                from .narrated_batch import NarratedBatchDomain
-                narrated = NarratedBatchDomain(self)
-                batch = narrated._load(private_state["narrated_batch_id"])
-                job = batch.get("_active_production_job") or {}
-                total = max(1, len(batch.get("production_jobs") or []))
-                index = max(0, int(job.get("production_index") or 1) - 1)
-                item = next((candidate for candidate in batch.get("candidates") or []
-                             if candidate.get("candidate_id") == job.get("candidate_id")), {})
-                production_percent = round((index + max(0, min(100, percent)) / 100) * 100 / total)
-                narrated._activity(
-                    batch, stage, index, total,
-                    phase="production", phase_label="配音与剪辑",
-                    overall_percent=60 + round(production_percent * 0.35),
-                    phase_percent=production_percent,
-                    item_index=index + 1, item_total=total,
-                    item_name=item.get("title") or f"第 {index + 1} 条作品",
-                )
-            except Exception:
-                # Progress reporting must never invalidate a completed local render.
-                return
+            self._report_narrated_step(private_state, stage, percent)
 
         rendered = self._render_generated(
             generated_id, task_id=task_id, progress_callback=render_progress

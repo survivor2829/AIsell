@@ -2321,6 +2321,19 @@ class NarratedBatchTests(unittest.TestCase):
         avoid = domain.cover_avoid(b, "someone-else")
         self.assertIn(list(segment_window(recipe["visual_segments"][0])), avoid)
 
+    def test_production_reports_its_real_steps_for_the_workbench(self):
+        # The batch workbench shows who works on a video from these messages (user 2026-11-24).
+        seen = []
+        original = NarratedBatchDomain._activity
+        def record(domain, b, message, *args, **kwargs):
+            if kwargs.get("phase") == "production":
+                seen.append(message)
+            return original(domain, b, message, *args, **kwargs)
+        with patch.object(NarratedBatchDomain, "_activity", record):
+            self.run_samples(self.create(1))
+        # The fake renderer reports no render progress; the real one reports through the same step reporter.
+        self.assertLess(seen.index("正在配音"), seen.index("正在挑选配乐"), seen)
+
     def test_insufficient_fifty_renders_available_samples_and_keeps_target(self):
         b = self.run_samples(self.create(50))
         self.assertEqual("completed_with_errors", b["status"])

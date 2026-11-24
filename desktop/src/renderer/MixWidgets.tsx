@@ -18,7 +18,7 @@ export function MixSteps({ labels, current, enabled, onChange }: { labels: strin
 const STAGES = [{ key: "analysis", label: "看懂素材", Icon: ImageIcon }, { key: "script", label: "写好文案", Icon: Lightbulb }, { key: "production", label: "剪辑配音", Icon: Clapperboard }, { key: "complete", label: "成片", Icon: CircleCheck }];
 const STAGE_INDEX: Record<string, number> = { analysis: 0, script: 1, production: 2, finalizing: 2, complete: 3 };
 export type MixRow = { key: string; label: string; state: "done" | "now" | "wait" | "failed" };
-export function MixProgress({ percent, phase, finished, stopped = false, title, lines, rows }: { percent: number | null; phase?: string; finished: boolean; stopped?: boolean; title: string; lines: string[]; rows: MixRow[] }) {
+export function MixProgress({ percent, phase, finished, stopped = false, title, lines, rows, hideStages = false }: { percent: number | null; phase?: string; finished: boolean; stopped?: boolean; title: string; lines: string[]; rows: MixRow[]; hideStages?: boolean }) {
   const r = 92, c = 2 * Math.PI * r, value = percent ?? 0;
   const at = finished ? 4 : STAGE_INDEX[phase || ""] ?? -1;
   return <div className="mix-progress">
@@ -28,10 +28,10 @@ export function MixProgress({ percent, phase, finished, stopped = false, title, 
     </div>
     <div className="mix-progress-side">
       <strong className="mix-progress-title">{title}</strong>
-      <div className="mix-stages">{STAGES.map(({ key, label, Icon }, index) => {
+      {!hideStages && <div className="mix-stages">{STAGES.map(({ key, label, Icon }, index) => {
         const state = index < at ? "done" : index === at ? "now" : "wait";
         return <div key={key} className={`is-${state}`}><span><Icon size={20} strokeWidth={2.2} /></span>{label}<em>{state === "done" ? "✓" : state === "now" ? (stopped ? "停住了" : "进行中") : "等待"}</em></div>;
-      })}</div>
+      })}</div>}
       {rows.length > 0 && <div className="mix-rows">{rows.map(row => <div key={row.key} className={`is-${row.state}`}>
         <span>{row.label}</span><i><b /></i><em>{row.state === "done" ? "已做好" : row.state === "now" ? "制作中" : row.state === "failed" ? "没做成" : "排队"}</em></div>)}</div>}
     </div>
