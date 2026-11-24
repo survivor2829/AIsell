@@ -40,10 +40,10 @@ from material_search import MaterialSearch
 
 try:
     from .accounts import ADMIN_TICKET_SECONDS, AccountError, AccountStore
-    from .billing import CREDIT_MESSAGE, DEFAULT_GRANT_POINTS, DEFAULT_MARKUP, Billing, merge_prices
+    from .billing import CREDIT_MESSAGE, DEFAULT_GRANT_POINTS, DEFAULT_MARKUP, POINTS_PER_CNY, Billing, merge_prices
 except ImportError:  # run as a script: python service.py
     from accounts import ADMIN_TICKET_SECONDS, AccountError, AccountStore
-    from billing import CREDIT_MESSAGE, DEFAULT_GRANT_POINTS, DEFAULT_MARKUP, Billing, merge_prices
+    from billing import CREDIT_MESSAGE, DEFAULT_GRANT_POINTS, DEFAULT_MARKUP, POINTS_PER_CNY, Billing, merge_prices
 
 PREFIX = "/v1/provider-gateway"
 # Account administration lives outside PREFIX: the public maintenance proxy only forwards
@@ -52,6 +52,11 @@ ADMIN_PREFIX = "/v1/accounts-admin"
 # The APIMart route check is for the operator's daily report only: like ADMIN_PREFIX it sits outside
 # PREFIX, so the public proxy never forwards it and the node's state is not published.
 APIMART_ROUTE_STATUS = "/v1/gateway-internal/apimart-route"
+# Loopback-only daily report of accounts whose spend jumped or that hit the debt floor (issues:pull).
+USAGE_ALERTS_STATUS = "/v1/gateway-internal/usage-alerts"
+ACCOUNT_RATE_MESSAGE = "操作太频繁了，请稍等一分钟再试。"
+# New paid work one account may start per minute; replays of a known request are not counted.
+DEFAULT_ACCOUNT_PAID_PER_MINUTE = 120
 # Clients from this version on keep the device token an account login returns; older clients only
 # know license codes and must never take the device binding away from an updated computer.
 ACCOUNT_CLIENT_VERSION = (1, 2, 15)
@@ -334,6 +339,8 @@ class GatewayConfig:
     max_response_bytes: int = 96 * 1024 * 1024
     session_ttl_seconds: int = 24 * 60 * 60
     session_secret: str = ""
+    billing_debt_floor_cny: float = 50.0
+    account_paid_per_minute: int = DEFAULT_ACCOUNT_PAID_PER_MINUTE
     upstream_timeout_seconds: int = DEFAULT_UPSTREAM_TIMEOUT_SECONDS
     runtime_revision: str = ""
     receipt_db_path: str = ""
@@ -394,6 +401,8 @@ class GatewayConfig:
             apimart_open=_apimart_proxy_open(env.get("XIAOXI_GATEWAY_APIMART_PROXY_URL", "")),
             accounts_admin_token=str(env.get("XIAOXI_GATEWAY_ACCOUNTS_ADMIN_TOKEN", "")).strip(),
             billing_markup=float(env.get("XIAOXI_GATEWAY_BILLING_MARKUP", DEFAULT_MARKUP)),
+            billing_debt_floor_cny=float(env.get("XIAOXI_GATEWAY_DEBT_FLOOR_CNY", 50)),
+            account_paid_per_minute=int(env.get("XIAOXI_GATEWAY_ACCOUNT_PAID_PER_MINUTE", DEFAULT_ACCOUNT_PAID_PER_MINUTE)),
             billing_grant_points=int(env.get("XIAOXI_GATEWAY_BILLING_GRANT_POINTS", DEFAULT_GRANT_POINTS)),
             billing_prices=json.loads(env.get("XIAOXI_GATEWAY_BILLING_PRICES_JSON", "{}")),
         )
@@ -734,7 +743,11 @@ class GatewayServer(ThreadingHTTPServer):
         self.admin_tickets_lock = threading.Lock()
         self.admin_tickets = {}
         self.billing = Billing(self.receipts.db, self.receipts.lock, markup=config.billing_markup,
-                               grant_points=config.billing_grant_points, prices=merge_prices(config.billing_prices))
+                               grant_points=config.billing_grant_points, prices=merge_prices(config.billing_prices),
+                               debt_floor_points=int(config.billing_debt_floor_cny * POINTS_PER_CNY))
+        self.account_rates = {}
+        self.account_rate_hits = collections.Counter()
+        self.account_rate_day = None
         self.material_search = MaterialSearch((config.receipt_db_path + ".materials") if config.receipt_db_path and config.receipt_db_path != ":memory:" else ":memory:")
         # Whether the APIMart route (the fixed outbound node when one is set) answers at all. Filled by
         # the background probe; requests never trigger a probe, so a busy health endpoint costs nothing.
@@ -903,6 +916,39 @@ class GatewayServer(ThreadingHTTPServer):
             while len(self.rates) > 2048:
                 self.rates.popitem(last=False)
         return {"allowed": True, "scope": "", "retry_after": None}
+
+    def usage_alerts(self):
+        """用量暴涨/到负数底线的账号，加上今天被按账号限流挡过的账号；只给出账号编号和手机尾号。"""
+        alerts = {item["subject"]: dict(item) for item in self.billing.usage_alerts()}
+        with self.rate_lock:
+            hits = dict(self.account_rate_hits)
+        for subject, count in hits.items():
+            alerts.setdefault(subject, {"subject": subject, "reason": "rate_limited", "todayCny": 0.0, "dailyAverageCny": 0.0})["rateLimited"] = count
+        result = []
+        for subject, item in alerts.items():
+            account = self.accounts.by_subject(subject) or {}
+            phone = str(account.get("phone") or "")
+            item.pop("subject", None)
+            result.append({**item, "accountId": account.get("id"), "phoneTail": phone[-4:] if phone else ""})
+        return sorted(result, key=lambda entry: (-entry.get("todayCny", 0), -entry.get("rateLimited", 0)))
+
+    def account_rate(self, subject):
+        """Whether this account may start one more piece of paid work this minute."""
+        minute = int(time.time() / 60)
+        retry_after = max(1, int((minute + 1) * 60 - time.time()))
+        with self.rate_lock:
+            if len(self.account_rates) > 4096:
+                self.account_rates = {key: value for key, value in self.account_rates.items() if value[0] == minute}
+            stamp, count = self.account_rates.get(subject, (minute, 0))
+            count = count if stamp == minute else 0
+            if count >= self.config.account_paid_per_minute:
+                day = int((time.time() + 8 * 60 * 60) // (24 * 60 * 60))  # Beijing day, as the report
+                if day != self.account_rate_day:
+                    self.account_rate_day, self.account_rate_hits = day, collections.Counter()
+                self.account_rate_hits[subject] += 1
+                return {"allowed": False, "retry_after": retry_after}
+            self.account_rates[subject] = (minute, count + 1)
+        return {"allowed": True, "retry_after": None}
 
     def allowed(self, address):
         return self.rate_limit(address)["allowed"]
@@ -1490,6 +1536,12 @@ class Handler(BaseHTTPRequestHandler):
             # balance (it never gets the new-account grant either: billing is never reached).
             return self._json_result(402, {"error": "demo_account", "message": DEMO_MESSAGE, "balance": 0},
                                      {"Content-Type": "application/json; charset=utf-8"})
+        limit = self.server.account_rate(subject)
+        if not limit["allowed"]:
+            # One account starting paid work faster than any real use: a script, not the app.
+            return self._json_result(429, {"error": "account_rate_limited", "message": ACCOUNT_RATE_MESSAGE},
+                                     {"Content-Type": "application/json; charset=utf-8", "Retry-After": str(limit["retry_after"]),
+                                      "X-Xiaoxi-Error-Origin": "gateway_rate_limit"})  # the origin existing clients already back off on
         try:
             job, feature = self._billing_tags(default_feature)
             if self.server.billing.admit(subject, job, feature):
@@ -2457,6 +2509,8 @@ class Handler(BaseHTTPRequestHandler):
         route = urlsplit(self.path).path
         if route == APIMART_ROUTE_STATUS:
             return self._reply_json(200, {"apimart_route": self.server.apimart_route_status()})
+        if route == USAGE_ALERTS_STATUS:
+            return self._reply_json(200, {"usage_alerts": self.server.usage_alerts()})
         if route == PREFIX + "/account":
             subject = self._session_subject()
             account = self.server.accounts.by_subject(subject) if subject else None

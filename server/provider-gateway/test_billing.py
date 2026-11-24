@@ -9,7 +9,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from billing import JOB_EXPIRY_SECONDS
+from billing import JOB_EXPIRY_SECONDS, POINTS_PER_CNY
 from service import GatewayConfig, GatewayServer, Handler
 
 ADMIN = "admin-token-fixture-0123456789"
@@ -116,6 +116,55 @@ class BillingTest(unittest.TestCase):
         # A repeated report charges nothing more.
         self.call(PREFIX + "/billing/settle", {"jobId": "ce:video-1", "outcome": "succeeded"}, self.token)
         self.assertEqual(20_000_000 - 208_000, self.balance())
+
+    def test_past_the_debt_floor_even_a_running_video_stops(self):
+        # 负数底线 负 50 元 (user 2026-11-24): a reused open job id cannot keep charging without limit.
+        account = self.account_id()
+        self.chat(job="ce:keep")
+        self.call(f"/v1/accounts-admin/accounts/{account}/recharge", {"points": -20_000_000 - 49 * POINTS_PER_CNY, "note": "test"}, admin=ADMIN)
+        self.assertEqual(-49 * POINTS_PER_CNY, self.balance())
+        self.assertEqual(200, self.chat(job="ce:keep")[0], "above the floor a running video finishes")
+        self.call(f"/v1/accounts-admin/accounts/{account}/recharge", {"points": -POINTS_PER_CNY, "note": "test"}, admin=ADMIN)
+        status, refused = self.chat(job="ce:keep")
+        self.assertEqual(402, status)
+        self.assertEqual("credit_exhausted", refused["error"])
+        self.call(f"/v1/accounts-admin/accounts/{account}/recharge", {"points": 60 * POINTS_PER_CNY, "note": "test"}, admin=ADMIN)
+        self.assertEqual(200, self.chat(job="ce:keep")[0], "a recharge above zero opens it again")
+
+    def test_one_account_starting_paid_work_too_fast_is_held_for_a_minute(self):
+        self.server.config.account_paid_per_minute = 3
+        for _ in range(3):
+            self.assertEqual(200, self.chat()[0])
+        status, refused = self.chat()
+        self.assertEqual(429, status)
+        self.assertEqual("account_rate_limited", refused["error"])
+        self.assertIn("稍等", refused["message"])
+        self.assertEqual(200, self.call(PREFIX + "/billing/balance", token=self.token)[0], "reading the balance is not paid work")
+        alerts = self.call("/v1/gateway-internal/usage-alerts")[1]["usage_alerts"]
+        self.assertEqual(1, alerts[0]["rateLimited"])
+
+    def test_usage_alerts_name_spikes_and_accounts_at_the_floor(self):
+        billing = self.server.billing
+        subject = self.call(PREFIX + "/account", token=self.token)[1]["account"]["id"]
+        now = time.time()
+        with billing.lock:
+            for days_ago, cny in ((3, 4), (2, 6), (0, 120)):
+                billing.db.execute("""INSERT INTO billing_charges (subject, dedupe, job_id, feature, provider, model, unit,
+                    quantity, cost_cny, points, state, created_at, settled_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (subject, f"t{days_ago}", None, "video", "bailian", "m", "s", 1, cny, cny * POINTS_PER_CNY, "charged",
+                     now - days_ago * 86400, now))
+            billing.db.commit()
+        status, body = self.call("/v1/gateway-internal/usage-alerts")
+        self.assertEqual(200, status)
+        spike = body["usage_alerts"][0]
+        self.assertEqual("spike", spike["reason"])
+        self.assertEqual(120, spike["todayCny"])
+        self.assertNotIn("subject", spike, "the report names the account by id and phone tail only")
+        # A quiet account is not reported.
+        with billing.lock:
+            billing.db.execute("DELETE FROM billing_charges WHERE dedupe='t0'")
+            billing.db.commit()
+        self.assertEqual([], self.call("/v1/gateway-internal/usage-alerts")[1]["usage_alerts"])
 
     def demo_session(self, install="33333333-3333-3333-3333-333333333333"):
         return self.call(PREFIX + "/session", {"appId": "com.aihuoke.desktop.test", "channel": "test",

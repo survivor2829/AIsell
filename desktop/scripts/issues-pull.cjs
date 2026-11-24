@@ -71,6 +71,11 @@ try:
         result["apimartRoute"] = json.loads(response.read()).get("apimart_route") or {}
 except Exception:
     result["apimartRoute"] = None
+try:
+    with local.open("http://127.0.0.1:8444/v1/gateway-internal/usage-alerts", timeout=5) as response:
+        result["usageAlerts"] = json.loads(response.read()).get("usage_alerts") or []
+except Exception:
+    result["usageAlerts"] = None
 sys.stdout.write(json.dumps(result, ensure_ascii=False))
 `;
 
@@ -303,11 +308,29 @@ function apimartRouteLines(route, now) {
   return [`- 生图通道：APIMart 节点正常（检查于 ${at}${stale}）`, ""];
 }
 
-function report(groups, feedback, { now = new Date(), latest = "", health = null, apimartRoute } = {}) {
+// 网关加固（2026-11-24）：当天用量远超平时、扣到负数底线、或被按账号限流挡过的账号。
+function usageAlertLines(alerts) {
+  if (alerts === null) return ["- 账号用量：网关还没有用量提醒（旧版本或本机连不上 8444）", ""];
+  if (!alerts.length) return ["- 账号用量：没有异常", ""];
+  const who = (item) => `账号 ${item.accountId ?? "?"}${item.phoneTail ? `（尾号 ${item.phoneTail}）` : ""}`;
+  const lines = [`## ⚠️ 账号用量异常 ${alerts.length} 个`, ""];
+  for (const item of alerts.slice(0, 10)) {
+    const parts = [];
+    if (item.reason === "spike") parts.push(`今天用了 ${item.todayCny} 元，平时一天约 ${item.dailyAverageCny} 元`);
+    if (item.debtFloor) parts.push(`已扣到负数底线（余额 ${item.balanceCny} 元），付费功能已停`);
+    if (item.rateLimited) parts.push(`今天被限流挡了 ${item.rateLimited} 次（每分钟发起付费请求过多，可能是脚本）`);
+    lines.push(`- ${who(item)}：${parts.join("；")}`);
+  }
+  lines.push("", "先在管理后台看这个账号最近的用量；确认被盗用就停用账号或让客户改密码。", "");
+  return lines;
+}
+
+function report(groups, feedback, { now = new Date(), latest = "", health = null, apimartRoute, usageAlerts } = {}) {
   const pending = feedback.filter(item => item.status !== "resolved");
   const lines = [`# 现场问题日报 ${now.toISOString().slice(0, 10)}`, "",
     `问题类别 ${groups.length} 个，本次新增现场包的类别 ${groups.filter(group => group.fresh).length} 个；未解决反馈 ${pending.length} 条。最新版本 ${latest || "—"}。`, "",
     ...(apimartRoute === undefined ? [] : apimartRouteLines(apimartRoute, now)),
+    ...(usageAlerts === undefined ? [] : usageAlertLines(usageAlerts)),
     ...(health ? healthLines(health) : [])];
   for (const group of groups) {
     lines.push(`## ${group.fresh ? "🆕 " : ""}${group.module} · ${group.code}`, "",
@@ -338,7 +361,7 @@ async function pull({ out = DEFAULT_OUT, collect = remoteCollect, now = new Date
   const groups = cluster(capsules, pulled.feedback, fresh, pulled.health || []);
   const latest = capsules.map(item => item.client?.version).filter(Boolean).sort(compareVersions).at(-1) || "";
   const health = versionHealth(capsules, pulled.health || []);
-  const text = report(groups, pulled.feedback, { now, latest, health, apimartRoute: pulled.apimartRoute ?? null });
+  const text = report(groups, pulled.feedback, { now, latest, health, apimartRoute: pulled.apimartRoute ?? null, usageAlerts: pulled.usageAlerts ?? null });
   fs.mkdirSync(path.join(out, "reports"), { recursive: true });
   fs.writeFileSync(path.join(out, "reports", `${now.toISOString().slice(0, 10)}.md`), text);
   fs.writeFileSync(path.join(out, "report.md"), text);

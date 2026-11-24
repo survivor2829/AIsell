@@ -23,6 +23,13 @@ import uuid
 POINTS_PER_CNY = 40_000
 DEFAULT_MARKUP = 1.3
 DEFAULT_GRANT_POINTS = 20_000_000
+# The negative balance may not go below this (user 2026-11-24: 负 50 元). A running job may finish while
+# the balance is negative, but a job id the client keeps reusing could otherwise charge without limit.
+DEFAULT_DEBT_FLOOR_POINTS = 50 * POINTS_PER_CNY
+# 用量暴涨提醒: today's spend this many times the account's 7-day daily average, and at least this much.
+SPIKE_FACTOR = 5
+SPIKE_MIN_POINTS = 50 * POINTS_PER_CNY
+DAY_OFFSET_SECONDS = 8 * 60 * 60  # report days in Beijing time
 JOB_EXPIRY_SECONDS = 24 * 60 * 60
 JOB_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 FEATURES = ("mix", "product_video", "digital_human", "product_detail", "wechat", "geo", "writing", "other")
@@ -287,7 +294,9 @@ class Meter:
 
 
 class Billing:
-    def __init__(self, db, lock, *, markup=DEFAULT_MARKUP, grant_points=DEFAULT_GRANT_POINTS, prices=None):
+    def __init__(self, db, lock, *, markup=DEFAULT_MARKUP, grant_points=DEFAULT_GRANT_POINTS, prices=None,
+                 debt_floor_points=DEFAULT_DEBT_FLOOR_POINTS):
+        self.debt_floor_points = max(0, int(debt_floor_points))
         self.db, self.lock = db, lock
         self.markup = float(markup)
         self.grant_points = int(grant_points)
@@ -380,6 +389,8 @@ class Billing:
             job = self.db.execute("SELECT state FROM billing_jobs WHERE subject=? AND job_id=?",
                                   (subject, job_id)).fetchone() if job_id else None
             allowed = account["unblocked"] or account["balance"] > 0 or (job is not None and job[0] == "open")
+            if not account["unblocked"] and account["balance"] <= -self.debt_floor_points:
+                allowed = False  # past the floor even a running job stops
             if allowed and job_id:
                 if job is None:
                     self.db.execute("""INSERT INTO billing_jobs (subject, job_id, feature, state, created_at, updated_at)
@@ -392,6 +403,34 @@ class Billing:
                                     (now, subject, job_id))
             self.db.commit()
             return bool(allowed)
+
+    def usage_alerts(self, now=None):
+        """Accounts whose spend today jumped far above their usual day, or that reached the debt floor."""
+        now = time.time() if now is None else now
+        day = 24 * 60 * 60
+        today = (now + DAY_OFFSET_SECONDS) // day * day - DAY_OFFSET_SECONDS
+        week = today - 7 * day
+        with self.lock:
+            spent = self.db.execute("""SELECT subject,
+                SUM(CASE WHEN created_at>=? THEN points ELSE 0 END),
+                SUM(CASE WHEN created_at>=? AND created_at<? THEN points ELSE 0 END)
+                FROM billing_charges WHERE created_at>=? AND state IN ('charged','pending')
+                GROUP BY subject""", (today, week, today, week)).fetchall()
+            floor = self.db.execute("SELECT subject, balance FROM billing_accounts WHERE unblocked=0 AND balance<=?",
+                                    (-self.debt_floor_points,)).fetchall()
+            balances = dict(self.db.execute("SELECT subject, balance FROM billing_accounts").fetchall())
+        alerts = {}
+        for subject, today_points, week_points in spent:
+            average = (week_points or 0) / 7
+            if today_points >= max(SPIKE_MIN_POINTS, SPIKE_FACTOR * average):
+                alerts[subject] = {"subject": subject, "reason": "spike", "todayCny": round(today_points / POINTS_PER_CNY, 2),
+                                   "dailyAverageCny": round(average / POINTS_PER_CNY, 2),
+                                   "balanceCny": round(balances.get(subject, 0) / POINTS_PER_CNY, 2)}
+        for subject, balance in floor:
+            entry = alerts.setdefault(subject, {"subject": subject, "reason": "debt_floor", "todayCny": 0.0, "dailyAverageCny": 0.0})
+            entry["balanceCny"] = round(balance / POINTS_PER_CNY, 2)
+            entry["debtFloor"] = True
+        return sorted(alerts.values(), key=lambda item: -item["todayCny"])
 
     def balance(self, subject):
         with self.lock:
