@@ -664,12 +664,27 @@ function firstLocalContactRow(observation, identity) {
   // Everything from the first network row, query echo or other section (群聊、聊天记录、公众号…) down is not a contact.
   const bottom = Math.min(Number(popup.bottom), ...all.filter((line) => isNetworkRowText(line.text) || isOtherSearchSection(line.text)
     || (column(line.left) <= 70 && isQueryEcho(line.text))).map((line) => Number(line.top)));
-  const rows = all.filter((line) => column(line.left) > 60 && Number(line.bottom) <= bottom && !isQueryEcho(line.text)
+  // The query echo is the "🔍 <query>" row, whose text starts beside the magnifier (column <= 70, as for
+  // `bottom` above). A contact found by its name shows exactly the query too, but after the avatar
+  // (column ~80): field 47d2578f (2026-11-24), the name line was dropped as an echo, the row's only
+  // other box (2 characters at its right end) was pressed, and WeChat did not open the chat.
+  const rows = all.filter((line) => column(line.left) > 60 && Number(line.bottom) <= bottom && !(column(line.left) <= 70 && isQueryEcho(line.text))
     && !isLocalContactSection(line.text) && !isUnsafeVisualText(line.text) && !isNetworkRowText(line.text)
     && wechatIdLabelValue(line) === null)
     .sort((a, b) => Number(a.top) - Number(b.top));
   if (!rows.length) return null;
-  const first = rows[0];
+  // The row is the topmost line's band, but the press goes to that row's leftmost line (the name).
+  // Field 47d2578f (1.3.55, 2026-11-24, passports 06:26/06:27): a 2-character box at the row's right
+  // end (x 368-383) sat 2 px above the name (x 136-240) and was taken as "the first line"; the press
+  // landed in the row's empty right end, WeChat kept the dropdown open and the contact was skipped.
+  // The same box is in the 01:22 passport of the 44 earlier not-opened skips on that computer.
+  // Avatar noise (column 30-72, see stripAvatar) is never the name when text after the avatar exists.
+  const band = rows.filter((line) => Number(line.top) < Number(rows[0].bottom) && Number(line.bottom) > Number(rows[0].top));
+  const afterAvatar = band.filter((line) => column(line.left) > 72);
+  const first = (afterAvatar.length ? afterAvatar : band).sort((a, b) => Number(a.left) - Number(b.left))[0];
+  // The row's right end holds WeChat's gray ⓘ (contact info) button, shown on hover (user's screenshot,
+  // 2026-11-24); pressing it opens the profile, not the chat. A line there is never pressed.
+  if (Number(first.left) > Number(popup.right) - (Number(popup.right) - Number(popup.left)) * 0.2) return null;
   return { text: String(first.text || ""), left: Number(first.left), top: Number(first.top), right: Number(first.right), bottom: Number(first.bottom),
     x: Math.round((Number(first.left) + Number(first.right)) / 2), y: Math.round((Number(first.top) + Number(first.bottom)) / 2) };
 }
