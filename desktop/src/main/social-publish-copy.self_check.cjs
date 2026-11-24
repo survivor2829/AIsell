@@ -5,17 +5,17 @@ const path = require("node:path");
 const { createCoverCache, copyPrompt, parseCopy, writeCopy } = require("./social-publish-copy.cjs");
 
 (async () => {
-  // 每个平台一套文案：标题按各平台上限截断（小红书 20、抖音 30），话题去 #、去重、最多 5 个。
+  // 每个平台一套文案：标题按各平台上限截断（小红书 20、抖音 30），话题去 #、去重、最多 7 个。
   const long = "一二三四五六七八九十".repeat(4);
   const copy = parseCopy(JSON.stringify({ platforms: {
-    douyin: { title: long, description: "抖音正文\n第二行", topics: ["#清洁设备", "保洁", "保洁", "洗地机", "物业", "商场", "多余"] },
+    douyin: { title: long, description: "抖音正文\n第二行", topics: ["#清洁设备", "保洁", "保洁", "洗地机", "物业", "商场", "车库", "超市", "多余"] },
     xiaohongshu: { title: long, description: "小红书正文", topics: ["种草"] },
     weibo: { title: "不支持的平台", description: "", topics: [] }
   } }), ["douyin", "xiaohongshu", "kuaishou"]);
   assert.equal(copy.douyin.title.length, 30);
   assert.equal(copy.xiaohongshu.title.length, 20);
   assert.equal(copy.douyin.description, "抖音正文 第二行");
-  assert.deepEqual(copy.douyin.topics, ["清洁设备", "保洁", "洗地机", "物业", "商场"]);
+  assert.deepEqual(copy.douyin.topics, ["清洁设备", "保洁", "洗地机", "物业", "商场", "车库", "超市"]);
   assert.equal(copy.kuaishou, undefined, "AI 没写的平台不编造");
   assert.equal(copy.weibo, undefined, "没要求的平台忽略");
   assert.throws(() => parseCopy("not json"), { code: "SOCIAL_COPY_INVALID" });
@@ -30,6 +30,9 @@ const { createCoverCache, copyPrompt, parseCopy, writeCopy } = require("./social
   const spoken = copyPrompt({ videos: [{ title: "洗地机", spoken: "一趟洗一大片，扫吸一体不扬尘", brand: "新奔" }], hint: "", platforms: ["douyin"] });
   assert.ok(spoken.includes("口播/字幕原文：一趟洗一大片，扫吸一体不扬尘")); assert.match(spoken, /品牌：新奔/);
   assert.ok(spoken.includes("只能用口播/字幕原文")); assert.match(spoken, /titles：3 个写法不同的标题/); assert.match(spoken, /行业大类词/);
+  // 去 AI 味（用户 2026-11-24）：要求像真人写、戳痛点；附客户认可的文案只学写法；AI 腔标题被剔除。
+  assert.match(spoken, /不要 AI 腔/); assert.ok(spoken.includes("评论区扣报名")); assert.match(spoken, /不要照抄它的内容和事实/);
+  assert.deepEqual(parseCopy(JSON.stringify({ platforms: { douyin: { titles: ["一站式赋能物业保洁", "车库一趟洗完不用返工"] } } }), ["douyin"]).douyin.titles, ["车库一趟洗完不用返工"]);
   // 三个标题：截断、去重、去掉绝对化用语；都违规时保留，让用户自己改。
   const options = parseCopy(JSON.stringify({ platforms: { douyin: { titles: ["工厂地面一趟洗干净", "全网最好的洗地机", "工厂地面一趟洗干净", "拖把三小时，它半小时"], description: "d", topics: [] } } }), ["douyin"]);
   assert.deepEqual(options.douyin.titles, ["工厂地面一趟洗干净", "拖把三小时，它半小时"]);
