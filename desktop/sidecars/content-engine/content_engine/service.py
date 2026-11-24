@@ -128,6 +128,30 @@ def _public_asset_row(row) -> dict[str, Any]:
     }
 
 
+
+def _srt_text(path: Path) -> str:
+    """Subtitle text of an .srt file (scene and digital-human videos keep one beside the video):
+    each block's index and timing lines dropped, cue lines kept as written, CJK joined directly."""
+    try:
+        if not path.is_file() or path.stat().st_size >= 200_000:
+            return ""
+        lines = [line.strip() for line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines()]
+    except OSError:
+        return ""
+    cues, block = [], []
+    for line in lines + [""]:
+        if line:
+            block.append(line)
+            continue
+        timing = next((index for index, item in enumerate(block) if "-->" in item), None)
+        cues.extend(block[timing + 1:] if timing is not None else [])
+        block = []
+    text = ""
+    for cue in cues:
+        joiner = " " if text and text[-1].isascii() and text[-1].isalnum() and cue[0].isascii() and cue[0].isalnum() else ""
+        text += joiner + cue
+    return text
+
 class _CreativeJobWorker:
     def __init__(self, data_dir: Path, *, analyzer, renderer, cover_client):
         self.data_dir = Path(data_dir)
@@ -2437,31 +2461,27 @@ class ContentEngineService:
 
     def _finished_copy_facts(self, metadata_json: str, output_path: Path) -> dict[str, str]:
         """What the video actually says, for writing its publish copy (customers found copy
-        written from the title alone too vague, 2026-11-24); empty fields when unknown."""
+        written from the title alone too vague, 2026-11-24). Never fails the path resolution
+        that publishing also relies on: anything unreadable gives empty fields."""
         spoken, brand = "", ""
         try:
-            generated_id = str(json.loads(metadata_json or "{}").get("generated_video_id") or "")
+            metadata = json.loads(metadata_json or "{}")
+            generated_id = str(metadata.get("generated_video_id") or "") if isinstance(metadata, dict) else ""
             row = self.connection.execute(
                 "SELECT recipe_json FROM generated_videos WHERE id = ?", (generated_id,)
             ).fetchone() if generated_id else None
             recipe = json.loads(row["recipe_json"] or "{}") if row else {}
             if isinstance(recipe, dict):
+                captions = recipe.get("captions") if isinstance(recipe.get("captions"), list) else []
                 spoken = str(recipe.get("confirmed_script") or "".join(
-                    str(item.get("text") or "") for item in recipe.get("captions") or [] if isinstance(item, dict)))
-                brand_info = (recipe.get("packaging") or {}).get("brand") or {}
-                brand = str(brand_info.get("name") or "") if isinstance(brand_info, dict) else ""
-        except (TypeError, ValueError, KeyError):
+                    str(item.get("text") or "") for item in captions if isinstance(item, dict)))
+                packaging = recipe.get("packaging") if isinstance(recipe.get("packaging"), dict) else {}
+                brand_info = packaging.get("brand") if isinstance(packaging.get("brand"), dict) else {}
+                brand = str(brand_info.get("name") or "")
+        except Exception:  # noqa: BLE001 - copy facts are optional; publishing must not depend on them.
             spoken, brand = "", ""
         if not spoken.strip():
-            # Scene and digital-human videos keep their subtitles beside the video.
-            try:
-                srt = output_path.with_suffix(".srt")
-                if srt.is_file() and srt.stat().st_size < 200_000:
-                    lines = srt.read_text(encoding="utf-8-sig", errors="replace").splitlines()
-                    spoken = "".join(line.strip() for line in lines
-                                     if line.strip() and not line.strip().isdigit() and "-->" not in line)
-            except OSError:
-                spoken = ""
+            spoken = _srt_text(output_path.with_suffix(".srt"))
         return {"spoken_text": " ".join(spoken.split())[:1500], "brand_name": " ".join(brand.split())[:40]}
 
     def _finished_cover_path(self, metadata_json: str) -> str:
@@ -2477,7 +2497,7 @@ class ContentEngineService:
             if cover is None or not cover["thumbnail_path"]:
                 return ""
             return str(self.creative_domain._validate_generated_path(cover["thumbnail_path"]))
-        except (ContentEngineError, OSError, TypeError, ValueError):
+        except (ContentEngineError, OSError, TypeError, ValueError, AttributeError):
             return ""
 
     def get_setting(self, key: str, default: Any = None) -> dict[str, Any]:

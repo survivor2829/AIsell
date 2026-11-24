@@ -25,14 +25,14 @@ const { createCoverCache, createReferenceStore, copyPrompt, parseCopy, writeCopy
   assert.match(prompt, /洗地机演示（批量口播）/); assert.match(prompt, /面向物业/);
   assert.match(prompt, /小红书.*种草/); assert.match(prompt, /xiaohongshu.*不超过 20 个字/); assert.match(prompt, /channels/);
   assert.doesNotMatch(prompt, /douyin/);
-  assert.match(prompt, /资料只有标题/, "没有口播时不让 AI 编造功能");
+  assert.match(prompt, /只有标题的不要编造/, "没有口播时不让 AI 编造功能");
   // 有口播/字幕原文和品牌时一起交给 AI，只许用其中的事实。
   const spoken = copyPrompt({ videos: [{ title: "洗地机", spoken: "一趟洗一大片，扫吸一体不扬尘", brand: "新奔" }], hint: "", platforms: ["douyin"],
     references: [{ text: "用户自己存的参考文案：车库地面三天一洗，人手不够怎么办" }] });
   assert.ok(spoken.includes("口播/字幕原文：一趟洗一大片，扫吸一体不扬尘")); assert.match(spoken, /品牌：新奔/);
-  assert.ok(spoken.includes("只用口播/字幕原文")); assert.match(spoken, /3 个不同角度的标题/);
+  assert.ok(spoken.includes("有口播/字幕原文的以原文为准")); assert.match(spoken, /3 个不同角度的标题/);
   // more intelligence, less structure（用户 2026-11-24）：给目标、事实边界和客户认可的参考文案，不给写作公式。
-  assert.match(spoken, /说的就是我/); assert.match(spoken, /不要照抄内容和事实/);
+  assert.match(spoken, /说的就是我/); assert.match(spoken, /都是别人家的生意/);
   assert.ok(spoken.indexOf("用户自己存的参考文案") < spoken.indexOf("评论区扣报名"), "用户存的参考排在内置参考前面");
   assert.doesNotMatch(spoken, /正文 60 到 150 字|titles：3 个写法不同/, "不再套固定结构");
   assert.deepEqual(parseCopy(JSON.stringify({ platforms: { douyin: { titles: ["一站式赋能物业保洁", "车库一趟洗完不用返工"] } } }), ["douyin"]).douyin.titles, ["车库一趟洗完不用返工"]);
@@ -46,6 +46,15 @@ const { createCoverCache, createReferenceStore, copyPrompt, parseCopy, writeCopy
   assert.equal(store.list().length, 10); assert.equal(store.list()[0].text, "第3条参考文案，车库保洁人手不够");
   assert.equal(store.list().filter((item) => item.text === "第3条参考文案，车库保洁人手不够").length, 1);
   store.remove(store.list()[0].id); assert.equal(store.list().length, 9);
+  // 英文和换行原样保留（曾把字母 s 当空白删掉）。
+  assert.equal(store.add("yyds business" + String.fromCharCode(10) + "车库保洁  人手不够")[0].text, "yyds business 车库保洁 人手不够");
+  // 文件坏了先挪到一边，不被下一次保存覆盖。
+  fs.writeFileSync(path.join(refDir, "copy-references.json"), "[{broken");
+  assert.deepEqual(store.list(), []);
+  assert.ok(fs.readdirSync(refDir).some((name) => name.startsWith("copy-references.json.damaged-")));
+  // 用户存够 2 条后，内置的别家文案不再发给 AI。
+  const own = copyPrompt({ videos: [{ title: "洗地机" }], platforms: ["douyin"], references: [{ text: "第一条自己的参考文案内容" }, { text: "第二条自己的参考文案内容" }] });
+  assert.doesNotMatch(own, /上海青浦/);
   fs.rmSync(refDir, { recursive: true, force: true });
   assert.deepEqual(parseCopy(JSON.stringify({ platforms: { douyin: { titles: ["一站式赋能物业保洁", "车库一趟洗完不用返工"] } } }), ["douyin"]).douyin.titles, ["车库一趟洗完不用返工"]);
   // 三个标题：截断、去重、去掉绝对化用语；都违规时保留，让用户自己改。

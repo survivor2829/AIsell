@@ -400,6 +400,17 @@ class ServiceTests(unittest.TestCase):
         resolved = self.service.resolve_finished_path(plain["finished_video_id"])
         self.assertEqual("扫吸一体不扬尘", resolved["spoken_text"])
         self.assertEqual("", resolved["brand_name"])
+        # Cue text that is only digits stays; English cues keep a space; odd metadata never fails publishing.
+        digits = self.root / "exports" / "digits.mp4"
+        digits.write_bytes(b"finished")
+        digits.with_suffix(".srt").write_text(chr(10).join(["1", "00:00:00,000 --> 00:00:01,000", "30", "",
+                                                          "2", "00:00:01,000 --> 00:00:02,000", "分钟洗完 clean", "",
+                                                          "3", "00:00:02,000 --> 00:00:03,000", "fast", ""]), encoding="utf-8")
+        odd = self.service.register_finished(str(digits), metadata={})
+        connection.execute("UPDATE finished_videos SET metadata_json='[]' WHERE id=?", (odd["finished_video_id"],))
+        resolved = self.service.resolve_finished_path(odd["finished_video_id"])
+        self.assertEqual(str(digits.resolve()), resolved["absolute_path"])
+        self.assertEqual("30分钟洗完 clean fast", resolved["spoken_text"])
 
     def test_pause_is_idempotent_and_resume_clears_restart_error(self):
         private_path = str((self.root / "private" / "lesson.mp4").resolve())
