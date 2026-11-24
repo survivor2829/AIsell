@@ -38,6 +38,7 @@ function ExamplePlayer({ example, onClose }: { example: VideoExample; onClose: (
   const Player = isWechatDemo(example) ? SpeedVideo : 'video';
   const dialog = useRef<HTMLDialogElement>(null);
   const video = useRef<HTMLVideoElement>(null);
+  const stage = useRef<HTMLDivElement>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     const element = dialog.current;
@@ -48,10 +49,11 @@ function ExamplePlayer({ example, onClose }: { example: VideoExample; onClose: (
   }, []);
   const label = isScreenRecording(example) ? '操作演示' : '成片示例';
   // 放大看（用户 2026-11-24）：弹窗按窗口尽量放大，另可全屏。
-  const fullscreen = () => { void video.current?.requestFullscreen?.().catch(() => {}); };
+  // The stage, not the bare video: the WeChat demos keep their speed buttons in fullscreen.
+  const fullscreen = () => { void stage.current?.requestFullscreen?.().catch(() => {}); };
   return <dialog ref={dialog} className={`video-example-dialog${isScreenRecording(example) ? ' is-wide' : ''}${isBusinessDemo(example) ? ' is-1610' : ''}`} aria-label={`${example.module}${label}`} onClose={event => { if (!event.currentTarget.open) onClose(); }} onClick={event => { if (event.target === event.currentTarget) onClose(); }}>
     <header><div><strong>{example.title}</strong><span>{example.module} · {example.duration} · {isBusinessDemo(example) ? '真实操作录屏 · 有讲解' : isWechatDemo(example) ? '真实操作录屏' : '离线示例'}</span></div><div className="video-example-actions">{!failed && <button type="button" aria-label="全屏播放" title="全屏" onClick={fullscreen}><Maximize2 size={20} /></button>}<button type="button" aria-label={`关闭${label}`} onClick={onClose}><X size={22} /></button></div></header>
-    <div className="video-example-stage">
+    <div className="video-example-stage" ref={stage}>
       {failed ? <div className="video-example-error" role="alert"><p>这段示例暂时无法播放，请重试。</p><button type="button" onClick={() => setFailed(false)}>重新播放</button><button type="button" onClick={() => { onClose(); openTutorial(example); }}>查看操作教程</button></div>
         : <Player ref={video} src={asset(`${example.file}.mp4`)} poster={asset(`${example.file}.jpg`)} controls autoPlay playsInline preload="metadata" onError={() => setFailed(true)} />}
     </div>
