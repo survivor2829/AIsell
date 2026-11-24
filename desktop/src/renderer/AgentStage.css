@@ -31,7 +31,7 @@
 .agent-cursor svg { transition: transform .18s ease-out; }
 html[data-beat="1"] .agent-cursor.is-now svg { transform: translate(4px, 3px) scale(.86); }
 .agent-cursor.is-now::after { content: ""; position: absolute; left: -6px; top: -6px; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--agent); opacity: 0; transform: scale(.4); transition: transform .5s ease-out, opacity .5s ease-out; }
-html[data-beat="1"] .agent-cursor.is-now::after { opacity: .85; transform: scale(2); }
+html[data-beat="1"] .agent-cursor.is-now::after { opacity: .5; transform: scale(1.6); }
 .agent-cursor.is-done, .agent-cursor.is-wait, .agent-cursor.is-user { opacity: .45; }
 .agent-cursor.is-done i::after { content: " ✓"; }
 .agent-cursor.is-fail svg { fill: #f87171; filter: drop-shadow(0 0 6px #f87171); }

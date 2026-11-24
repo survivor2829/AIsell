@@ -92,6 +92,8 @@ class TaskState:
     error: str = ""
     code: str = ""
     error_trace: str = ""
+    # 单屏重做时被重做的是第几屏（0 起），页面工作台据此只让那一屏在画；整页生成时为 None。
+    reroll_index: int | None = None
 
     def to_dict(self) -> dict:
         result = asdict(self)
@@ -2124,7 +2126,7 @@ def _merge_reroll_blocks(task_dir: Path, generated: list[dict]) -> list[dict]:
 def _reroll_worker(task_id: str, planning: dict, image_path: str, block_index: int, key: str) -> None:
     task_dir = _OUTPUT_BASE / task_id
     try:
-        _set(task_id, mode="real", status="running_generator", planning=planning,
+        _set(task_id, mode="real", status="running_generator", planning=planning, reroll_index=block_index,
              progress_msg=f"只重做第 {block_index + 1} 张，其余图片沿用", progress_pct=20)
         selected = {**planning, "screens": [planning["screens"][block_index]], "screen_count": 1}
         blocks, cost = _run_real_generator_v2(
