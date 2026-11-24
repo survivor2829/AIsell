@@ -1,5 +1,5 @@
 import { AlertTriangle, ArrowLeft, ArrowRight, Ban, Bot, CalendarClock, Check, CheckCircle2, ChevronRight, CircleHelp, Clock3, ImagePlus, List, ListTodo, Pause, Pencil, Play, Plus, Repeat2, Send, SkipForward, ThumbsUp, Trash2, Unlink, X } from "lucide-react";
-import { touchRole } from "./touch-stage";
+import { touchRole } from "./touch-role";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { momentsProgressLabel } from "./MomentsCampaignPanel";
 import { XiaoxiSprite, type SpriteActivity } from "./XiaoxiSprite";
@@ -320,7 +320,8 @@ const TOUCH_STAGE_LABELS: Record<string, string> = {
   post_confirm: "正在确认图片发送结果", image_retry_wait: "图片发送前检查超时，等待恢复", part_complete: "当前内容已发送并确认"
 };
 
-function useExecutionDetail(execution?: WorkflowExecution | null) {
+// withLabel=false leaves out the step label, for 小玺 whose title already names the role and step.
+function useExecutionDetail(execution?: WorkflowExecution | null, withLabel = true) {
   const [timestamp, setTimestamp] = useState(() => Date.now());
   const startedAt = execution?.startedAt;
   useEffect(() => {
@@ -338,7 +339,7 @@ function useExecutionDetail(execution?: WorkflowExecution | null) {
   const recovery = [execution.readAttempt && execution.readAttempt > 1 ? `读回恢复 ${execution.readAttempt - 1} 次` : "",
     execution.retryAttempt ? `发送前恢复 ${execution.retryAttempt} 次` : ""].filter(Boolean).join(" · ");
   const seconds = execution.waitUntil ? Math.max(0, Math.ceil((execution.waitUntil - timestamp) / 1000)) : null;
-  return [contact, execution.textSent && execution.partKind !== "text" ? "文字已发送" : "", part, label, recovery,
+  return [contact, execution.textSent && execution.partKind !== "text" ? "文字已发送" : "", part, withLabel ? label : "", recovery,
     seconds === null ? `本步骤 ${elapsed} 秒` : seconds > 0 ? `${seconds} 秒后继续` : "即将继续"].filter(Boolean).join(" · ");
 }
 
@@ -933,22 +934,22 @@ export function FloatingWorkflowWindow() {
   const waitingSeconds = useRemainingSeconds(state.waitUntil);
   const waitingDetail = waitingDetailText(state, waitingSeconds);
   const executionDetail = useExecutionDetail(state.currentExecution);
+  const executionDetailNoLabel = useExecutionDetail(state.currentExecution, false);
   const sync = state.contactSync;
   const moments = sync || state.phase === "replying" ? null : state.momentsProgress;
   const wechatActive = Boolean(state.enabled || sync?.running);
   const outside = (state.external || [])[0];
-  // 触达时小玺说出谁在干哪一步（用户 2026-11-24）：角色按执行器真实报的段与步骤，下面一行是第几位、哪一段、用时。
+  // 触达时小玺说出谁在干哪一步（用户 2026-11-24）：角色按执行器真实报的段与步骤；下面一行沿用原来的第几位、
+  // 哪一段、文字已发送、恢复次数、用时/倒计时，只去掉已写进标题的步骤名。
   const execution = state.currentExecution;
   const touchStep = current?.type === "touch" && execution?.taskId === current.id ? execution : null;
   const role = touchStep ? touchRole(touchStep) : "";
   const stepTitle = role && touchStep ? `${role}：${TOUCH_STAGE_LABELS[touchStep.stage] || "正在处理"}` : "";
-  const touchDetail = touchStep ? [touchStep.contactIndex && touchStep.contactTotal ? `第 ${touchStep.contactIndex}/${touchStep.contactTotal} 位客户` : "",
-    touchStep.partKind === "image" ? `第 ${Math.max(1, (touchStep.partIndex || 2) - 1)} 张图片` : TOUCH_PART_LABELS[touchStep.partKind] || ""].filter(Boolean).join(" · ") : "";
   const activity: SpriteActivity | null = wechatActive ? {
     kind: "wechat",
     title: sync?.running ? (SYNC_STAGE_LABELS[sync.stage] || "正在读取微信联系人") : stepTitle || workflowStatusText(state),
     detail: moments && current ? `已赞 ${moments.liked} · 已评 ${moments.commented}`
-      : (stepTitle && touchDetail) || executionDetail || (state.waitingTaskId ? waitingDetail : "") || (current && current.title !== TASK_LABELS[current.type] ? current.title : ""),
+      : (stepTitle && executionDetailNoLabel) || executionDetail || (state.waitingTaskId ? waitingDetail : "") || (current && current.title !== TASK_LABELS[current.type] ? current.title : ""),
     ...(!sync && state.phase !== "replying" && displayed && displayed.progress?.total > 0 ? { done: displayed.progress.done, total: displayed.progress.total } : {}),
     pausable: state.enabled && state.phase !== "pausing",
     spacePause: state.spacePauseReady === true
