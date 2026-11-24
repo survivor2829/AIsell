@@ -401,8 +401,9 @@ class GatewayConfig:
             apimart_open=_apimart_proxy_open(env.get("XIAOXI_GATEWAY_APIMART_PROXY_URL", "")),
             accounts_admin_token=str(env.get("XIAOXI_GATEWAY_ACCOUNTS_ADMIN_TOKEN", "")).strip(),
             billing_markup=float(env.get("XIAOXI_GATEWAY_BILLING_MARKUP", DEFAULT_MARKUP)),
-            billing_debt_floor_cny=float(env.get("XIAOXI_GATEWAY_DEBT_FLOOR_CNY", 50)),
-            account_paid_per_minute=int(env.get("XIAOXI_GATEWAY_ACCOUNT_PAID_PER_MINUTE", DEFAULT_ACCOUNT_PAID_PER_MINUTE)),
+            # A floor of 0 would stop running jobs at once (the rule is 允许负数); a limit of 0 would block everyone.
+            billing_debt_floor_cny=max(1.0, float(env.get("XIAOXI_GATEWAY_DEBT_FLOOR_CNY", 50))),
+            account_paid_per_minute=max(1, int(env.get("XIAOXI_GATEWAY_ACCOUNT_PAID_PER_MINUTE", DEFAULT_ACCOUNT_PAID_PER_MINUTE))),
             billing_grant_points=int(env.get("XIAOXI_GATEWAY_BILLING_GRANT_POINTS", DEFAULT_GRANT_POINTS)),
             billing_prices=json.loads(env.get("XIAOXI_GATEWAY_BILLING_PRICES_JSON", "{}")),
         )
@@ -920,16 +921,21 @@ class GatewayServer(ThreadingHTTPServer):
     def usage_alerts(self):
         """用量暴涨/到负数底线的账号，加上今天被按账号限流挡过的账号；只给出账号编号和手机尾号。"""
         alerts = {item["subject"]: dict(item) for item in self.billing.usage_alerts()}
+        usage = getattr(self.billing, "last_usage", {})
+        today = int((time.time() + 8 * 60 * 60) // (24 * 60 * 60))
         with self.rate_lock:
-            hits = dict(self.account_rate_hits)
+            hits = dict(self.account_rate_hits) if self.account_rate_day == today else {}
         for subject, count in hits.items():
-            alerts.setdefault(subject, {"subject": subject, "reason": "rate_limited", "todayCny": 0.0, "dailyAverageCny": 0.0})["rateLimited"] = count
+            today_points, average = usage.get(subject, (0, 0))
+            alerts.setdefault(subject, {"subject": subject, "reason": "rate_limited", "todayCny": round(today_points / POINTS_PER_CNY, 2),
+                                        "dailyAverageCny": round(average / POINTS_PER_CNY, 2)})["rateLimited"] = count
         result = []
         for subject, item in alerts.items():
+            # The admin back end lists accounts by subject; legacy license subjects have no account row.
             account = self.accounts.by_subject(subject) or {}
             phone = str(account.get("phone") or "")
             item.pop("subject", None)
-            result.append({**item, "accountId": account.get("id"), "phoneTail": phone[-4:] if phone else ""})
+            result.append({**item, "accountId": subject, "phoneTail": phone[-4:] if phone else ""})
         return sorted(result, key=lambda entry: (-entry.get("todayCny", 0), -entry.get("rateLimited", 0)))
 
     def account_rate(self, subject):
@@ -1536,16 +1542,19 @@ class Handler(BaseHTTPRequestHandler):
             # balance (it never gets the new-account grant either: billing is never reached).
             return self._json_result(402, {"error": "demo_account", "message": DEMO_MESSAGE, "balance": 0},
                                      {"Content-Type": "application/json; charset=utf-8"})
-        limit = self.server.account_rate(subject)
-        if not limit["allowed"]:
-            # One account starting paid work faster than any real use: a script, not the app.
-            return self._json_result(429, {"error": "account_rate_limited", "message": ACCOUNT_RATE_MESSAGE},
-                                     {"Content-Type": "application/json; charset=utf-8", "Retry-After": str(limit["retry_after"]),
-                                      "X-Xiaoxi-Error-Origin": "gateway_rate_limit"})  # the origin existing clients already back off on
         try:
             job, feature = self._billing_tags(default_feature)
             if self.server.billing.admit(subject, job, feature):
-                return None
+                # Counted only for admitted work (a refused 402 is not), and never for unblocked accounts.
+                if self.server.billing.balance(subject)["unblocked"]:
+                    return None
+                limit = self.server.account_rate(subject)
+                if limit["allowed"]:
+                    return None
+                # One account starting paid work faster than any real use: a script, not the app.
+                return self._json_result(429, {"error": "account_rate_limited", "message": ACCOUNT_RATE_MESSAGE},
+                                         {"Content-Type": "application/json; charset=utf-8", "Retry-After": str(limit["retry_after"]),
+                                          "X-Xiaoxi-Error-Origin": "gateway_rate_limit"})  # the origin existing clients already back off on
             balance = self.server.billing.balance(subject)["balance"]
         except Exception:
             return None

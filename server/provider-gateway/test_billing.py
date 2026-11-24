@@ -121,15 +121,28 @@ class BillingTest(unittest.TestCase):
         # 负数底线 负 50 元 (user 2026-11-24): a reused open job id cannot keep charging without limit.
         account = self.account_id()
         self.chat(job="ce:keep")
-        self.call(f"/v1/accounts-admin/accounts/{account}/recharge", {"points": -20_000_000 - 49 * POINTS_PER_CNY, "note": "test"}, admin=ADMIN)
-        self.assertEqual(-49 * POINTS_PER_CNY, self.balance())
+        # −45 元 plus the 2.6 元 already held on the job: above the floor, the running video goes on.
+        self.call(f"/v1/accounts-admin/accounts/{account}/recharge", {"points": -20_000_000 - 45 * POINTS_PER_CNY, "note": "test"}, admin=ADMIN)
+        self.assertEqual(-45 * POINTS_PER_CNY, self.balance())
         self.assertEqual(200, self.chat(job="ce:keep")[0], "above the floor a running video finishes")
-        self.call(f"/v1/accounts-admin/accounts/{account}/recharge", {"points": -POINTS_PER_CNY, "note": "test"}, admin=ADMIN)
+        # Now −45 − 5.2 held = −50.2 元: past the floor.
         status, refused = self.chat(job="ce:keep")
         self.assertEqual(402, status)
         self.assertEqual("credit_exhausted", refused["error"])
         self.call(f"/v1/accounts-admin/accounts/{account}/recharge", {"points": 60 * POINTS_PER_CNY, "note": "test"}, admin=ADMIN)
         self.assertEqual(200, self.chat(job="ce:keep")[0], "a recharge above zero opens it again")
+
+    def test_charges_held_on_an_open_job_count_toward_the_floor(self):
+        # A client that keeps one job open and never settles must not stay above the floor.
+        account = self.account_id()
+        self.chat(job="ce:held")
+        self.call(f"/v1/accounts-admin/accounts/{account}/recharge", {"points": -20_000_000 - 40 * POINTS_PER_CNY, "note": "test"}, admin=ADMIN)
+        statuses = [self.chat(job="ce:held")[0] for _ in range(6)]
+        # Each held call is 104,000 算力 (2.6 元): the first held ones pass, then −40 − held reaches −50 and the job stops.
+        self.assertIn(402, statuses, statuses)
+        self.assertEqual(200, statuses[0])
+        alert = self.call("/v1/gateway-internal/usage-alerts")[1]["usage_alerts"]
+        self.assertTrue(any(item.get("debtFloor") for item in alert), alert)
 
     def test_one_account_starting_paid_work_too_fast_is_held_for_a_minute(self):
         self.server.config.account_paid_per_minute = 3
@@ -142,6 +155,12 @@ class BillingTest(unittest.TestCase):
         self.assertEqual(200, self.call(PREFIX + "/billing/balance", token=self.token)[0], "reading the balance is not paid work")
         alerts = self.call("/v1/gateway-internal/usage-alerts")[1]["usage_alerts"]
         self.assertEqual(1, alerts[0]["rateLimited"])
+        subject = self.call(PREFIX + "/account", token=self.token)[1]["account"]["id"]
+        self.assertEqual(subject, alerts[0]["accountId"], "named by the id the admin back end lists")
+        self.assertGreater(alerts[0]["todayCny"], 0, "a rate-limited account shows its real spend")
+        # Yesterday's hits are not reported as today's.
+        self.server.account_rate_day -= 1
+        self.assertEqual([], self.call("/v1/gateway-internal/usage-alerts")[1]["usage_alerts"])
 
     def test_usage_alerts_name_spikes_and_accounts_at_the_floor(self):
         billing = self.server.billing
@@ -160,6 +179,8 @@ class BillingTest(unittest.TestCase):
         self.assertEqual("spike", spike["reason"])
         self.assertEqual(120, spike["todayCny"])
         self.assertNotIn("subject", spike, "the report names the account by id and phone tail only")
+        self.assertEqual(subject, spike["accountId"])
+        self.assertIn("phoneTail", spike)
         # A quiet account is not reported.
         with billing.lock:
             billing.db.execute("DELETE FROM billing_charges WHERE dedupe='t0'")

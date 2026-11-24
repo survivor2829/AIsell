@@ -389,8 +389,8 @@ class Billing:
             job = self.db.execute("SELECT state FROM billing_jobs WHERE subject=? AND job_id=?",
                                   (subject, job_id)).fetchone() if job_id else None
             allowed = account["unblocked"] or account["balance"] > 0 or (job is not None and job[0] == "open")
-            if not account["unblocked"] and account["balance"] <= -self.debt_floor_points:
-                allowed = False  # past the floor even a running job stops
+            if not account["unblocked"] and self._effective_balance(subject, account) <= -self.debt_floor_points:
+                allowed = False  # past the floor even a running job stops (its held charges count too)
             if allowed and job_id:
                 if job is None:
                     self.db.execute("""INSERT INTO billing_jobs (subject, job_id, feature, state, created_at, updated_at)
@@ -404,6 +404,13 @@ class Billing:
             self.db.commit()
             return bool(allowed)
 
+    def _effective_balance(self, subject, account):
+        """The balance after the charges held on open jobs: they come off only when the job settles, and a
+        client that keeps one job open and never settles must not stay above the floor (call with lock held)."""
+        held = self.db.execute("SELECT COALESCE(SUM(points), 0) FROM billing_charges WHERE subject=? AND state='pending'",
+                               (subject,)).fetchone()[0]
+        return account["balance"] - int(held or 0)
+
     def usage_alerts(self, now=None):
         """Accounts whose spend today jumped far above their usual day, or that reached the debt floor."""
         now = time.time() if now is None else now
@@ -416,10 +423,12 @@ class Billing:
                 SUM(CASE WHEN created_at>=? AND created_at<? THEN points ELSE 0 END)
                 FROM billing_charges WHERE created_at>=? AND state IN ('charged','pending')
                 GROUP BY subject""", (today, week, today, week)).fetchall()
-            floor = self.db.execute("SELECT subject, balance FROM billing_accounts WHERE unblocked=0 AND balance<=?",
-                                    (-self.debt_floor_points,)).fetchall()
+            floor = [(subject, self._effective_balance(subject, {"balance": balance}))
+                     for subject, balance in self.db.execute("SELECT subject, balance FROM billing_accounts WHERE unblocked=0").fetchall()]
+            floor = [(subject, balance) for subject, balance in floor if balance <= -self.debt_floor_points]
             balances = dict(self.db.execute("SELECT subject, balance FROM billing_accounts").fetchall())
         alerts = {}
+        usage = {subject: ((today_points or 0), (week_points or 0) / 7) for subject, today_points, week_points in spent}
         for subject, today_points, week_points in spent:
             average = (week_points or 0) / 7
             if today_points >= max(SPIKE_MIN_POINTS, SPIKE_FACTOR * average):
@@ -427,10 +436,14 @@ class Billing:
                                    "dailyAverageCny": round(average / POINTS_PER_CNY, 2),
                                    "balanceCny": round(balances.get(subject, 0) / POINTS_PER_CNY, 2)}
         for subject, balance in floor:
-            entry = alerts.setdefault(subject, {"subject": subject, "reason": "debt_floor", "todayCny": 0.0, "dailyAverageCny": 0.0})
+            today_points, average = usage.get(subject, (0, 0))
+            entry = alerts.setdefault(subject, {"subject": subject, "reason": "debt_floor", "todayCny": round(today_points / POINTS_PER_CNY, 2),
+                                                "dailyAverageCny": round(average / POINTS_PER_CNY, 2)})
             entry["balanceCny"] = round(balance / POINTS_PER_CNY, 2)
             entry["debtFloor"] = True
-        return sorted(alerts.values(), key=lambda item: -item["todayCny"])
+        result = sorted(alerts.values(), key=lambda item: -item["todayCny"])
+        self.last_usage = usage  # rate-limited accounts in the report get their real spend too
+        return result
 
     def balance(self, subject):
         with self.lock:
