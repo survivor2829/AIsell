@@ -905,6 +905,56 @@ async function checkR008PartialSend() {
   }
 }
 
+// A pre-send skip carries what the send driver reported (2026-11-24: image_paste_not_accepted and
+// atomic_conversation_changed reached the field reports as a bare code although the driver had said
+// which stage failed and how); contact data in the same result never leaves the computer.
+async function checkPreSendSkipCarriesDriverEvidence() {
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-pre-send-evidence-"));
+  const events = [];
+  const failures = [];
+  const unsubscribe = configureDiagnostics({ rootDir: path.join(root, "diagnostics") }).subscribe((entry) => {
+    if (entry.event === "contact_skipped") events.push(entry.details);
+  });
+  try {
+    let clock = Date.parse("2026-11-24T00:00:00.000Z");
+    const contact = { id: "customer-1", name: "客户一", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
+    const workflow = createTouchWorkflow({
+      dataDir: root, now: () => new Date(clock), random: () => 0, readContacts: () => [contact],
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+      mediaStore: { validateIds: (ids) => ids, resolve: () => ({ path: "image-1" }) },
+      passport: { bindTrace() {}, recordEvent() {}, recordFailure: (_module, _id, evidence) => failures.push(evidence), writeRunBill() {} },
+      execute: async ({ message }) => message.startsWith("[图片:")
+        ? { ok: false, send_attempted: false, blocked_reason: "image_paste_not_accepted", pre_send_retry_exhausted: true,
+          driverStage: "paste", paste_method: "ctrl_v", send_button_color: "gray", input_point_source: "composer_uia",
+          input_x_ratio: 0.42, clipboardWriteAttempts: 2, source_line: 287, errorType: "TimeoutException", sendAttempted: false,
+          conversation_title: "客户一", message: "您好", source_file: "C:/Users/someone/desktop/rpa/x.cjs", conversation_token: "abc123",
+          raw_exception: "at line 3", diagnostics: { paste_wait_ms: 60000, dialog_seen: false, recipient_name: "客户一" } }
+        : { ok: true, state: { real_send_status: "sent_verified" } }
+    });
+    const record = { id: "pre-send-evidence", payload: workflow.prepareWorkflowTask({ script: "您好", contactIds: [contact.id], imageIds: ["image-1"] }) };
+    for (let step = 0; step < 6; step += 1) {
+      clock += 60 * 60 * 1000;
+      if ((await workflow.runWorkflowStep(record, { isEnabled: () => true })).status === "completed") break;
+    }
+    const failure = failures.find((item) => item.stage === "pre_send");
+    assert.ok(failure, "the pre-send skip is recorded");
+    assert.deepEqual(failure.rawReading.driver, {
+      result: { ok: false, send_attempted: false, blocked_reason: "image_paste_not_accepted", pre_send_retry_exhausted: true,
+        driverStage: "paste", paste_method: "ctrl_v", send_button_color: "gray", input_point_source: "composer_uia",
+        input_x_ratio: 0.42, clipboardWriteAttempts: 2, source_line: 287, errorType: "TimeoutException", sendAttempted: false },
+      diagnostics: { paste_wait_ms: 60000, dialog_seen: false }
+    }, "the driver's own findings, without titles, text, paths, tokens or exception text");
+    const event = events.find((details) => details.stage === "pre_send");
+    assert.equal(event.pre_send_stage, "paste");
+    assert.equal(event.pre_send_error_kind, "TimeoutException");
+    assert.equal(event.pre_send_line, 287);
+    assert.equal(event.pre_send_attempted, false);
+    for (const secret of ["客户一", "您好", "someone", "abc123"]) {
+      assert.equal(JSON.stringify(failures).includes(secret), false, `passport never holds ${secret}`);
+    }
+  } finally { unsubscribe(); }
+}
+
 async function checkT5FourthReviewExits() {
   for (const kind of ["snapshot", "preclick", "imageformat", "identity", "environment", "recoverable", "unknown"]) {
     const root = trackedMkdtemp(path.join(os.tmpdir(), `xiaoxi-t5-exit-${kind}-`));
@@ -3563,6 +3613,7 @@ async function main() {
   await checkRecipientsFollowContactSync();
   await checkR008PassportAttachmentCount();
   await checkR008PartialSend();
+  await checkPreSendSkipCarriesDriverEvidence();
   await checkT5FourthReviewExits();
   await checkT5FourthReviewRulesAndEvidence();
   await checkR008EvidencePrivacy();
