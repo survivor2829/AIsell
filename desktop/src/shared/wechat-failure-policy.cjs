@@ -9,6 +9,10 @@ const workflowPolicies = Object.freeze({
   nothing_to_delete: { classification: "recoverable", attentionScope: "task" },
   delete_name_missing: { classification: "blocker", attentionScope: "task" },
   wechat_delete_unavailable: { classification: "blocker", attentionScope: "task" },
+  // Same-named friends with no 微信号 to tell them apart: never deleted automatically.
+  contact_name_not_unique: { classification: "blocker", attentionScope: "task" },
+  // The delete steps are measured on WeChat 4 (Weixin.exe); another version is left alone.
+  wechat_version_unsupported: { classification: "environment", attentionScope: "task" },
   atomic_draft_changed: { classification: "recoverable", attentionScope: "task" },
   // A chat title OCR could not read: only this scan is skipped; the next poll looks again.
   conversation_title_unresolved: { classification: "recoverable", attentionScope: "task" },

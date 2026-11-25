@@ -1111,6 +1111,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         try { return String(JSON.parse(fs.readFileSync(path.join(runtime.contactSyncDir, "state.json"), "utf8")).account_name || ""); }
         catch { return ""; }
       },
+      // Deleting a friend in WeChat is a real WeChat write: shipped where the other real operations are.
+      deleteWechatContact: internalRealSend ? require("../../rpa/active_touch/wechat_delete_contact.cjs").deleteWechatContact : undefined,
       verifyLiveAccount: internalRealSend ? (accountId) => {
         let wechatRoot = "";
         try { wechatRoot = String(JSON.parse(fs.readFileSync(path.join(runtime.contactSyncDir, "state.json"), "utf8")).wechat_root || ""); } catch {}

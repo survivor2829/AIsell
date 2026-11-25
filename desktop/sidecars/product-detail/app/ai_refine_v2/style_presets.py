@@ -100,9 +100,16 @@ _SCHEMES = (
 )
 
 
+def _luminance(hex_colour):
+    red, green, blue = (int(hex_colour[index:index + 2], 16) / 255 for index in (1, 3, 5))
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+
 def _scheme(entry):
     style_id, name, line, (base, secondary, accent), dark, base_words, secondary_words, accent_words, mood, lighting, layout = entry
-    text = "白色或很浅的颜色" if dark else secondary_words
+    # Text must read on the base: light text on dark schemes; on light ones the secondary only when it is itself
+    # dark (森林绿, 墨黑), otherwise near-black ink (a pale secondary would vanish on a pale base).
+    text = "白色或很浅的颜色" if dark else (secondary_words if _luminance(secondary) < 0.35 else "深墨灰 #222222")
     return style_id, {
         "label": name,
         "line": line,

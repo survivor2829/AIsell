@@ -104,7 +104,7 @@ const ACTIONS = new Set([
   "social-publish:remove", "social-publish:removeReference", "social-publish:resolve", "social-publish:retry", "social-publish:saveReference", "social-publish:submit",
   "social-publish:submitFinished", "social-publish:suggest", "touch-task:resolve-unknown", "touch-task:resume",
   "touch-task:retry-skipped", "touch-task:start", "wechat-workflow:add-recipients", "wechat-workflow:add-task",
-  "wechat-workflow:choose-touch-images", "wechat-workflow:delete-tasks", "wechat-workflow:remove-recipient", "wechat-workflow:remove-unreachable", "wechat-workflow:restore-unreachable",
+  "wechat-workflow:choose-touch-images", "wechat-workflow:delete-tasks", "wechat-workflow:remove-recipient", "wechat-workflow:remove-unreachable", "wechat-workflow:restore-unreachable", "wechat-workflow:stop-unreachable-delete",
   "wechat-workflow:resolve-touch-unknown", "wechat-workflow:retry-all-and-start", "wechat-workflow:retry-skipped",
   "wechat-workflow:retry-task", "wechat-workflow:set-reply-enabled", "wechat-workflow:start", "wechat-workflow:update-task"
 ]);

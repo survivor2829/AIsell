@@ -32,3 +32,6 @@
 .cleanup-wechat-result.is-deleted{background:#dcfce7;color:#166534}
 .cleanup-wechat-result.is-failed{background:#fef3c7;color:#92400e}
 .cleanup-wechat-result.is-unknown{background:#fee2e2;color:#b91c1c}
+.cleanup-progress{display:flex;align-items:center;gap:10px}
+.cleanup-progress span{flex:1}
+.cleanup-progress button{height:32px;padding:0 14px;border:0;border-radius:9px;background:#fff;box-shadow:inset 0 0 0 1.5px #fdba74;color:#9a3412;font-weight:900;cursor:pointer}

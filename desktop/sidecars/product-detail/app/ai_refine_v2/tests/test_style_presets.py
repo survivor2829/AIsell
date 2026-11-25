@@ -68,6 +68,18 @@ def test_ten_professional_schemes_replace_the_old_looks():
     assert len({tuple(preset["swatches"]) for preset in style_presets.PRESETS.values()}) == 10
 
 
+def test_text_reads_on_every_scheme():
+    """Review 2026-11-25: light schemes asked for text in a pale secondary (#D0D0D0 on white)."""
+    for preset in style_presets.PRESETS.values():
+        base, secondary, _ = preset["swatches"]
+        hint = preset["style_dna"]["typography_hint"]
+        if preset["dark"]:
+            assert "白色" in hint
+        elif style_presets._luminance(secondary) >= 0.35:
+            assert "#222222" in hint and secondary not in hint
+        assert abs(style_presets._luminance(base) - (0.0 if preset["dark"] else 1.0)) < 0.5
+
+
 def test_a_task_frozen_on_an_old_look_still_renders_it():
     for style_id, preset in style_presets.LEGACY_PRESETS.items():
         assert style_presets.resolve(style_id) == style_id

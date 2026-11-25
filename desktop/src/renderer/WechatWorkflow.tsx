@@ -141,6 +141,7 @@ declare global {
       unreachableList?: () => Promise<UnreachableList>;
       removeUnreachable?: (entries: { accountId: string; key: string }[], deleteInWechat?: boolean) => Promise<UnreachableList>;
       restoreUnreachable?: (entry: { accountId: string; key: string }) => Promise<UnreachableList>;
+      stopUnreachableDelete?: () => Promise<UnreachableList>;
       addRecipients: (contactIds: string[]) => Promise<WorkflowResult>;
       setReplyEnabled: (enabled: boolean) => Promise<WorkflowResult>;
       onUpdate: (callback: (result: WorkflowResult) => void) => () => void;
@@ -456,7 +457,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   useEffect(() => {
     if (mode !== "touch" || cleanupOpen) return;
     void api?.unreachableList?.().then((list) => setCleanupPending(list?.pending || 0)).catch(() => undefined);
-  }, [api, mode, cleanupOpen, state.tasks.length]);
+  }, [api, mode, cleanupOpen, state.tasks.map((task) => `${task.id}:${task.status}:${task.progress?.done || 0}`).join("|")]);
   const availableTypes: WorkflowTaskType[] = mode === "touch" ? ["touch"] : mode === "moments" ? ["publish", "interact"] : ["touch", "publish", "interact"];
   const tasks = state.tasks.filter((task) => availableTypes.includes(task.type));
   const activeTasks = tasks.filter((task) => !["completed", "cancelled", "needs_attention"].includes(task.status));

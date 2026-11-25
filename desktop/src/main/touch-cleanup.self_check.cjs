@@ -65,60 +65,99 @@ try {
 async function checkWechatDelete(base) {
   const dir = path.join(base, "wechat");
   fs.mkdirSync(dir, { recursive: true });
-  const row = (wxid, name, account = "当前号") => ({ id: `w-${wxid}`, name, remark: name, wxid, wechatId: `id_${wxid}`, wechatAccountId: account });
-  const people = [row("p1", "测试客户一"), row("p2", "测试客户二"), row("p3", "测试客户三"), row("p4", "测试客户四", "别的号")];
-  fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify(people));
+  const row = (wxid, name, account = "当前号", wechatId = `id_${wxid}`) => ({ id: `w-${wxid}`, name, remark: name, wxid, wechatId, wechatAccountId: account });
+  const people = [row("p1", "测试客户一"), row("p2", "测试客户二"), row("p3", "测试客户三"), row("p4", "测试客户四", "别的号"), row("p5", "测试客户五")];
+  fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([...people, row("p9", "测试客户五")]));
   const registry = createUnreachableRegistry(dir);
   for (const person of people) registry.record(person, "deleted");
   const cleanup = createTouchCleanup(dir);
   const all = people.map((person) => ({ accountId: person.wechatAccountId, key: person.wxid }));
   cleanup.remove(all);
+  // Planned before anything starts: another account's friend is skipped and says why.
+  const plan = cleanup.planWechatDelete(all, { currentAccount: "当前号" });
+  assert.deepEqual(plan.wanted.map((entry) => entry.key), ["p1", "p2", "p3", "p5"]);
+  assert.deepEqual(plan.skipped, [{ accountId: "别的号", key: "p4", reason: "wechat_account_mismatch" }]);
+  const live = async () => ({ ok: true });
+  assert.equal((await cleanup.deleteInWechat(plan.wanted, { deleteContact: async () => ({}), currentAccount: "当前号" })).reason, "wechat_delete_unavailable", "no live account check, no delete");
   const lockLog = [];
   const coordinator = { acquire: (value) => { lockLog.push(["acquire", value.phase]); return { ok: true, lock: { owner: "o1" } }; }, release: (owner) => lockLog.push(["release", owner]) };
   const seen = [];
-  const outcomes = { 测试客户一: { ok: true, deleted: true, stage: "done" }, 测试客户二: { ok: false, outcomeUnknown: true, stage: "verify", reason: "delete_outcome_unknown" },
+  const outcomes = { 测试客户一: { ok: true, deleted: true, stage: "done" }, 测试客户二: { ok: false, outcomeUnknown: true, stage: "commit", reason: "powershell_timeout" },
     测试客户三: { ok: false, stage: "confirm", reason: "confirm_text_mismatch" } };
-  const progress = [];
-  const done = await cleanup.deleteInWechat(all, { coordinator, currentAccount: "当前号", onProgress: (value) => progress.push(value),
-    deleteContact: async (contact, options) => { seen.push([contact.name, contact.wechatId, options.confirm]); return outcomes[contact.name]; } });
-  assert.deepEqual(seen, [["测试客户一", "id_p1", true], ["测试客户二", "id_p2", true], ["测试客户三", "id_p3", true]], "the saved contact row is what is deleted; another account's friend is not");
-  assert.deepEqual([done.deleted, done.unknown, done.failed], [1, 1, 2]);
+  const done = await cleanup.deleteInWechat(plan.wanted, { coordinator, currentAccount: "当前号", verifyLiveAccount: live,
+    deleteContact: async (contact, options) => {
+      seen.push([contact.name, options.confirm, options.uniqueName]);
+      if (contact.name === "测试客户五") throw new Error("crashed");
+      return outcomes[contact.name];
+    } });
+  assert.deepEqual(seen, [["测试客户一", true, true], ["测试客户二", true, true], ["测试客户三", true, true], ["测试客户五", true, false]],
+    "a friend sharing a synced name is flagged not unique");
+  assert.deepEqual([done.deleted, done.unknown, done.failed], [1, 2, 1]);
   const status = Object.fromEntries(cleanup.list().entries.map((entry) => [entry.name, entry.wechatDelete]));
-  assert.equal(status.测试客户一.status, "deleted");
-  assert.equal(status.测试客户二.status, "unknown", "pressed 删除 but not read back: unknown, never retried");
+  assert.equal(status.测试客户二.status, "unknown", "a timeout after 删除 is unknown, never retried");
+  assert.equal(status.测试客户五.status, "unknown", "a crash is never reported as not deleted");
   assert.deepEqual([status.测试客户三.status, status.测试客户三.reason], ["failed", "confirm_text_mismatch"]);
   assert.deepEqual([status.测试客户四.status, status.测试客户四.reason], ["failed", "wechat_account_mismatch"]);
   assert.deepEqual(lockLog, [["acquire", "touch:delete-contact"], ["release", "o1"]], "the WeChat lock is held for the run and released");
-  assert.equal(progress.at(-1).finished, true);
   assert.equal(cleanup.list().wechatRunning, false);
 
-  // WeChat busy (touch or replies hold the lock): nothing is pressed, each says why.
-  const busyDir = path.join(base, "busy");
-  fs.mkdirSync(busyDir, { recursive: true });
-  fs.writeFileSync(path.join(busyDir, "contacts.json"), JSON.stringify([people[0]]));
-  createUnreachableRegistry(busyDir).record(people[0], "blocked");
-  const busy = createTouchCleanup(busyDir);
-  busy.remove([all[0]]);
+  // Busy WeChat, a switched account, or an account that cannot be checked: nothing is pressed.
   let pressed = 0;
-  await busy.deleteInWechat([all[0]], { currentAccount: "当前号", coordinator: { acquire: () => ({ ok: false, error: "wechat_operation_busy" }), release() {} },
-    deleteContact: async () => { pressed += 1; return {}; } });
+  const press = async () => { pressed += 1; return {}; };
+  await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: live, coordinator: { acquire: () => ({ ok: false, error: "wechat_operation_busy" }), release() {} }, deleteContact: press });
+  await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: async () => ({ ok: false, reason: "wechat_account_changed" }), coordinator, deleteContact: press });
+  await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: async () => { throw new Error("no"); }, coordinator, deleteContact: press });
   assert.equal(pressed, 0);
-  assert.equal(busy.list().entries[0].wechatDelete.reason, "wechat_operation_busy");
-  // WeChat switched to another account: nothing is pressed either.
-  const switched = createTouchCleanup(busyDir);
-  await switched.deleteInWechat([all[0]], { currentAccount: "当前号", verifyLiveAccount: async () => ({ ok: false, reason: "wechat_account_changed" }),
-    coordinator, deleteContact: async () => { pressed += 1; return {}; } });
-  assert.equal(pressed, 0);
-  assert.equal(switched.list().entries[0].wechatDelete.reason, "wechat_account_changed");
-  assert.equal((await busy.deleteInWechat([{ accountId: "当前号", key: "nobody" }], { deleteContact: async () => ({}) })).reason, "nothing_to_delete", "only removed contacts can be deleted");
+  assert.equal(cleanup.list().entries.find((entry) => entry.key === "p1").wechatDelete.reason, "wechat_account_unverified");
 
-  // The WeChat steps find every element by name and click its live centre: no coordinate is written down, and the
-  // four identity checks stay in place.
-  const { DELETE_SCRIPT } = require("../../rpa/active_touch/wechat_delete_contact.cjs");
+  // 停止 between people: the one in hand finishes, the rest are left alone.
+  let stopNow;
+  const stopped = await cleanup.deleteInWechat(plan.wanted.slice(0, 3), { currentAccount: "当前号", verifyLiveAccount: live, coordinator,
+    deleteContact: async () => { stopNow = cleanup.stopWechatDelete(); return { ok: true, deleted: true }; } });
+  assert.equal(stopNow.stopping, true);
+  assert.deepEqual([stopped.deleted, stopped.failed], [1, 2]);
+  assert.equal(cleanup.list().entries.find((entry) => entry.key === "p3").wechatDelete.reason, "stopped_by_user");
+
+  await checkDeleteModule();
+}
+
+// The WeChat steps themselves (rpa/active_touch/wechat_delete_contact.cjs), with WeChat faked.
+async function checkDeleteModule() {
+  const { deleteWechatContact, DELETE_SCRIPT } = require("../../rpa/active_touch/wechat_delete_contact.cjs");
+  const contact = { name: "测试客户", remark: "测试客户", wechatId: "test_alias" };
+  const focus = async () => ({ ok: true, pid: 1, hWnd: 2, processName: "Weixin", windowClass: "Qt51514QWindowIcon" });
+  const openConversation = async () => ({ ok: true });
+  const calls = [];
+  const runner = (answers) => async (_script, env) => { calls.push({ phase: env.XIAOXI_DELETE_PHASE, id: env.XIAOXI_DELETE_WECHAT_ID }); return answers[env.XIAOXI_DELETE_PHASE]; };
+  const ready = { ok: true, stage: "confirm", ready: true };
+  assert.equal((await deleteWechatContact(contact, { confirm: true, focus, openConversation, runner: runner({ prepare: ready, commit: { ok: true, deleted: true, stage: "done" } }) })).deleted, true);
+  assert.deepEqual(calls.map((call) => call.phase), ["prepare", "commit"], "删除 is pressed only in a second call, after the confirm was reached");
+  for (const commit of [{ ok: false, reason: "powershell_timeout" }, { ok: false, reason: "powershell_output_invalid" }, undefined]) {
+    const result = await deleteWechatContact(contact, { confirm: true, focus, openConversation, runner: runner({ prepare: ready, commit }) });
+    assert.equal(result.outcomeUnknown, true, `after the press, ${commit?.reason || "no answer"} is unknown`);
+  }
+  const throwing = await deleteWechatContact(contact, { confirm: true, focus, openConversation, runner: async (_s, env) => { if (env.XIAOXI_DELETE_PHASE === "commit") throw new Error("crash"); return ready; } });
+  assert.equal(throwing.outcomeUnknown, true);
+  const notPressed = await deleteWechatContact(contact, { confirm: true, focus, openConversation, runner: runner({ prepare: ready, commit: { ok: false, stage: "commit", reason: "confirm_dialog_gone", notClicked: true } }) });
+  assert.deepEqual([notPressed.outcomeUnknown, notPressed.reason], [false, "confirm_dialog_gone"]);
+  calls.length = 0;
+  const look = await deleteWechatContact(contact, { confirm: false, focus, openConversation, runner: runner({ prepare: { ok: false, stage: "confirm", reason: "dry_run_stopped_before_delete", dryRun: true } }) });
+  assert.deepEqual([look.dryRun, calls.map((call) => call.phase)], [true, ["prepare"]], "a look-only run never reaches the commit call");
+  // No usable 微信号: refused unless the name is known to be unique.
+  assert.equal((await deleteWechatContact({ name: "测试客户" }, { confirm: true, focus, openConversation, runner: runner({}) })).reason, "contact_name_not_unique");
+  // Not WeChat 4: nothing is opened.
+  let opened = 0;
+  const old = await deleteWechatContact(contact, { confirm: true, focus: async () => ({ ok: true, processName: "WeChat", windowClass: "WeChatMainWndForPC" }), openConversation: async () => { opened += 1; return { ok: true }; }, runner: runner({}) });
+  assert.deepEqual([old.reason, opened], ["wechat_version_unsupported", 0]);
+
+  // Every element is found by name and pressed at its live centre: no coordinate is written down; the identity
+  // checks and the user-input stop are in place.
   assert.doesNotMatch(DELETE_SCRIPT, /SetCursorPos\(\s*\d/u, "never a fixed screen point");
-  assert.ok(DELETE_SCRIPT.includes("SetCursorPos([int]($box.X + $box.Width / 2), [int]($box.Y + $box.Height / 2))"), "the centre of the element's current box");
-  for (const check of ["chat_title_mismatch", "chat_member_mismatch", "profile_wechat_id_mismatch", "confirm_text_mismatch", "dry_run_stopped_before_delete", "delete_outcome_unknown"]) {
+  assert.ok(DELETE_SCRIPT.includes("SetCursorPos([int]($box.X + $box.Width / 2), [int]($box.Y + $box.Height / 2))"));
+  for (const check of ["chat_title_mismatch", "chat_member_mismatch", "profile_wechat_id_mismatch", "confirm_text_mismatch", "dry_run_stopped_before_delete", "delete_outcome_unknown", "wechat_external_input_detected"]) {
     assert.ok(DELETE_SCRIPT.includes(check), check);
   }
   assert.ok(DELETE_SCRIPT.includes("'删除\"' + $name + '\"？'"), "the confirm text must name exactly this person");
+  // Esc only while the profile card is open: one Esc too many hides WeChat to the tray (seen live 2026-11-25).
+  assert.match(DELETE_SCRIPT, /if \(-not \(Get-WxWindow "mmui::ProfileUniquePop"\)\) \{ break \}\s*\[XiaoxiDel\]::keybd_event\(0x1B/u);
 }
