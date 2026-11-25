@@ -1,5 +1,6 @@
 import { AlertTriangle, ArrowLeft, ArrowRight, Ban, Bot, CalendarClock, Check, CheckCircle2, ChevronRight, CircleHelp, Clock3, ImagePlus, List, ListTodo, Pause, Pencil, Play, Plus, Repeat2, Send, SkipForward, ThumbsUp, Trash2, Unlink, X } from "lucide-react";
 import { touchPhase } from "./touch-role";
+import { UnreachableCleanup, type UnreachableList } from "./UnreachableCleanup";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { momentsProgressLabel } from "./MomentsCampaignPanel";
 import { XiaoxiSprite, type SpriteActivity } from "./XiaoxiSprite";
@@ -137,6 +138,9 @@ declare global {
       resolveTouchUnknown: (id: string, resolution: "sent" | "not_sent" | "skip") => Promise<WorkflowResult>;
       getTask: (id: string) => Promise<WorkflowResult>;
       removeRecipient: (id: string) => Promise<WorkflowResult>;
+      unreachableList?: () => Promise<UnreachableList>;
+      removeUnreachable?: (entries: { accountId: string; key: string }[]) => Promise<UnreachableList>;
+      restoreUnreachable?: (entry: { accountId: string; key: string }) => Promise<UnreachableList>;
       addRecipients: (contactIds: string[]) => Promise<WorkflowResult>;
       setReplyEnabled: (enabled: boolean) => Promise<WorkflowResult>;
       onUpdate: (callback: (result: WorkflowResult) => void) => () => void;
@@ -443,6 +447,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   const [deletion, setDeletion] = useState<{ ids: string[]; bulk: boolean } | null>(null);
   // Which touch task has its 「看跳过了谁」 list open.
   const [openSkipList, setOpenSkipList] = useState("");
+  const [cleanupOpen, setCleanupOpen] = useState(false);
   const editorAnchor = useRef<HTMLDivElement>(null);
   const { state, loading, busy, error, run } = workflow;
   const api = window.xiaoxiWorkflow;
@@ -606,7 +611,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
       [Bot, "AI 没写出来", breakdown?.ai_failed || 0, "is-blue"]
     ];
     const canSettle = retryableSkipped.length > 0 && task.status === "completed" && task.skipsHoldReply && !task.skippedSettledAt && !task.accountMismatch;
-    if (!total) return earlierUnreachable ? <div className="touch-sum-actions"><button type="button" className="touch-sum-button" aria-expanded={openSkipList === task.id} onClick={() => setOpenSkipList(openSkipList === task.id ? "" : task.id)}><List />{openSkipList === task.id ? "收起名单" : "看拉黑和删除的人"}</button></div> : null;
+    if (!total) return earlierUnreachable ? <div className="touch-sum-actions"><button type="button" className="touch-sum-button" onClick={() => setCleanupOpen(true)}><Ban />清理无效好友</button><button type="button" className="touch-sum-button" aria-expanded={openSkipList === task.id} onClick={() => setOpenSkipList(openSkipList === task.id ? "" : task.id)}><List />{openSkipList === task.id ? "收起名单" : "看拉黑和删除的人"}</button></div> : null;
     return <div className="touch-sum">
       <div className="touch-sum-ring" role="img" aria-label={`已发 ${sent} / ${total} 人`}>
         <svg viewBox="0 0 150 150"><circle cx="75" cy="75" r={radius} className="touch-sum-track" />{percent > 0 && <circle cx="75" cy="75" r={radius} className="touch-sum-done" strokeDasharray={`${(circle * percent) / 100} ${circle}`} transform="rotate(-90 75 75)" />}</svg>
@@ -623,6 +628,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
         {(retryableSkipped.length > 0 || records.length > 0 || earlierUnreachable) && <div className="touch-sum-actions">
           {retryableSkipped.length > 0 && <button type="button" className="touch-sum-button is-primary" data-xiaoxi-workflow-start disabled={busy || retryLocked} onClick={() => void retrySkipped(task, undefined, true)}><Repeat2 />{canRetryWhileListening ? `暂停自动回复，全部重试 ${retryableSkipped.length} 人` : `全部重试 ${retryableSkipped.length} 人`}</button>}
           {canSettle && <button type="button" className="touch-sum-button is-soft" data-xiaoxi-workflow-start disabled={busy || retryLocked} onClick={() => void settleSkipped(task)}>这些人不再重试，开始自动回复</button>}
+          {(unreachable > 0 || earlierUnreachable) && <button type="button" className="touch-sum-button" onClick={() => setCleanupOpen(true)}><Ban />清理无效好友</button>}
           {(records.length > 0 || earlierUnreachable) && <button type="button" className="touch-sum-button" aria-expanded={openSkipList === task.id} onClick={() => setOpenSkipList(openSkipList === task.id ? "" : task.id)}><List />{openSkipList === task.id ? "收起名单" : "看跳过了谁"}</button>}
         </div>}
         {updateWaitingCount > 0 && <p className="touch-sum-hint">另有 {updateWaitingCount} 位要等软件更新认人方法后才能重试，更新后会自动加回来。</p>}
@@ -684,6 +690,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   const addLocked = busy || (planLocked && !replyOnlyActive);
   // 精准触达 and 朋友圈运营 share the full-width page style; 今日计划 keeps its plain header.
   return <section className={`page workflow-page${mode === "home" ? "" : " is-touch"}`}>
+    {cleanupOpen && <UnreachableCleanup onClose={() => setCleanupOpen(false)} />}
     {mode === "touch" ? <TouchHero tasks={heroTasks} contactCount={contacts.length} planned={activeTasks.length}
       toggle={heroToggle} onAdd={() => void addPlannedTask("touch")} addDisabled={addLocked} />
     : mode === "moments" ? <MomentsHero tasks={heroTasks} planned={activeTasks.length} toggle={heroToggle} onAdd={(type) => void addPlannedTask(type)} addDisabled={addLocked} />

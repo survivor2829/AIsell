@@ -1,0 +1,24 @@
+.cleanup-backdrop{position:fixed;inset:0;z-index:60;display:grid;place-items:center;padding:24px;background:rgba(15,23,42,.42)}
+.cleanup-panel{width:min(520px,100%);max-height:min(640px,100%);display:flex;flex-direction:column;gap:14px;padding:22px 24px;border-radius:18px;background:#fff;box-shadow:0 24px 60px rgba(15,23,42,.28);overflow:auto}
+.cleanup-panel header{display:flex;align-items:center;justify-content:space-between}
+.cleanup-panel h2{display:flex;align-items:center;gap:10px;margin:0;font-size:20px;font-weight:900;color:#111827}
+.cleanup-panel h2 svg{width:22px;height:22px;color:#e60000}
+.cleanup-close{display:grid;place-items:center;width:36px;height:36px;border:0;border-radius:10px;background:#f3f4f6;color:#374151;cursor:pointer}
+.cleanup-close svg{width:18px;height:18px}
+.cleanup-list,.cleanup-removed ul{margin:0;padding:0;list-style:none;display:grid;gap:8px}
+.cleanup-list label{display:flex;align-items:center;gap:12px;min-height:48px;padding:0 14px;border-radius:12px;background:#f8fafc;cursor:pointer;font-size:16px}
+.cleanup-list input{width:20px;height:20px;accent-color:#e60000}
+.cleanup-name{flex:1;min-width:0;font-weight:800;color:#111827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cleanup-kind{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:999px;font-size:13px;font-weight:800}
+.cleanup-kind svg{width:14px;height:14px}
+.cleanup-kind.is-blocked{background:#fee2e2;color:#b91c1c}
+.cleanup-kind.is-deleted{background:#f1f5f9;color:#475569}
+.cleanup-primary{height:50px;border:0;border-radius:13px;background:#e60000;color:#fff;font-size:17px;font-weight:900;cursor:pointer}
+.cleanup-primary:disabled{background:#f3a3a3;cursor:not-allowed}
+.cleanup-empty{margin:0;padding:18px;border-radius:12px;background:#f8fafc;color:#4b5563;font-size:15px}
+.cleanup-removed summary{cursor:pointer;font-size:15px;font-weight:800;color:#4b5563}
+.cleanup-removed ul{margin-top:10px}
+.cleanup-removed li{display:flex;align-items:center;gap:10px;min-height:42px;padding:0 12px;border-radius:10px;background:#f8fafc;font-size:15px}
+.cleanup-removed button{display:inline-flex;align-items:center;gap:5px;height:32px;padding:0 12px;border:0;border-radius:9px;background:#fff;box-shadow:inset 0 0 0 1.5px #d9dce3;font-weight:800;cursor:pointer}
+.cleanup-removed button svg{width:15px;height:15px}
+.cleanup-notice{margin:0;font-size:15px;font-weight:700;color:#047857}

@@ -33,6 +33,16 @@ function contactsPath(baseDir, options = {}) {
   return path.join(options.activeTouchDir ?? activeTouchDir(baseDir), "contacts.json");
 }
 
+// Contacts the customer removed after a touch found them blocked or deleted stay out of every later sync
+// (user 2026-11-25); WeChat still lists a one-way deleted friend, so the sync alone would bring them back.
+function withoutRemovedContacts(baseDir, options, contacts) {
+  try {
+    return require("../../src/main/touch-unreachable.cjs").createUnreachableRegistry(path.dirname(contactsPath(baseDir, options))).withoutRemoved(contacts);
+  } catch {
+    return contacts;
+  }
+}
+
 function bundledHelperPath(baseDir = __dirname) {
   return path.join(baseDir, "wechat_contact_helper.py");
 }
@@ -1016,7 +1026,7 @@ function capture(baseDir = __dirname, options = {}) {
 
     const syncedAt = new Date().toISOString();
     const accountName = account.accountName ?? "";
-    const contacts = normalizeContacts(rawContacts, syncedAt, "wechat-silent-sync", accountName);
+    const contacts = withoutRemovedContacts(baseDir, options, normalizeContacts(rawContacts, syncedAt, "wechat-silent-sync", accountName));
     writeJson(contactsPath(baseDir, options), contacts);
     const state = {
       ...loadState(baseDir),
@@ -1377,7 +1387,7 @@ function sync(baseDir = __dirname, options = {}) {
 
   const syncedAt = new Date().toISOString();
   const accountName = account.accountName ?? path.basename(account.accountDir);
-  const contacts = normalizeContacts(readJson(tempOut, []), syncedAt, "wechat-silent-sync", accountName);
+  const contacts = withoutRemovedContacts(baseDir, options, normalizeContacts(readJson(tempOut, []), syncedAt, "wechat-silent-sync", accountName));
   try {
     fs.rmSync(tempOut, { force: true });
   } catch {

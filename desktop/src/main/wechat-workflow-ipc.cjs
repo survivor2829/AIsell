@@ -316,6 +316,11 @@ function registerWechatWorkflowIpc(options) {
     return controller.resolveTouchUnknown(id, resolution);
   }, true);
   handle("remove-recipient", (payload) => controller.removeRecipient(String(payload?.id || "")));
+  // Contacts a touch found blocked or deleted: list them, take the confirmed ones out of the contact list, or put one back.
+  const cleanup = () => require("./touch-cleanup.cjs").createTouchCleanup(options.activeTouchDir);
+  handle("unreachable-list", () => cleanup().list());
+  handle("remove-unreachable", (payload) => cleanup().remove(payload?.entries), true);
+  handle("restore-unreachable", (payload) => cleanup().restore(payload?.entry), true);
   handle("add-recipients", (payload) => controller.addRecipients(payload?.contactIds), true);
   handle("set-reply-enabled", (payload) => controller.setReplyEnabled(payload?.enabled));
   handle("show-main", showMain);
