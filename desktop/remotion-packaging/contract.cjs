@@ -400,6 +400,13 @@ function normalizeMotionManifest(input) {
     ...(["bold_yellow", "word_highlight", "keyword_pop", "moving_pill", "phrase_slide", "clean_business", ...require('./narration-templates.json').templates.map((item) => item.id)].includes(input.captionStyleId) ? { captionStyleId: input.captionStyleId } : {}),
     ...(input.narrationPlan ? { narrationPlan: require('./narration-plan.cjs').validatePlan(input.narrationPlan, input.captionStyleId) } : {}),
     ...(Array.isArray(input.emphasisPhrases) ? { emphasisPhrases: input.emphasisPhrases.slice(0, 12).map((text) => cleanText(text, 24)).filter(Boolean) } : {}),
+    // Per-video framing and grade inside a lead-mix batch (2026-11-24, against platform duplicate checks): kept mild.
+    ...(input.look && typeof input.look === "object" ? { look: {
+      zoom: clamp(finiteNumber(input.look.zoom, 1), 1, 1.12),
+      originX: clamp(finiteNumber(input.look.originX, 0.5), 0.3, 0.7),
+      originY: clamp(finiteNumber(input.look.originY, 0.5), 0.3, 0.7),
+      grade: ["none", "warm", "cool", "crisp", "soft"].includes(input.look.grade) ? input.look.grade : "none"
+    } } : {}),
     ...(["topic_fixed", "key_points"].includes(input.presentation?.templateId) ? { presentation: {
       templateId: input.presentation.templateId,
       ...(input.presentation.showTitle === false ? { showTitle: false } : {}),

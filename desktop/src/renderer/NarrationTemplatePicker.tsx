@@ -11,7 +11,9 @@ const cues = [
   { text: '先看地面，再选设备', startMs: 2400, endMs: 4800 },
   { text: '选对机器，清洁才省心', startMs: 4800, endMs: 7200 }
 ];
-export function NarrationTemplatePicker({ value, onChange, poster, disabled, plan, title }: { value?: string; onChange: (value: string) => void; poster?: string; disabled?: boolean; plan?: NarrationPlan; title?: string }) {
+const current = catalog.templates.filter((item) => item.version === catalog.version);
+// allowRandom (lead mixes): a batch may take the templates in turn, one per video.
+export function NarrationTemplatePicker({ value, onChange, poster, disabled, plan, title, allowRandom }: { value?: string; onChange: (value: string) => void; poster?: string; disabled?: boolean; plan?: NarrationPlan; title?: string; allowRandom?: boolean }) {
   const [now, setNow] = useState(0), [playing, setPlaying] = useState<string | null>(null);
   useEffect(() => {
     if (!playing || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
@@ -23,13 +25,21 @@ export function NarrationTemplatePicker({ value, onChange, poster, disabled, pla
     <p className="dh-quality">移到模板上看动态排版。已生成的当前风格使用保存方案，其余为示例文案。</p>
     {value && catalog.templates.some((item) => item.id === value && item.version !== catalog.version) &&
       <p className="dh-quality">当前使用旧版「{catalog.templates.find((item) => item.id === value)?.name}」，原样保留；新做的口播可选下方新版。</p>}
-    <div>{catalog.templates.filter((item) => item.version === catalog.version).map((item) => <button key={item.id} type="button" aria-pressed={value === item.id}
+    <div>{current.map((item) => <button key={item.id} type="button" aria-pressed={value === item.id}
       onMouseEnter={() => { setNow(0); setPlaying(item.id); }} onMouseLeave={() => setPlaying(null)}
       onFocus={() => { setNow(0); setPlaying(item.id); }} onBlur={() => setPlaying(null)} onClick={() => onChange(item.id)}>
       <span className="rh-template-preview"><span className="rh-template-canvas">
         {poster && <img src={poster} alt="" />}
         <NarrationLayout styleId={item.id} title={plan?.templateId === item.id ? title || '' : '洗地机怎么选'} cues={cues} plan={plan?.templateId === item.id ? plan : undefined} nowMs={playing === item.id ? now : 1000} emphasis={['别只看价格', '再选设备', '清洁才省心']} />
       </span></span><strong>{item.name}</strong><small>{item.description}</small>
-    </button>)}</div>
+    </button>)}
+    {allowRandom && <button type="button" aria-pressed={value === 'random'}
+      onMouseEnter={() => { setNow(0); setPlaying('random'); }} onMouseLeave={() => setPlaying(null)}
+      onFocus={() => { setNow(0); setPlaying('random'); }} onBlur={() => setPlaying(null)} onClick={() => onChange('random')}>
+      <span className="rh-template-preview"><span className="rh-template-canvas">
+        {poster && <img src={poster} alt="" />}
+        <NarrationLayout styleId={current[playing === 'random' ? Math.floor(now / 2400) % current.length : 0].id} title="洗地机怎么选" cues={cues} nowMs={playing === 'random' ? now % 2400 + 600 : 1000} emphasis={['别只看价格', '再选设备', '清洁才省心']} />
+      </span></span><strong>随机</strong><small>同一批轮流用这几套，每条不一样</small>
+    </button>}</div>
   </fieldset>;
 }

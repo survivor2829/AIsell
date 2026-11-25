@@ -79,8 +79,8 @@ assert.match(page, /c\.review_mode === "follow_script" && <p className="batch-hi
 // Round 4: the switch is per batch (not inherited into a new batch, where it would silently govern the
 // paid draft review), the draft and the confirmation both carry the settings, saved settings still seed
 // the page, and follow-script shots without a frame description are named by material.
-assert.match(page, /delete saved\.strict_visual_review;\s*return \{ minimum_duration_seconds: 30, music_mode: "auto", music_track_ids: \[\], \.\.\.saved, voice_persona_id/u,
-  "a new batch starts with the strict switch off; the other saved settings still seed the page");
+assert.match(page, /delete saved\.strict_visual_review;\s*(?:\/\/[^\n]*\s*)*delete saved\.display_title;\s*return \{ minimum_duration_seconds: 30, music_mode: "auto", music_track_ids: \[\], \.\.\.saved, voice_persona_id/u,
+  "a new batch starts with the strict switch off and no typed title; the other saved settings still seed the page");
 assert.match(page, /material_context: materialContext, cta, target_count: target, settings: productionSettings,/u, "the draft sends the settings");
 assert.match(page, /const productionSettings: Batch\["settings"\] = modern \? \{ \.\.\.settings, music_mode:[^;]+strict_visual_review: false/u);
 assert.match(page, /\{s\.description \|\| materialLabel\(batch, s\.asset_id\)\}/u, "shots without a description are named by material");

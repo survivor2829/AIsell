@@ -13,6 +13,33 @@ CAPTION_STYLES = {"bold_yellow", "word_highlight", "keyword_pop", "moving_pill",
 # v5 packaging templates (2026-11-24): no boxes; lead mixes pick one, digital humans plan one.
 MIX_CAPTION_STYLES = ("rise_v5", "kinetic_v5", "glow_v5")
 DEFAULT_MIX_CAPTION_STYLE = "rise_v5"
+# A batch may ask for "random": its videos take the templates in turn from a start picked by the batch,
+# so every template shows up and neighbours differ (user 2026-11-24).
+RANDOM_MIX_CAPTION_STYLE = "random"
+MAX_DISPLAY_TITLE = 30
+
+
+# Each video of a batch gets its own framing and mild grade (against platform duplicate checks, user
+# 2026-11-24). The first keeps the source picture; later ones take these in turn.
+MIX_LOOKS = (
+    {"zoom": 1.0, "originX": 0.5, "originY": 0.5, "grade": "none"},
+    {"zoom": 1.08, "originX": 0.5, "originY": 0.38, "grade": "warm"},
+    {"zoom": 1.06, "originX": 0.5, "originY": 0.6, "grade": "cool"},
+    {"zoom": 1.1, "originX": 0.42, "originY": 0.46, "grade": "crisp"},
+    {"zoom": 1.05, "originX": 0.58, "originY": 0.5, "grade": "soft"},
+)
+
+
+def mix_look(order):
+    return dict(MIX_LOOKS[int(order) % len(MIX_LOOKS)])
+
+
+def mix_caption_style(choice, batch_id, order):
+    if choice != RANDOM_MIX_CAPTION_STYLE:
+        return choice or DEFAULT_MIX_CAPTION_STYLE
+    import hashlib
+    start = int(hashlib.sha256(str(batch_id).encode("utf-8")).hexdigest()[:8], 16)
+    return MIX_CAPTION_STYLES[(start + int(order)) % len(MIX_CAPTION_STYLES)]
 NUMBER_WITH_UNIT = re.compile(r"[0-9０-９.零〇一二两三四五六七八九十百千万亿半几]+(?:万平|平方|平米|小时|分钟|公分|厘米|毫米|公斤|升|个|台|次|天|年|元|块|倍|人|米|点)(?:以内|以上|左右)?")
 
 FUNCTION_CHARS = set("把的了在是这那就也都和与对给让被从到很还又")

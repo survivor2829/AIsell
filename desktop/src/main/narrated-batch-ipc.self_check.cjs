@@ -237,6 +237,14 @@ async function main() {
     assert.equal(saved.at(-1).settings.caption_style_id, value);
   }
   for (const value of ["impact_v4", 5, {}]) assert.equal((await save({ workflow_version: 2, caption_style_id: value })).code, "invalid_narrated_settings");
+  assert.equal((await save({ workflow_version: 2, caption_style_id: "random", display_title: "洗地机怎么选" })).ok, true);
+  assert.equal(saved.at(-1).settings.display_title, "洗地机怎么选");
+  assert.equal((await save({ workflow_version: 2, display_title: "  洗地机怎么选 " })).ok, true);
+  assert.equal(saved.at(-1).settings.display_title, "洗地机怎么选", "sent trimmed, so a re-confirm matches the saved settings");
+  assert.equal((await save({ workflow_version: 2, display_title: "   " })).ok, true);
+  assert.equal("display_title" in saved.at(-1).settings, false, "a blank title is no title");
+  assert.equal((await save({ workflow_version: 2, display_title: "标".repeat(24) + "😀".repeat(6) })).ok, true, "30 characters, counted like the engine");
+  for (const value of [5, "标".repeat(31)]) assert.equal((await save({ workflow_version: 2, display_title: value })).code, "invalid_narrated_settings");
   assert.equal((await save({ workflow_version: 2 })).ok, true);
   assert.equal("strict_visual_review" in saved.at(-1).settings, false, "an older batch without the switch keeps the default");
   const savedBefore = saved.length;

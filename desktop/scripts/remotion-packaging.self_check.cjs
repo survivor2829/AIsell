@@ -171,6 +171,14 @@ const repeatedPlan = {
 };
 const deterministicA = normalizeMotionManifest(repeatedPlan);
 const deterministicB = normalizeMotionManifest(repeatedPlan);
+// A batch video's own framing and grade (2026-11-24) stays mild whatever the engine sends; absent means untouched.
+assert.equal(deterministicA.look, undefined);
+assert.deepEqual(normalizeMotionManifest({ ...repeatedPlan, look: { zoom: 1.08, originX: 0.5, originY: 0.38, grade: "warm" } }).look,
+  { zoom: 1.08, originX: 0.5, originY: 0.38, grade: "warm" });
+assert.deepEqual(normalizeMotionManifest({ ...repeatedPlan, look: { zoom: 3, originX: -1, originY: 2, grade: "sepia(1)" } }).look,
+  { zoom: 1.12, originX: 0.3, originY: 0.7, grade: "none" }, "no strong crop, off-centre framing or arbitrary filter");
+assert.match(fs.readFileSync(path.join(__dirname, "../remotion-packaging/video-template.tsx"), "utf8"),
+  /const look = reference && !camera \? manifest\.look : undefined;/u, "a digital human's camera plan is never overridden");
 assert.equal(deterministicA.events.length, repeatedPlan.events.length, "the repeat cap must select another variant instead of losing safe events");
 assert.deepEqual(deterministicA.events.map((event) => event.effect), deterministicB.events.map((event) => event.effect));
 for (let index = 1; index < deterministicA.events.length; index += 1) {

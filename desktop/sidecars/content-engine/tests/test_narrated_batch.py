@@ -140,7 +140,12 @@ class NarratedBatchTests(unittest.TestCase):
                 [{**shot, "content_signature": shot["segment_id"]} for shot in shots])
         grounding.start()
         self.addCleanup(grounding.stop)
-        batch = self.s.save_narrated_batch({"groups": {"opening": self.ids[:3], "middle": [], "ending": []}, "target_count": 1})
+        with self.assertRaises(ContentEngineError):
+            self.s.save_narrated_batch({"groups": {"opening": self.ids[:3], "middle": [], "ending": []}, "target_count": 1,
+                                        "settings": {"display_title": "标" * 31}})
+        batch = self.s.save_narrated_batch({"groups": {"opening": self.ids[:3], "middle": [], "ending": []}, "target_count": 1,
+                                            "settings": {"caption_style_id": "random", "display_title": "  洗地机怎么选 "}})
+        self.assertEqual("洗地机怎么选", batch["settings"]["display_title"], "the typed title is saved trimmed")
         planned = self.run_samples(batch)
         self.assertEqual("completed", planned["status"])
         rendered = planned
@@ -160,6 +165,13 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertEqual([], recipe["packaging"]["events"])
         run = self.s.connection.execute("SELECT * FROM auto_mix_runs_v2 WHERE generated_video_id=?", (video_id,)).fetchone()
         private = json.loads(run["private_state_json"])
+        from content_engine.video_presentation import mix_caption_style
+        self.assertEqual(mix_caption_style("random", batch["batch_id"], 0), private["caption_style_id"], "a random batch gives each video one of the templates")
+        self.assertEqual("洗地机怎么选", private.pop("narrated_display_title"))
+        private["caption_style_id"] = "rise_v5"
+        from content_engine.video_presentation import mix_look
+        self.assertEqual(mix_look(0), private["narrated_look"], "each video records its own framing and grade")
+        private["narrated_look"] = mix_look(1)
         private["narrated_reference_captions"] = True
         modern = self.s.creative_domain._auto_mix_recipe(run, json.loads(run["public_plan_json"]), private,
                                                         persona={"id": run["selected_voice_persona_id"]}, music=None)
@@ -168,7 +180,19 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertNotIn("caption_style_id", recipe, "a workflow 1 mix keeps its own captions and event graphics")
         self.assertEqual("rise_v5", modern["caption_style_id"])
         self.assertTrue(modern["presentation"]["showTitle"])
+        self.assertEqual(mix_look(1), modern["look"])
+        from content_engine.creative_render import HybridCreativeRenderer
+        self.assertEqual(mix_look(1), HybridCreativeRenderer._public_props(modern, {})["look"], "the look reaches the render manifest")
+        self.assertNotIn("look", recipe, "a workflow 1 mix keeps its picture")
         self.assertIsInstance(modern["emphasis_phrases"], list)
+        self.assertEqual("不同现场的清洁展示", modern["presentation"]["topic"], "without a typed title each script keeps its own")
+        # A title typed for the batch replaces the picture title and feeds the keywords.
+        titled = self.s.creative_domain._auto_mix_recipe(run, json.loads(run["public_plan_json"]), {**private, "narrated_display_title": "洗地机怎么选"},
+                                                         persona={"id": run["selected_voice_persona_id"]}, music=None)
+        self.assertEqual("洗地机怎么选", titled["presentation"]["topic"])
+        self.assertEqual("洗地机怎么选", titled["display_title"], "the cover takes the typed title too")
+        self.assertEqual(modern["emphasis_phrases"], titled["emphasis_phrases"], "a typed title the voice-over never says keeps the script's keywords")
+        self.assertTrue(titled["presentation"]["showTitle"])
         older = dict(private)
         older.pop("caption_style_id")
         before = self.s.creative_domain._auto_mix_recipe(run, json.loads(run["public_plan_json"]), older,
