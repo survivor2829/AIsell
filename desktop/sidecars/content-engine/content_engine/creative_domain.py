@@ -6353,8 +6353,8 @@ class CreativeDomain:
             recipe["packaging"]["events"] = []
             if recipe.get("presentation"):
                 recipe["presentation"]["showTitle"] = False
-        if private_state.get("caption_style_id"):
-            # v5 packaging: title and keyword captions drawn in the picture (no boxes);
+        if private_state.get("caption_style_id") and private_state.get("narrated_reference_captions"):
+            # v5 packaging (workflow 2 mixes only: workflow 1 keeps its event graphics and captions): title and keyword captions drawn in the picture (no boxes);
             # keywords come from the title and the voice-over, no model call.
             from .video_presentation import mix_emphasis
             recipe["caption_style_id"] = private_state["caption_style_id"]

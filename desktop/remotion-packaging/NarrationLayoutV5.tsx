@@ -22,6 +22,16 @@ type Char = { t: string; s: number; key: boolean };
 
 export const isV5 = (styleId?: string) => catalog.templates.some((item) => item.id === styleId && item.version === 5);
 
+// Pages depend only on the captions and keywords, which stay the same for the whole render.
+const pageCache = new WeakMap<NarrationCue[], Map<string, Page[]>>();
+function cachedPages(cues: NarrationCue[], emphasis: string[]) {
+  let byKey = pageCache.get(cues);
+  if (!byKey) { byKey = new Map(); pageCache.set(cues, byKey); }
+  const id = emphasis.join('');
+  if (!byKey.has(id)) byKey.set(id, pagesFromCues(cues, emphasis));
+  return byKey.get(id)!;
+}
+
 // Without a plan (lead mixes): one page per clause, long clauses split evenly, never inside a keyword.
 function pagesFromCues(cues: NarrationCue[], emphasis: string[]): Page[] {
   const out: Page[] = [];
@@ -105,7 +115,7 @@ function phrasesFor(page: Page, emphasis: string[]) {
 export function keywordPush(styleId: string, cues: NarrationCue[], emphasis: string[] = [], plan: NarrationPlan | undefined, nowMs: number) {
   if (!isV5(styleId)) return 0;
   const strength = styleId === 'kinetic_v5' ? 0.07 : 0.04;
-  const pages: Page[] = plan?.pages?.length ? plan.pages : pagesFromCues(cues, emphasis);
+  const pages: Page[] = plan?.pages?.length ? plan.pages : cachedPages(cues, emphasis);
   let push = 0;
   for (const page of pages) {
     if (page.startMs > nowMs || page.endMs + 1800 < nowMs) continue;
@@ -119,18 +129,25 @@ export function keywordPush(styleId: string, cues: NarrationCue[], emphasis: str
   return strength * push;
 }
 
+// Two clauses become two lines; a line longer than 10 characters is split evenly, so a long
+// title wraps instead of running off the frame (at most 4 lines).
 function titleLines(title: string) {
   const parts = title.split(/[，。！？：:、？?！!]/u).map((part) => part.trim()).filter(Boolean);
-  if (parts.length > 1) return [parts[0], parts.slice(1).join('，')];
-  const chars = Array.from(title);
-  if (chars.length <= 7) return [title];
-  const half = Math.ceil(chars.length / 2);
-  return [chars.slice(0, half).join(''), chars.slice(half).join('')];
+  const clauses = parts.length > 1 ? [parts[0], parts.slice(1).join('，')] : [title];
+  const lines = clauses.flatMap((clause) => {
+    const chars = Array.from(clause);
+    const count = Math.ceil(chars.length / 10);
+    const size = Math.ceil(chars.length / Math.max(1, count));
+    return Array.from({ length: count }, (_, i) => chars.slice(i * size, (i + 1) * size).join('')).filter(Boolean);
+  });
+  if (lines.length <= 4) return lines;
+  return [...lines.slice(0, 3), lines.slice(3).join('')];
 }
 
-// Largest size at which every line fits `width` and all lines fit `room`, capped at `max`.
-const titleSize = (lines: string[], max: number, room: number, lineHeight: number, width = 940) =>
-  Math.max(56, Math.min(max, Math.floor(width / Math.max(...lines.map((line) => Array.from(line).length))), Math.floor(room / (lines.length * lineHeight))));
+// Largest size at which every line (letter spacing included) fits `width` and all lines fit
+// `room`, capped at `max`; never below 44.
+const titleSize = (lines: string[], max: number, room: number, lineHeight: number, spacing = 0, width = 980) =>
+  Math.max(44, Math.min(max, ...lines.map((line) => Math.floor(width / Array.from(line).length - spacing)), Math.floor(room / (lines.length * lineHeight))));
 
 export function NarrationLayoutV5({ styleId, title, cues, nowMs, emphasis = [], plan, showTitle = true }: {
   styleId: string; title: string; cues: NarrationCue[]; nowMs: number; emphasis?: string[]; plan?: NarrationPlan; showTitle?: boolean;
@@ -138,7 +155,7 @@ export function NarrationLayoutV5({ styleId, title, cues, nowMs, emphasis = [], 
   const template = catalog.templates.find((item) => item.id === styleId)!;
   const accent = plan?.variant?.accent || template.accent;
   const layout = plan?.layout;
-  const pages: Page[] = plan?.pages?.length ? plan.pages : pagesFromCues(cues, emphasis);
+  const pages: Page[] = plan?.pages?.length ? plan.pages : cachedPages(cues, emphasis);
   const found = pages.find((item) => nowMs >= item.startMs - 60 && nowMs < item.endMs + 100);
   // A caption line never ends on a comma or full stop.
   const page = found && { ...found, text: found.text.replace(/[，。！？；、,.!?;：:]+$/u, '') };
@@ -151,10 +168,19 @@ export function NarrationLayoutV5({ styleId, title, cues, nowMs, emphasis = [], 
   const captionBottom = layout ? 1920 - layout.bottom : 330;
   const chars = page ? charsOf(page, cues, phrasesFor(page, emphasis)) : [];
   const runs = runsOf(chars);
+  // v5 captions are larger than the sizes the plan measured; shrink a page that would grow
+  // above the plan's caption area (into the face) instead of letting it spill upward.
+  const captionRoom = layout ? layout.bottom - layout.top : 560;
+  const lineCount = (count: number, size: number, width: number) => Math.max(1, Math.ceil(count * size / width));
+  const estimate = styleId === 'kinetic_v5'
+    ? runs.reduce((sum, run) => sum + (run.key ? (run.chars.length > 5 ? 118 : 146) * 1.05 : lineCount(run.chars.length, 64, 960) * 64 * 1.2), 0)
+    : lineCount(chars.reduce((sum, char) => sum + (char.key ? 80 : 66), 0), 1, 900) * 80 * 1.22;
+  const fit = Math.min(1, captionRoom / Math.max(1, estimate));
+  const px = (size: number) => Math.round(size * fit);
 
   let titleNode: React.ReactNode = null;
   if (visibleTitle && styleId === 'rise_v5') {
-    const size = titleSize(lines, 196, room, 1.04);
+    const size = titleSize(lines, 196, room, 1.04, -4);
     let index = 0;
     titleNode = <div style={{ position: 'absolute', top: titleTop, left: 40, right: 40, textAlign: 'center' }}>
       {lines.map((line, l) => <div key={l} style={{ fontFamily: FONT, fontWeight: 900, fontSize: l ? Math.round(size * 0.9) : size, lineHeight: 1.04, letterSpacing: -4,
@@ -166,7 +192,7 @@ export function NarrationLayoutV5({ styleId, title, cues, nowMs, emphasis = [], 
       </div>)}
     </div>;
   } else if (visibleTitle && styleId === 'kinetic_v5') {
-    const size = titleSize(lines, 118, room, 1.15);
+    const size = titleSize(lines, 118, room, 1.15, 2);
     const progress = clamp01(nowMs / durationMs) * 100;
     titleNode = <div style={{ position: 'absolute', top: titleTop, left: 40, right: 40, textAlign: 'center', opacity: ease(nowMs / 400) }}>
       {lines.map((line, l) => <div key={l} style={{ fontFamily: FONT, fontWeight: 900, fontSize: l ? Math.round(size * 0.88) : size, lineHeight: 1.15, letterSpacing: 2,
@@ -174,7 +200,7 @@ export function NarrationLayoutV5({ styleId, title, cues, nowMs, emphasis = [], 
         backgroundImage: `linear-gradient(90deg, #fff ${progress}%, rgba(255,255,255,0) ${progress}%)`, WebkitBackgroundClip: 'text', backgroundClip: 'text' }}>{line}</div>)}
     </div>;
   } else if (visibleTitle) {
-    const size = titleSize(lines, 112, room, 1.18);
+    const size = titleSize(lines, 112, room, 1.18, 4);
     const sweep = ((nowMs % 3200) / 3200) * 260 - 80;
     const appear = ease(nowMs / 900);
     titleNode = <div style={{ position: 'absolute', top: titleTop, left: 40, right: 40, textAlign: 'center', opacity: appear, transform: `translateY(${(1 - appear) * 30}px)`,
@@ -193,7 +219,7 @@ export function NarrationLayoutV5({ styleId, title, cues, nowMs, emphasis = [], 
       {chars.map((char, i) => {
         const lit = 0.38 + 0.62 * clamp01((nowMs - char.s + 40) / 120);
         const on = char.key && lit > 0.9;
-        return <span key={i} style={{ fontWeight: char.key ? 900 : 700, fontSize: char.key ? 80 : 66, color: on ? accent : '#fff', opacity: lit,
+        return <span key={i} style={{ fontWeight: char.key ? 900 : 700, fontSize: px(char.key ? 80 : 66), color: on ? accent : '#fff', opacity: lit,
           textShadow: on ? `0 0 28px ${accent}88, ${HALO}` : HALO }}>{char.t}</span>;
       })}
     </div>;
@@ -204,12 +230,12 @@ export function NarrationLayoutV5({ styleId, title, cues, nowMs, emphasis = [], 
         const text = run.chars.map((char) => char.t).join('');
         if (run.key) {
           const slam = clamp01(springy(nowMs - run.s, 60, 110));
-          return <div key={i} style={{ fontWeight: 900, fontSize: Array.from(text).length > 5 ? 118 : 146, lineHeight: 1.05, color: accent, fontStyle: 'italic',
+          return <div key={i} style={{ fontWeight: 900, fontSize: px(Array.from(text).length > 5 ? 118 : 146), lineHeight: 1.05, color: accent, fontStyle: 'italic',
             opacity: nowMs >= run.s ? 1 : 0, transform: `scale(${2.2 - 1.2 * slam}) rotate(${(i % 2 ? 2 : -2) * slam}deg) skewX(-6deg)`,
             filter: `blur(${(1 - slam) * 10}px)`, textShadow: HALO, whiteSpace: 'nowrap' }}>{text}</div>;
         }
         const enter = ease((nowMs - run.s + 60) / 260);
-        return <div key={i} style={{ fontWeight: 700, fontSize: 64, lineHeight: 1.2, color: '#fff', opacity: enter, textShadow: HALO,
+        return <div key={i} style={{ fontWeight: 700, fontSize: px(64), lineHeight: 1.2, color: '#fff', opacity: enter, textShadow: HALO,
           transform: `translateX(${(1 - enter) * (i % 2 ? 80 : -80)}px)`, filter: `blur(${(1 - enter) * 8}px)` }}>{text}</div>;
       })}
     </div>;
@@ -219,9 +245,9 @@ export function NarrationLayoutV5({ styleId, title, cues, nowMs, emphasis = [], 
       {runs.map((run, i) => {
         const text = run.chars.map((char) => char.t).join('');
         return run.key
-          ? <span key={i} style={{ fontWeight: 900, fontSize: 80, color: 'transparent', backgroundImage: `linear-gradient(90deg, #fff, ${accent})`,
+          ? <span key={i} style={{ fontWeight: 900, fontSize: px(80), color: 'transparent', backgroundImage: `linear-gradient(90deg, #fff, ${accent})`,
               WebkitBackgroundClip: 'text', backgroundClip: 'text', filter: `drop-shadow(0 0 3px rgba(0,0,0,.7)) drop-shadow(0 0 18px ${accent}aa)`, margin: '0 6px' }}>{text}</span>
-          : <span key={i} style={{ fontWeight: 600, fontSize: 64, color: '#fff', textShadow: HALO }}>{text}</span>;
+          : <span key={i} style={{ fontWeight: 600, fontSize: px(64), color: '#fff', textShadow: HALO }}>{text}</span>;
       })}
     </div>;
   }

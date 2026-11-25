@@ -563,6 +563,8 @@ def lead_with_hook(phrases, pool, opening_avoid=()):
     """
     if not phrases or not phrases[0]['shot_ids']:
         return phrases
+    if sum(len(phrase['shot_ids']) for phrase in phrases) >= 40:
+        return phrases  # the layout was chosen under the 40-shot limit; one more would break it
     wanted = _bigrams((phrases[0]['text'] or '')[:40])
     if len(wanted) < 2:
         return phrases

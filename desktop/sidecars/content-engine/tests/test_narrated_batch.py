@@ -165,7 +165,7 @@ class NarratedBatchTests(unittest.TestCase):
                                                         persona={"id": run["selected_voice_persona_id"]}, music=None)
         # New productions carry a v5 template: the title shows (drawn in the picture, no box) and
         # keywords come from the title and the voice-over.
-        self.assertEqual("rise_v5", recipe["caption_style_id"])
+        self.assertNotIn("caption_style_id", recipe, "a workflow 1 mix keeps its own captions and event graphics")
         self.assertEqual("rise_v5", modern["caption_style_id"])
         self.assertTrue(modern["presentation"]["showTitle"])
         self.assertIsInstance(modern["emphasis_phrases"], list)

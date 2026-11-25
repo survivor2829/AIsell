@@ -15,7 +15,8 @@ function choose(task, visual = {}) {
   let preferred = viewpoint >= 2 ? 'kinetic_v5' : structured >= 2 ? 'rise_v5' : 'glow_v5';
   const reasons = [viewpoint >= 2 ? '稿件包含对比与明确观点' : structured >= 2 ? '稿件包含步骤或选型问题' : '以清晰讲解为主，使用克制包装'];
   const available = current().map(t => t.id);
-  if (task.packagingMode === 'manual' && available.includes(task.captionStyleId)) { preferred = task.captionStyleId; reasons[0] = '使用手动选择的风格'; }
+  // A manual choice is kept even when it is an older planned template (saved drafts, explicit repackage).
+  if (task.packagingMode === 'manual' && planned().some(t => t.id === task.captionStyleId)) { preferred = task.captionStyleId; reasons[0] = '使用手动选择的风格'; }
   const candidates = available;
   return { templateId: preferred, candidates, reasons };
 }

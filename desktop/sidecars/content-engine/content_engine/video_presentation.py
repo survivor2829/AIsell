@@ -27,7 +27,8 @@ def mix_emphasis(title, narration, limit=8):
     title, spoken = clean(title), str(narration or "")
     found = []
     for match in NUMBER_WITH_UNIT.finditer(spoken):
-        if 2 <= len(match.group(0)) <= 8:
+        # "一个", "一点", "几次" are filler; a number phrase counts from three characters ("一万平", "8小时").
+        if 3 <= len(match.group(0)) <= 8:
             found.append(match.group(0))
     at = 0
     while at < len(title) - 1:

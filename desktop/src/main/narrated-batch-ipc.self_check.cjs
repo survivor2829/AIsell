@@ -231,6 +231,12 @@ async function main() {
     assert.equal((await save({ workflow_version: 2, strict_visual_review: value })).ok, true);
     assert.equal(saved.at(-1).settings.strict_visual_review, value);
   }
+  // 1.3.67: the batch's packaging template is one of the v5 templates.
+  for (const value of ["rise_v5", "kinetic_v5", "glow_v5"]) {
+    assert.equal((await save({ workflow_version: 2, caption_style_id: value })).ok, true);
+    assert.equal(saved.at(-1).settings.caption_style_id, value);
+  }
+  for (const value of ["impact_v4", 5, {}]) assert.equal((await save({ workflow_version: 2, caption_style_id: value })).code, "invalid_narrated_settings");
   assert.equal((await save({ workflow_version: 2 })).ok, true);
   assert.equal("strict_visual_review" in saved.at(-1).settings, false, "an older batch without the switch keeps the default");
   const savedBefore = saved.length;
