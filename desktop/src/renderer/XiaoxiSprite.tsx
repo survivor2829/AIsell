@@ -8,8 +8,9 @@ import "./XiaoxiSprite.css";
 // when something starts, the live title, detail and progress of the work while it runs, a happy or worried
 // line when it ends. Touching and playing belong to MascotPet; what is shown about the work belongs here.
 
-// step: the current broad step (touch); the card keeps the last three as a live log.
-export type SpriteActivity = { kind: string; title: string; step?: string; detail?: string; done?: number; total?: number; attention?: boolean; pausable?: boolean; spacePause?: boolean };
+// step / owner: a run that keeps a live log (touch): the card keeps the last three broad steps of the
+// current owner (one contact) and starts over when the owner changes.
+export type SpriteActivity = { kind: string; title: string; step?: string; owner?: string; detail?: string; done?: number; total?: number; attention?: boolean; pausable?: boolean; spacePause?: boolean };
 type Line = { text: string; sub?: string; mood?: "done" | "error" | "" };
 
 const GREETINGS: [RegExp, string][] = [
@@ -120,14 +121,14 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
   const stepId = useRef(0);
   const stepOwner = useRef("");
   useEffect(() => {
-    const owner = activity ? `${activity.kind}${activity.title}` : "";
+    const owner = activity ? activity.owner ?? `${activity.kind}${activity.title}` : "";
     const text = activity?.step || "";
     const fresh = owner !== stepOwner.current;
     stepOwner.current = owner;
     if (!owner) { setSteps([]); return; }
     if (fresh) { setSteps(text ? [{ id: ++stepId.current, text }] : []); return; }
     if (text) setSteps((list) => list[list.length - 1]?.text === text ? list : [...list, { id: ++stepId.current, text }].slice(-3));
-  }, [activity?.kind, activity?.title, activity?.step, Boolean(activity)]);
+  }, [activity?.kind, activity?.title, activity?.owner, activity?.step, Boolean(activity)]);
 
   // One-off lines from the main process (a finished video, a failed job).
   useEffect(() => api?.onSpriteSay?.((said: Line) => show(said, said.mood === "error" ? 9000 : 6000)), [api]);
@@ -186,11 +187,15 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
     <div className="xiaoxi-roam">
       {/* The work card mounts once and updates in place: keyed by "work", not by its changing text, so it
           no longer pops again on every step (customer complaint 2026-11-24). One-off lines still pop. */}
-      {(message || activity) && !tucked && <section className={`xiaoxi-bubble${message?.mood ? ` is-${message.mood}` : ""}${!message && activity ? " is-card" : ""}`} key={message ? `say:${message.text}` : "work"} role="status" aria-live="polite"
+      {(message || activity) && !tucked && <section className={`xiaoxi-bubble${message?.mood ? ` is-${message.mood}` : ""}${!message && activity?.owner !== undefined ? " is-card" : ""}`} key={message ? `say:${message.text}` : "work"} role="status" aria-live="polite"
         onPointerEnter={() => interactive(true)} onPointerLeave={() => interactive(false)}>
         {message ? <>
           <strong>{typed}{typed.length < message.text.length && <i className="xiaoxi-caret" />}</strong>
           {message.sub && <span className="xiaoxi-sub">{message.sub}</span>}
+        </> : activity && activity.owner === undefined ? <>
+          <strong>{activity.title}</strong>
+          {activity.detail && <span className="xiaoxi-sub">{activity.detail}</span>}
+          <span className="xiaoxi-ing-row"><span className="xiaoxi-ing">ING<IngDots /></span>{percent !== null && <b>{activity.total === 100 ? `${percent}%` : `${activity.done}/${activity.total}`}</b>}</span>
         </> : activity && <>
           <span className="xiaoxi-card-head"><strong>{activity.title}</strong><span className="xiaoxi-ing"><IngDots /></span>
             {percent !== null && <b>{activity.total === 100 ? `${percent}%` : `${activity.done}/${activity.total}`}</b>}</span>
@@ -198,7 +203,8 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
             const now = index === steps.length - 1;
             return <li key={item.id} className={now ? "is-now" : undefined}><i aria-hidden="true">{now ? "›" : "✓"}</i>{item.text}</li>;
           })}</ol>}
-          {activity.detail && <span className="xiaoxi-sub">{activity.detail}</span>}
+          {/* The countdown changes every second: kept out of the spoken status. */}
+          {activity.detail && <span className="xiaoxi-sub" aria-live="off" aria-hidden="true">{activity.detail}</span>}
           {percent !== null && <span className="xiaoxi-bar" aria-hidden="true"><span style={{ width: `${percent}%` }} /></span>}
         </>}
         {/* Pausing is a double press of the space bar anywhere (space-pause-hotkey.cjs); the small
