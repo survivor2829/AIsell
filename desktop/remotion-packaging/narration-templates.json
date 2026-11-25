@@ -1,6 +1,6 @@
 {
-  "version": 4,
-  "defaultTemplateId": "minimal_v4",
+  "version": 5,
+  "defaultTemplateId": "glow_v5",
   "defaultVoiceStyleId": "original",
   "templates": [
     {
@@ -112,6 +112,39 @@
       "coverStyle": "portrait",
       "version": 4,
       "motion": "quiet",
+      "assets": "Self-authored graphics; procedural audio; Noto Sans SC (OFL)"
+    },
+    {
+      "id": "rise_v5",
+      "name": "大字浮现",
+      "description": "巨型标题逐字浮现 · 字幕随声音点亮",
+      "accent": "#7FE3FF",
+      "layout": "rise",
+      "coverStyle": "contrast",
+      "version": 5,
+      "motion": "rise",
+      "assets": "Self-authored graphics; procedural audio; Noto Sans SC (OFL)"
+    },
+    {
+      "id": "kinetic_v5",
+      "name": "动态字流",
+      "description": "镂空标题随进度填满 · 关键词砸进画面",
+      "accent": "#C6FF00",
+      "layout": "kinetic",
+      "coverStyle": "contrast",
+      "version": 5,
+      "motion": "pop",
+      "assets": "Self-authored graphics; procedural audio; Noto Sans SC (OFL)"
+    },
+    {
+      "id": "glow_v5",
+      "name": "光感",
+      "description": "取色渐变标题 · 光扫过 · 关键词发光",
+      "accent": "#FF9CC2",
+      "layout": "glow",
+      "coverStyle": "portrait",
+      "version": 5,
+      "motion": "rise",
       "assets": "Self-authored graphics; procedural audio; Noto Sans SC (OFL)"
     }
   ],

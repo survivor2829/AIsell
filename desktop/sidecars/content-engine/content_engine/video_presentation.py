@@ -9,7 +9,45 @@ from .errors import ContentEngineError
 from .narration_alignment import align_narration, spoken_key
 
 TEMPLATES = {"topic_fixed", "key_points"}
-CAPTION_STYLES = {"bold_yellow", "word_highlight", "keyword_pop", "moving_pill", "phrase_slide", "clean_business", "layered_v1", "impact_v1", "minimal_v1", "layered_v2", "impact_v2", "minimal_v2", "layered_v3", "impact_v3", "minimal_v3", "layered_v4", "impact_v4", "minimal_v4"}
+CAPTION_STYLES = {"bold_yellow", "word_highlight", "keyword_pop", "moving_pill", "phrase_slide", "clean_business", "layered_v1", "impact_v1", "minimal_v1", "layered_v2", "impact_v2", "minimal_v2", "layered_v3", "impact_v3", "minimal_v3", "layered_v4", "impact_v4", "minimal_v4", "rise_v5", "kinetic_v5", "glow_v5"}
+# v5 packaging templates (2026-11-24): no boxes; lead mixes pick one, digital humans plan one.
+MIX_CAPTION_STYLES = ("rise_v5", "kinetic_v5", "glow_v5")
+DEFAULT_MIX_CAPTION_STYLE = "rise_v5"
+NUMBER_WITH_UNIT = re.compile(r"[0-9０-９.零〇一二两三四五六七八九十百千万亿半几]+(?:万平|平方|平米|小时|分钟|公分|厘米|毫米|公斤|升|个|台|次|天|年|元|块|倍|人|米|点)(?:以内|以上|左右)?")
+
+FUNCTION_CHARS = set("把的了在是这那就也都和与对给让被从到很还又")
+GENERIC_WORDS = {"现场", "视频", "今天", "我们", "大家", "这个", "一个", "怎么", "什么"}
+
+
+def mix_emphasis(title, narration, limit=8):
+    """Keywords for a lead mix without a model call: the stretches the title and the voice-over
+    share (the title names the hook, so the shared words are what the video is about) and
+    numbers with units. Each is said in the narration, 2-8 characters, longest first."""
+    clean = lambda text: re.sub(r"[\W_]+", "", str(text or ""))
+    title, spoken = clean(title), str(narration or "")
+    found = []
+    for match in NUMBER_WITH_UNIT.finditer(spoken):
+        if 2 <= len(match.group(0)) <= 8:
+            found.append(match.group(0))
+    at = 0
+    while at < len(title) - 1:
+        best = ""
+        for end in range(min(len(title), at + 8), at + 1, -1):
+            if title[at:end] in spoken:
+                best = title[at:end]
+                break
+        # Two-character pieces only when they are words of their own, not "把水" or "现场".
+        if best and (len(best) >= 3 or not (set(best) & FUNCTION_CHARS or best in GENERIC_WORDS)):
+            found.append(best)
+        if best:
+            at += len(best)
+        else:
+            at += 1
+    unique = []
+    for phrase in sorted(dict.fromkeys(found), key=len, reverse=True):
+        if not any(phrase in kept for kept in unique):
+            unique.append(phrase)
+    return unique[:limit]
 
 
 def display_topic(title):
@@ -174,7 +212,7 @@ def validate_narration_plan(plan, style):
     import math
     def finite(v):
         return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
-    if not isinstance(plan, dict) or plan.get("version") != 4 or plan.get("templateId") != style or style not in {"layered_v4", "impact_v4", "minimal_v4"} or len(json.dumps(plan)) > 100000:
+    if not isinstance(plan, dict) or plan.get("version") != 4 or plan.get("templateId") != style or style not in {"layered_v4", "impact_v4", "minimal_v4", "rise_v5", "kinetic_v5", "glow_v5"} or len(json.dumps(plan)) > 100000:
         raise ContentEngineError("invalid_narration_plan", "包装方案无法核对，请重新本地包装。")
     events = plan.get("soundEvents", [])
     if not isinstance(events, list) or len(events) > 60:

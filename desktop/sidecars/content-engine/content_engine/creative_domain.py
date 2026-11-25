@@ -6353,6 +6353,15 @@ class CreativeDomain:
             recipe["packaging"]["events"] = []
             if recipe.get("presentation"):
                 recipe["presentation"]["showTitle"] = False
+        if private_state.get("caption_style_id"):
+            # v5 packaging: title and keyword captions drawn in the picture (no boxes);
+            # keywords come from the title and the voice-over, no model call.
+            from .video_presentation import mix_emphasis
+            recipe["caption_style_id"] = private_state["caption_style_id"]
+            recipe["emphasis_phrases"] = mix_emphasis(
+                run["title"], "".join(str(item.get("text") or "") for item in public_plan["speechCaptions"]))
+            if recipe.get("presentation"):
+                recipe["presentation"]["showTitle"] = True
         if "reuse_cover_generated_video_id" in private_state:
             source_id = private_state["reuse_cover_generated_video_id"]
             recipe["packaging"]["cover"] = ({"mode": "reuse", "status": "reused", "source_generated_video_id": source_id}

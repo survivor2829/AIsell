@@ -42,7 +42,9 @@ const quoted = plan.buildPlan({ id: 'rh_q', script, emphasisPhrases: ['干满八
 const final = plan.buildPlan({ id: 'rh_q', script, emphasisPhrases: ['干满八小时', '按这三点去比'], packagingPlan: quoted }, visual, cues, true, []);
 assert.deepEqual([final.templateId, final.variant], [quoted.templateId, quoted.variant]);
 // 手动选的版式不被轮换改掉
-assert.equal(plan.buildPlan({ id: 'rh_m', script, packagingMode: 'manual', captionStyleId: 'minimal_v4' }, visual, cues, false, [{ templateId: 'minimal_v4', variant: quoted.variant }]).templateId, 'minimal_v4');
+assert.equal(plan.buildPlan({ id: 'rh_m', script, packagingMode: 'manual', captionStyleId: 'glow_v5' }, visual, cues, false, [{ templateId: 'glow_v5', variant: quoted.variant }]).templateId, 'glow_v5');
+// 老版式的已保存方案仍然能通过核对（重新出片不受影响）
+plan.validatePlan({ ...quoted, templateId: 'impact_v4' }, 'impact_v4');
 
 // 3. 镜头推拉：在句子结束处换景别；以下巴为基准放大，脸的下沿不动（压不到字幕），推镜看得出来
 const camera = quoted.camera;

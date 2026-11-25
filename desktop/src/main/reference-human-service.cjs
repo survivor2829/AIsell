@@ -9,6 +9,8 @@ const audioTools = require('./digital-human-audio.cjs');
 const mediaTools = require('./reference-human-media.cjs');
 const policy = require('../shared/reference-human.json');
 const templates = require('../../remotion-packaging/narration-templates.json');
+// Templates since v4 are laid out by the packaging plan (face-aware pages, camera, title room).
+const planned = (id) => templates.templates.some((item) => item.id === id && item.version >= 4);
 const { round } = require('./product-video-pricing.cjs');
 const { createAutomaticVoiceClient } = require('./automatic-voice-client.cjs');
 const { withBillingJob } = require('./provider-gateway-client.cjs');
@@ -300,7 +302,7 @@ function createReferenceHumanService(options = {}) {
     if (!script || [...script].length > 500) throw fail('reference_script_invalid', '请填写1—500字的完整口播。');
     if (String(input.industry || '').length > 80 || String(input.business || '').length > 2000) throw fail('reference_business_invalid', '行业最多80字，产品资料最多2000字。');
     let captionStyleId = input.captionStyleId || templates.defaultTemplateId;
-    const packagingMode = input.packagingMode || (input.captionStyleId && !input.captionStyleId.endsWith('_v4') ? 'manual' : 'auto');
+    const packagingMode = input.packagingMode || (input.captionStyleId && !planned(input.captionStyleId) ? 'manual' : 'auto');
     if (!['auto', 'manual'].includes(packagingMode) || input.soundEffects !== undefined && typeof input.soundEffects !== 'boolean') throw fail('reference_packaging_invalid', '请选择智能匹配或手动风格。');
     if (packagingMode === 'auto') captionStyleId = packaging.choose(input).templateId;
     if (![...policy.captionStyles, ...templates.templates].some((s) => s.id === captionStyleId)) throw fail('reference_caption_invalid', '请选择有效的字幕样式。');
@@ -331,7 +333,7 @@ function createReferenceHumanService(options = {}) {
     if (task.status !== 'draft') return publicTask(task);
     // Nothing is paid for on a draft, and scripts are no longer capped to the recording: version 5 drafts move to the extended rules.
     if (task.version === 5) task.version = EXTENDED_VERSION;
-    if (task.captionStyleId.endsWith('_v4')) {
+    if (planned(task.captionStyleId)) {
       const asset = read(task.referenceAssetId, 'assets');
       const measured = await (options.analyzeNarration || vision.analyze)(verified(asset.videoFile, asset.videoSha256), file('layout-cache'), options.ffmpegPath || 'ffmpeg');
       task.packagingPlan = packaging.buildPlan(task, measured, [], false, recentPackaging(task));
@@ -520,7 +522,7 @@ function createReferenceHumanService(options = {}) {
     }
     if (task.status === 'packaging') {
       if (!task.packagingTaskId) {
-        if (task.captionStyleId.endsWith('_v4') && !task.packagingPlan?.finalized) {
+        if (planned(task.captionStyleId) && !task.packagingPlan?.finalized) {
           const measured = await (options.analyzeNarration || vision.analyze)(file(task.baseVideoFile), file('layout-cache'), options.ffmpegPath || 'ffmpeg');
           task.packagingPlan = { ...packaging.buildPlan(task, measured, task.utterances, true, recentPackaging(task)), finalized: true }; save(task);
         }
@@ -594,7 +596,8 @@ function createReferenceHumanService(options = {}) {
     const source = read(id);
     if (source.status !== 'completed' || !source.baseVideoFile || !source.utterances) throw fail('reference_repackage_unavailable', '请先完成当前口播，再更换模板。');
     if (input.nextStyle) {
-      const candidates = source.packagingPlan?.candidates || packaging.choose(source).candidates;
+      // Always the templates offered now: an older video moves on to the current set.
+      const candidates = packaging.choose(source).candidates;
       input = { ...input, captionStyleId: candidates[(candidates.indexOf(source.captionStyleId) + 1) % candidates.length] };
     }
     if (input.soundEffects !== undefined && typeof input.soundEffects !== 'boolean') throw fail('reference_packaging_invalid', '音效设置无效。');

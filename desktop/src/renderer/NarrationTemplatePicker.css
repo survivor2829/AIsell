@@ -1,0 +1,13 @@
+/* Shared by the digital-human page and the batch mix settings. */
+.rh-template-picker { border:0; padding:0; margin:24px 0; min-width:0; }
+.rh-template-picker legend { font-size:16px; font-weight:700; }
+.rh-template-picker > div { display:grid; grid-template-columns:repeat(auto-fit,minmax(148px,1fr)); gap:12px; }
+.rh-template-picker button { min-width:0; border:1px solid #d7dce4; border-radius:10px; background:#fff; padding:8px; color:#303849; cursor:pointer; text-align:left; }
+.rh-template-picker button[aria-pressed=true] { border-color:#b91536; background:#fff5f6; }
+.rh-template-picker button:focus-visible { outline:3px solid #bf4663; outline-offset:3px; }
+.rh-template-picker button:disabled { cursor:default; opacity:.65; }
+.rh-template-picker strong,.rh-template-picker small { display:block; margin-top:8px; line-height:1.5; }
+.rh-template-picker small { color:#596374; }
+.rh-template-preview { display:block; width:140.4px; height:249.6px; margin:0 auto; overflow:hidden; border-radius:5px; background:#303a35; }
+.rh-template-canvas { display:block; position:relative; width:1080px; height:1920px; transform:scale(.13); transform-origin:0 0; }
+.rh-template-canvas > img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }

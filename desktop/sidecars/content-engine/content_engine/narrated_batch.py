@@ -18,6 +18,7 @@ from .auto_mix_v2 import (
     AUTO_MIX_SPEC_VERSION, canonical_hash, build_material_timeline,
     build_material_evidence_facts, build_music_brief, normalize_text_tracks,
 )
+from .video_presentation import DEFAULT_MIX_CAPTION_STYLE
 from .auto_mix_resources import rotation_voice_personas, voice_preview_sample
 from .errors import ContentEngineError
 from .provider_usage import usage_scope
@@ -1390,9 +1391,11 @@ class NarratedBatchDomain:
         settings = request.get("settings", b.get("settings", {}) if b else {})
         require(isinstance(settings, dict) and not set(settings) - {
             "voice_persona_id", "brand_profile_id", "minimum_duration_seconds", "workflow_version", "music_mode", "music_track_ids", "video_template",
-            "strict_visual_review"},
+            "strict_visual_review", "caption_style_id"},
                 "invalid_narrated_settings", "批量创作设置格式无效。")
         require(settings.get("video_template", "topic_fixed") in {"topic_fixed", "key_points"}, "invalid_narrated_settings", "视频模板无效。")
+        from .video_presentation import MIX_CAPTION_STYLES
+        require(settings.get("caption_style_id", MIX_CAPTION_STYLES[0]) in MIX_CAPTION_STYLES, "invalid_narrated_settings", "网感模板无效。")
         # Absent in older batches, which keep the default: follow the confirmed script.
         require(type(settings.get("strict_visual_review", False)) is bool, "invalid_narrated_settings", "画面核对开关无效。")
         require(settings.get("workflow_version", 1) in {1, 2}, "invalid_narrated_settings", "创作流程版本无效。")
@@ -4990,6 +4993,8 @@ class NarratedBatchDomain:
                  'narrated_brief_version': b.get('brief_version'),
                  "narrated_reference_captions": (b.get("settings") or {}).get("workflow_version") == 2,
                  "video_template": (b.get("settings") or {}).get("video_template") or "topic_fixed",
+                 # New productions use a v5 packaging template (older batches get the default).
+                 "caption_style_id": (b.get("settings") or {}).get("caption_style_id") or DEFAULT_MIX_CAPTION_STYLE,
                  "used_music_track_ids": [item["music_track_id"] for item in b["candidates"]
                                           if item.get("status") == "completed" and item.get("music_track_id")],
                  "narrated_cover_avoid": self.cover_avoid(b, c["candidate_id"]),

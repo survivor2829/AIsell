@@ -606,3 +606,17 @@ class VideoPresentationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MixEmphasisTests(unittest.TestCase):
+    def test_keywords_are_what_the_title_and_voice_over_share(self):
+        from content_engine.video_presentation import mix_emphasis
+        narration = "演示现场有人提到，水痕特别多。验收这关就不好过。倒退再吸回来，就把水全部刮干了。"
+        self.assertEqual(["验收", "水痕", "刮干"], mix_emphasis("验收总卡在水痕上？现场这招把水刮干", narration))
+
+    def test_numbers_with_units_count_and_fragments_do_not(self):
+        from content_engine.video_presentation import mix_emphasis
+        phrases = mix_emphasis("一万平怎么配？", "一万平以内配小型的，两万平以上配大型的。")
+        self.assertIn("一万平以内", phrases)
+        self.assertIn("两万平以上", phrases)
+        self.assertEqual([], mix_emphasis("现场把水", "现场有人把水抬起"))
