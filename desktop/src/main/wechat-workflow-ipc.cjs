@@ -356,7 +356,7 @@ function registerWechatWorkflowIpc(options) {
         title: "正在微信里删除无效好友", step: progress.current ? `删除 ${progress.current}` : "准备中",
         done: progress.done, total: progress.total, pausable: true, spacePause: Boolean(spaceHotkey.ready?.()) }),
       // Each miss is logged (step and reason, no names) so a failure report shows where deleting stops.
-      onFailure: (failure) => options.logger?.event?.("wechat_workflow", failure.retrying ? "contact_cleanup.retry" : "contact_cleanup.person_failed", failure,
+      onFailure: (failure) => options.logger?.event?.("wechat_workflow", failure.retrying ? "contact_cleanup.retry" : failure.degraded ? "contact_cleanup.id_check_degraded" : "contact_cleanup.person_failed", failure,
         { level: failure.retrying ? "warn" : "error", code: failure.reason || "contact_cleanup_failed" })
     });
     const ended = () => { cleanupRunning = false; syncSpaceHotkey(controller.status()); };

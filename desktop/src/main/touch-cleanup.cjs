@@ -9,12 +9,24 @@ const { createUnreachableRegistry } = require("./touch-unreachable.cjs");
 
 // One WeChat delete run per app; the panel polls the list while it runs.
 const wechatRun = { running: false, progress: { done: 0, total: 0, deleted: 0, failed: 0, unknown: 0, current: "" } };
-// Tries per person when it stopped before 删除; searching again cannot help with these.
-const ATTEMPTS = 3;
+// What a delete step saw, without names or 微信号: window classes, the 微信号 check's shape, search result count.
+const evidenceOf = (result) => ({
+  ...(Array.isArray(result?.window_kind) ? { window_kind: result.window_kind } : {}),
+  ...(Array.isArray(result?.menuItems) ? { menu_item_kind: result.menuItems } : {}),
+  ...(result?.idCheck && typeof result.idCheck === "object" ? { id_check: result.idCheck } : {}),
+  ...(Number.isFinite(result?.resultCount) ? { result_count: result.resultCount } : {})
+});
+// Tries per person when it stopped before 删除: one more only, for a step WeChat was not ready for (no search rows yet,
+// confirm not shown yet, a panel still sliding in); a wrong path is fixed, not retried (user 2026-11-25: "错误的方法再重试
+// 也不会成功"). Trying again cannot help with the reasons below.
+const ATTEMPTS = 2;
 const NO_RETRY = new Set(["contact_name_not_unique", "delete_name_missing", "contact_not_saved", "wechat_version_unsupported",
   "wechat_account_changed", "wechat_account_unverified", "wechat_account_mismatch", "stopped_by_user", "wechat_operation_busy",
   // Someone is using the computer: never take the mouse back from them; the person stays for 再删一次.
-  "wechat_external_input_detected"]);
+  "wechat_external_input_detected",
+  // Same answer every time: WeChat shows no such person, or the person in front is not this one.
+  "search_result_not_found", "search_input_failed", "search_box_not_found", "profile_wechat_id_mismatch", "profile_wechat_id_unreadable",
+  "chat_member_mismatch", "chat_title_mismatch", "confirm_text_mismatch"]);
 
 function createTouchCleanup(activeTouchDir) {
   const registry = createUnreachableRegistry(activeTouchDir);
@@ -102,20 +114,23 @@ function createTouchCleanup(activeTouchDir) {
           onProgress({ ...wechatRun.progress });
           if (!contact) { finish(entry, "failed", "input", "contact_not_saved"); continue; }
           const uniqueName = !rows.some((row) => shown(row) === shown(contact));
-          // Stopped before 删除 was pressed (search missed, a dialog in the way, the mouse moved): search again,
-          // up to ATTEMPTS times (user 2026-11-25: "重复搜一搜"). A pressed 删除 without a clear answer is never retried.
+          // Stopped before 删除 because WeChat was not ready (a menu or panel still opening): one more try. A pressed 删除
+          // without a clear answer is never retried, and neither is anything in NO_RETRY.
           let result;
           for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
-            try { result = await deleteContact(contact, { confirm: true, uniqueName }); }
+            try { result = await deleteContact(contact, { confirm: true, uniqueName, stopped: () => wechatRun.stopRequested === true }); }
             catch (error) { result = { ok: false, outcomeUnknown: true, stage: "script", reason: String(error?.message || "delete_failed").slice(0, 120) }; }
             if (result?.deleted || result?.outcomeUnknown || NO_RETRY.has(String(result?.reason || "")) || wechatRun.stopRequested || attempt === ATTEMPTS) break;
-            onFailure({ stage: String(result?.stage || ""), reason: String(result?.reason || ""), attempt, retrying: true, ...(Array.isArray(result?.windows) ? { windows: result.windows } : {}), ...(Array.isArray(result?.menuItems) ? { menuItems: result.menuItems } : {}) });
+            onFailure({ stage: String(result?.stage || ""), reason: String(result?.reason || ""), attempt, retrying: true, ...evidenceOf(result) });
             await wait(2500);
             // 停止 pressed while waiting: no further attempt.
             if (wechatRun.stopRequested) break;
           }
           const status = result?.deleted ? "deleted" : result?.outcomeUnknown ? "unknown" : "failed";
-          if (status !== "deleted") onFailure({ stage: String(result?.stage || ""), reason: String(result?.reason || ""), status, retrying: false, ...(Array.isArray(result?.windows) ? { windows: result.windows } : {}), ...(Array.isArray(result?.menuItems) ? { menuItems: result.menuItems } : {}) });
+          // Deleted although the 微信号 on the card could not be confirmed (name unique): reported once per person so the
+          // failure report shows how the card was read.
+          if (status === "deleted" && result?.idCheck?.id_check_state === "degraded_unread") onFailure({ stage: "profile", reason: "contact_cleanup_id_check_degraded", status, degraded: true, ...evidenceOf(result) });
+          if (status !== "deleted") onFailure({ stage: String(result?.stage || ""), reason: String(result?.reason || ""), status, retrying: false, ...evidenceOf(result) });
           finish(entry, status, result?.stage, result?.reason);
         }
         return { started: true, ...wechatRun.progress };
