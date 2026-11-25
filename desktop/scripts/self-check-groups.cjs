@@ -132,6 +132,7 @@ const checks = [
   "src/main/line-ocr-service.self_check.cjs",
   "src/main/space-pause-hotkey.self_check.cjs",
   "src/main/remotion-compositor-route.self_check.cjs",
+  "src/main/remotion-render-temp.self_check.cjs",
   "src/main/demo-mode-guard.self_check.cjs",
   "src/main/product-detail-ipc.self_check.cjs",
   "src/main/product-detail-release-smoke.self_check.cjs",
