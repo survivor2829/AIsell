@@ -424,32 +424,57 @@ if (process.argv[2] === "--hold-registry") {
     assert.equal(readRegistry(profile).sets.filter(set => set.rotationPolicy === "latest-confirmed" && set.state === "confirmed").length, 1);
     assert.equal(await fs.readFile(path.join(preservedRoot, "objects", oldDatabase.sha256), "utf8"), "business database", "later updates cannot rotate unique historical data");
     // 1.3.48 → 1.3.49 on the dev machine: the runtime hash cache was judged business data, so the set never confirmed
-    // and pinned ~25 GB. The cache may change, and a later version re-checks a set its target already acknowledged.
+    // and pinned ~25 GB. The cache may change, and a later version re-checks a set stranded only on regenerable files.
     const runtimeCache = path.join(profile, "content-engine", "remotion-runtime-verification.json");
     const strandedNote = path.join(profile, "data", "stranded-note.txt");
     await fs.mkdir(path.dirname(runtimeCache), { recursive: true });
     await fs.writeFile(runtimeCache, "old runtime hash");
     await fs.writeFile(strandedNote, "customer note");
+    const strand = async (set, failurePath) => withRegistry(profile, async (registry, save) => {
+      const item = registry.sets.find(entry => entry.id === set.id);
+      item.confirmationFailure = [{ path: failurePath, reason: "business_content_changed" }];
+      item.confirmationTarget = "1.1.81";
+      save(registry);
+    });
+    const stateOf = set => readRegistry(profile).sets.find(item => item.id === set.id);
+    const cacheFailure = "content-engine/remotion-runtime-verification.json";
     const stranded = await make();
     await fs.writeFile(runtimeCache, "new runtime hash");
     assert.equal(stranded.data.files.some(file => file.path.replaceAll("\\", "/") === "content-engine/remotion-runtime-verification.json"), false,
       "new backups leave out the regenerable runtime cache");
     assert.equal(await checkPreservedData(profile, { ...stranded.data, files: [{ path: "content-engine/remotion-runtime-verification.json", size: 1, sha256: "old" }] }), true,
       "older snapshots that hold the runtime cache are not judged changed");
-    await withRegistry(profile, async (registry, save) => {
-      const set = registry.sets.find(item => item.id === stranded.id);
-      set.confirmationFailure = [{ path: "content-engine\\remotion-runtime-verification.json", reason: "business_content_changed" }];
-      set.confirmationTarget = "1.1.81";
-      save(registry);
-    });
+    await strand(stranded, cacheFailure);
+    const realFailure = await make();
+    await strand(realFailure, "data/stranded-note.txt");
     await retryBackupMaintenance(profile, { version: "1.1.80" });
-    assert.equal(readRegistry(profile).sets.find(set => set.id === stranded.id).state, "prepared", "an older running version never retries");
+    assert.equal(stateOf(stranded).state, "prepared", "an older running version never re-checks");
+    await retryBackupMaintenance(profile, { version: "1.1.85" });
+    assert.equal(stateOf(realFailure).state, "prepared", "a set that failed on business data stays as evidence");
+    assert.equal(stateOf(stranded).state, "confirmed", "a later version re-checks the stranded set");
+    assert.equal(stateOf(stranded).targetVersion, "1.1.81", "confirmed for the update it backed up, not the running version");
+    assert.equal(stateOf(pending), undefined, "being the newest, it rotates out the older confirmed set");
+    await withRegistry(profile, async (registry, save) => { registry.sets = registry.sets.filter(item => item.id !== realFailure.id); save(registry); });
+    // A re-check that finds a real change records it, and the set is not re-checked on every later start.
+    const changed = await make();
+    await strand(changed, cacheFailure);
     await fs.writeFile(strandedNote, "lost customer note");
     await retryBackupMaintenance(profile, { version: "1.1.85" });
-    assert.equal(readRegistry(profile).sets.find(set => set.id === stranded.id).state, "prepared", "a real data change still keeps the set");
+    assert.equal(stateOf(changed).state, "prepared", "a real data change keeps the set");
+    assert.equal(stateOf(changed).confirmationFailure[0].path.replaceAll("\\", "/"), "data/stranded-note.txt", "the real issue is recorded");
     await fs.writeFile(strandedNote, "customer note");
+    await retryBackupMaintenance(profile, { version: "1.1.86" });
+    assert.equal(stateOf(changed).state, "prepared", "once it failed on business data it is evidence, not re-checked");
+    // A stranded set older than a confirmed one retires; the newer rollback stays.
+    const older = await make();
+    await nextMillisecond();
+    const newer = await make();
+    await confirm(newer);
+    await strand(older, cacheFailure);
     await retryBackupMaintenance(profile, { version: "1.1.85" });
-    assert.equal(readRegistry(profile).sets.find(set => set.id === stranded.id).state, "confirmed", "a later version re-checks the stranded set");
+    assert.equal(stateOf(older), undefined, "the older stranded set retires");
+    assert.equal(stateOf(newer).state, "confirmed", "the newest rollback is never rotated out by an older set");
+    await withRegistry(profile, async (registry, save) => { registry.sets = registry.sets.filter(item => item.id !== changed.id); save(registry); });
     await fs.rm(strandedNote); await fs.rm(runtimeCache);
     // An unconfirmed internal acceptance run older than a newly confirmed one is superseded and rotates out;
     // an unconfirmed customer (automatic) set made later stays as failure evidence.
