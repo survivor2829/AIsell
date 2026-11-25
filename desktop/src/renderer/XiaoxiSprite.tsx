@@ -8,7 +8,8 @@ import "./XiaoxiSprite.css";
 // when something starts, the live title, detail and progress of the work while it runs, a happy or worried
 // line when it ends. Touching and playing belong to MascotPet; what is shown about the work belongs here.
 
-export type SpriteActivity = { kind: string; title: string; detail?: string; done?: number; total?: number; attention?: boolean; pausable?: boolean; spacePause?: boolean };
+// step: the current broad step (touch); the card keeps the last three as a live log.
+export type SpriteActivity = { kind: string; title: string; step?: string; detail?: string; done?: number; total?: number; attention?: boolean; pausable?: boolean; spacePause?: boolean };
 type Line = { text: string; sub?: string; mood?: "done" | "error" | "" };
 
 const GREETINGS: [RegExp, string][] = [
@@ -113,6 +114,21 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
     lastKind.current = kind; lastTitle.current = activity?.title || "";
   }, [activity?.kind, activity?.title, alert]);
 
+  // The live log (user 2026-11-24, version C): the last three broad steps; a new one slides in at the
+  // bottom, finished ones are ticked and dimmed. It starts over when the work changes or ends.
+  const [steps, setSteps] = useState<{ id: number; text: string }[]>([]);
+  const stepId = useRef(0);
+  const stepOwner = useRef("");
+  useEffect(() => {
+    const owner = activity ? `${activity.kind}${activity.title}` : "";
+    const text = activity?.step || "";
+    const fresh = owner !== stepOwner.current;
+    stepOwner.current = owner;
+    if (!owner) { setSteps([]); return; }
+    if (fresh) { setSteps(text ? [{ id: ++stepId.current, text }] : []); return; }
+    if (text) setSteps((list) => list[list.length - 1]?.text === text ? list : [...list, { id: ++stepId.current, text }].slice(-3));
+  }, [activity?.kind, activity?.title, activity?.step, Boolean(activity)]);
+
   // One-off lines from the main process (a finished video, a failed job).
   useEffect(() => api?.onSpriteSay?.((said: Line) => show(said, said.mood === "error" ? 9000 : 6000)), [api]);
 
@@ -168,15 +184,22 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
 
   return <main className={`floating-shell workflow-floating-shell xiaoxi-shell${dock.side === "left" ? " is-dock-left" : ""}`}>
     <div className="xiaoxi-roam">
-      {(message || activity) && !tucked && <section className={`xiaoxi-bubble${message?.mood ? ` is-${message.mood}` : ""}`} key={message?.text || activity?.title} role="status" aria-live="polite"
+      {/* The work card mounts once and updates in place: keyed by "work", not by its changing text, so it
+          no longer pops again on every step (customer complaint 2026-11-24). One-off lines still pop. */}
+      {(message || activity) && !tucked && <section className={`xiaoxi-bubble${message?.mood ? ` is-${message.mood}` : ""}${!message && activity ? " is-card" : ""}`} key={message ? `say:${message.text}` : "work"} role="status" aria-live="polite"
         onPointerEnter={() => interactive(true)} onPointerLeave={() => interactive(false)}>
         {message ? <>
           <strong>{typed}{typed.length < message.text.length && <i className="xiaoxi-caret" />}</strong>
           {message.sub && <span className="xiaoxi-sub">{message.sub}</span>}
         </> : activity && <>
-          <strong>{activity.title}</strong>
+          <span className="xiaoxi-card-head"><strong>{activity.title}</strong><span className="xiaoxi-ing"><IngDots /></span>
+            {percent !== null && <b>{activity.total === 100 ? `${percent}%` : `${activity.done}/${activity.total}`}</b>}</span>
+          {steps.length > 0 && <ol className="xiaoxi-log">{steps.map((item, index) => {
+            const now = index === steps.length - 1;
+            return <li key={item.id} className={now ? "is-now" : undefined}><i aria-hidden="true">{now ? "›" : "✓"}</i>{item.text}</li>;
+          })}</ol>}
           {activity.detail && <span className="xiaoxi-sub">{activity.detail}</span>}
-          <span className="xiaoxi-ing-row"><span className="xiaoxi-ing">ING<IngDots /></span>{percent !== null && <b>{activity.total === 100 ? `${percent}%` : `${activity.done}/${activity.total}`}</b>}</span>
+          {percent !== null && <span className="xiaoxi-bar" aria-hidden="true"><span style={{ width: `${percent}%` }} /></span>}
         </>}
         {/* Pausing is a double press of the space bar anywhere (space-pause-hotkey.cjs); the small
             "先暂停" link it replaces was hard to hit (user decision 2026-11-18). It comes back only when
