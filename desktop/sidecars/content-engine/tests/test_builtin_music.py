@@ -16,6 +16,9 @@ if str(SIDECAR_ROOT) not in sys.path:
 from content_engine.builtin_music import ASSET_ROOT, sync_builtin_music
 from content_engine.service import ContentEngineService
 
+# Every bundled recording the user authorized (three in 2026-10, four more 2026-11-25).
+BUNDLED = len(json.loads((ASSET_ROOT / "builtin-music.v1.json").read_text(encoding="utf-8"))["tracks"])
+
 
 class _Analyzer:
     capability = {"available": True, "cloud_configured": False, "provider": "test"}
@@ -69,7 +72,31 @@ class BuiltinMusicTests(unittest.TestCase):
         other = next(row for row in rows if row["track_id"] != chosen["track_id"])
         self.assertIsNone(domain._reusable_auto_mix_music({"music_mode": "auto", "music_track": {"track_id": other["track_id"]}}, brief, required_duration_ms=60_000, include_inactive=True))
 
-    def test_deep_component_install_registers_all_three_recordings(self):
+    def test_four_user_songs_join_the_automatic_rotation(self):
+        """2026-11-25: 春泥、水手、爱拼才会赢、熬过一年又一年, licensed by the user, rotate with the earlier three."""
+        catalog = json.loads((ASSET_ROOT / "builtin-music.v1.json").read_text(encoding="utf-8"))
+        policy = json.loads((ASSET_ROOT / "music-catalog-policy.v1.json").read_text(encoding="utf-8"))
+        added = {"chunni-harlem", "shuishou-zhengzhihua", "aipin-yeqitian", "aoguo-liuyangyang"}
+        tracks = {track["id"]: track for track in catalog["tracks"]}
+        self.assertLessEqual(added, set(tracks))
+        for track_id in added:
+            self.assertEqual("User confirmed licensed and commercially usable on 2026-11-25", tracks[track_id]["authorization"])
+            self.assertIn(tracks[track_id]["sha256"], policy["automatic_fingerprints"], f"{track_id} is in the automatic rotation")
+        domain = self.service.creative_domain
+        names = {row["display_name"] for row in domain._music_catalog_rows(automatic=True)}
+        self.assertLessEqual({tracks[track_id]["displayName"] for track_id in added}, names, "registered and picked automatically")
+        picked, used = set(), []
+        for _ in range(len(names)):
+            choice = domain._select_auto_mix_music({}, required_duration_ms=60_000, recently_used_track_ids=used)
+            picked.add(choice["display_name"])
+            used.append(choice["track_id"])
+        # Rotation stays among tracks that suit the video: an ordinary narration reaches the three softer new songs,
+        # and the high-energy 爱拼才会赢 comes up for upbeat content instead of being forced into calm ones.
+        self.assertLessEqual({tracks[track_id]["displayName"] for track_id in added - {"aipin-yeqitian"}}, picked)
+        upbeat = domain._select_auto_mix_music({"targetEnergy": 0.8, "moods": ["energetic", "driving"]}, required_duration_ms=60_000)
+        self.assertEqual(tracks["aipin-yeqitian"]["displayName"], upbeat["display_name"])
+
+    def test_deep_component_install_registers_every_bundled_recording(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / ("runtime-" + "x" * 210) / "assets"
             writable = Path("\\\\?\\" + str(root)) if os.name == "nt" else root
@@ -79,7 +106,7 @@ class BuiltinMusicTests(unittest.TestCase):
                 with patch("content_engine.builtin_music.ASSET_ROOT", root):
                     service = ContentEngineService(Path(folder) / "profile", creative_analyzer=_Analyzer(), creative_renderer=_Renderer(), start_background_jobs=False)
                 try:
-                    self.assertEqual(3, len(service.list_music_catalog_tracks()["items"]))
+                    self.assertEqual(BUNDLED, len(service.list_music_catalog_tracks()["items"]))
                     self.assertIsNotNone(service.creative_domain._select_auto_mix_music({}, required_duration_ms=300_000))
                 finally:
                     service.close()
@@ -138,10 +165,10 @@ class BuiltinMusicTests(unittest.TestCase):
             keys = list(old)
             self.service.connection.execute("INSERT INTO music_catalog_tracks_v1(" + ",".join(keys) + ") VALUES(" + ",".join("?" for _ in keys) + ")", tuple(old[k] for k in keys))
         domain._sync_music_catalog_policy()
-        self.assertEqual(3, len(self.service.list_music_catalog_tracks()["items"]))
+        self.assertEqual(BUNDLED, len(self.service.list_music_catalog_tracks()["items"]))
         self.assertIsNone(domain._reusable_auto_mix_music({"music_mode": "selected", "music_track_ids": ["old-0"], "music_track": {"track_id": "old-0"}}, {}, required_duration_ms=5000, include_inactive=True))
         self.assertEqual(7, self.service.connection.execute("SELECT COUNT(*) FROM music_catalog_tracks_v1 WHERE id LIKE 'old-%' AND active=0").fetchone()[0])
-        self.assertEqual(10, self.service.connection.execute("SELECT COUNT(*) FROM music_catalog_tracks_v1").fetchone()[0])
+        self.assertEqual(BUNDLED + 7, self.service.connection.execute("SELECT COUNT(*) FROM music_catalog_tracks_v1").fetchone()[0])
 
 
 if __name__ == "__main__":

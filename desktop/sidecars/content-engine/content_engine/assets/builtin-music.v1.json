@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": "2026.10.user-three",
-  "selectionNote": "Use the three user-provided commercial tracks. Authorization is accepted from the user declaration; no license evidence file or digest is required.",
+  "catalogVersion": "2026.11.user-seven",
+  "selectionNote": "Use the seven user-provided commercial tracks. Authorization is accepted from the user declaration; no license evidence file or digest is required.",
   "tracks": [
     {
       "id": "my-soul-july",
@@ -51,6 +51,74 @@
         "duration_ms": 363107,
         "integrated_lufs": -11.89,
         "true_peak_dbtp": -0.67
+      }
+    },
+    {
+      "id": "chunni-harlem",
+      "displayName": "春泥 · 庾澄庆",
+      "file": "builtin-music/chunni-harlem.mp3",
+      "sha256": "81923724870251e4aa94e38138cae8c4fb160831c6105ad2bd2d0f7c1994a55b",
+      "authorization": "User confirmed licensed and commercially usable on 2026-11-25",
+      "moods": [
+        "calm",
+        "warm"
+      ],
+      "energy": 0.35,
+      "analysis": {
+        "duration_ms": 256001,
+        "integrated_lufs": -11.39,
+        "true_peak_dbtp": 0.31
+      }
+    },
+    {
+      "id": "shuishou-zhengzhihua",
+      "displayName": "水手 · 郑智化",
+      "file": "builtin-music/shuishou-zhengzhihua.mp3",
+      "sha256": "9861e371508a57ba0b40980f06dfac29e139a150c96634373cb29ed99ca1b50d",
+      "authorization": "User confirmed licensed and commercially usable on 2026-11-25",
+      "moods": [
+        "steady",
+        "inspiring"
+      ],
+      "energy": 0.6,
+      "analysis": {
+        "duration_ms": 316824,
+        "integrated_lufs": -26.02,
+        "true_peak_dbtp": -11.38
+      }
+    },
+    {
+      "id": "aipin-yeqitian",
+      "displayName": "爱拼才会赢 · 叶启田",
+      "file": "builtin-music/aipin-yeqitian.mp3",
+      "sha256": "ab96ba0d42cfb7bd2c5b331eef9ca3eea4c1a44c92960d37d232f4f058275a5d",
+      "authorization": "User confirmed licensed and commercially usable on 2026-11-25",
+      "moods": [
+        "energetic",
+        "driving"
+      ],
+      "energy": 0.75,
+      "analysis": {
+        "duration_ms": 221867,
+        "integrated_lufs": -15.34,
+        "true_peak_dbtp": -1
+      }
+    },
+    {
+      "id": "aoguo-liuyangyang",
+      "displayName": "熬过一年又一年 · 刘阳阳",
+      "file": "builtin-music/aoguo-liuyangyang.mp3",
+      "sha256": "29a3ca17563df896c65b2da0d1b859ae53056ad1e65f8e4696cc0bf244e3f9fb",
+      "authorization": "User confirmed licensed and commercially usable on 2026-11-25",
+      "moods": [
+        "warm",
+        "steady"
+      ],
+      "energy": 0.45,
+      "analysis": {
+        "duration_ms": 234745,
+        "integrated_lufs": -8.27,
+        "true_peak_dbtp": 1.24
       }
     }
   ]
