@@ -11,13 +11,13 @@ const { renderMedia, renderStill, selectComposition } = require("@remotion/rende
   const [assetDir, samplesFile, outDir, only] = process.argv.slice(2);
   const chrome = ["C:/Program Files/Google/Chrome/Application/chrome.exe", path.join(process.env.LOCALAPPDATA || "", "Google/Chrome/Application/chrome.exe")].find((file) => fs.existsSync(file));
   const samples = JSON.parse(fs.readFileSync(samplesFile, "utf8"));
-  const templates = (only || "live,notes,cinema,news,pop").split(",");
+  const templates = (only || (process.env.COMP === "CreativeTemplate" ? "depth,editorial,kinetic,glow" : "live,notes,cinema,news,pop")).split(",");
   fs.mkdirSync(outDir, { recursive: true });
   const serveUrl = await bundle({ entryPoint: path.join(__dirname, "index.tsx"), publicDir: path.resolve(assetDir) });
   for (const sample of samples) {
     for (const template of templates) {
       const inputProps = { ...sample, template };
-      const options = { serveUrl, id: "CaptionTemplate", inputProps, ...(chrome ? { browserExecutable: chrome, chromeMode: "chrome-for-testing" } : {}), logLevel: "error" };
+      const options = { serveUrl, id: process.env.COMP || "CaptionTemplate", inputProps, ...(chrome ? { browserExecutable: chrome, chromeMode: "chrome-for-testing" } : {}), logLevel: "error" };
       const composition = await selectComposition(options);
       const base = path.join(outDir, `${sample.name}-${template}`);
       for (const [index, ms] of (sample.stillMs || []).entries()) {
