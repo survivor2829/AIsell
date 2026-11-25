@@ -15,7 +15,10 @@ const isRegenerableProfileFile = relative => {
   // InstanceLock holds this one-byte OS lock while the worker is alive. It
   // contains no business state and must not be read after the new worker starts.
   return ["devtoolsactiveport", "lockfile", "sharedstorage", "sharedstorage-wal", "sharedstorage-shm",
-    "network/network persistent state", "network/transportsecurity", "content-engine/content-engine.lock", "product-detail/.runtime-links", "content-engine/.runtime-links"].includes(name)
+    "network/network persistent state", "network/transportsecurity", "content-engine/content-engine.lock", "product-detail/.runtime-links", "content-engine/.runtime-links",
+    // Hash cache of the packaged video runtime (main.cjs); every new runtime rewrites it. Treating it as business data
+    // left a 1.3.48 → 1.3.49 rollback set unconfirmed forever, pinning ~25 GB of backups and old generations.
+    "content-engine/remotion-runtime-verification.json"].includes(name)
     // Short junctions into program resources (runtime-link.cjs), remade on the next start; never business data.
     || name.startsWith("product-detail/.runtime-links/") || name.startsWith("content-engine/.runtime-links/");
 };

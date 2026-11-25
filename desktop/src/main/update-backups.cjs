@@ -7,6 +7,7 @@ const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { backupFilter, isRegenerableProfileFile, checkCopySpace, createOwnedDirectory, removeOwnedDirectory, metadataInventory, copySnapshot, verifySnapshot } = require("./update-storage.cjs");
 const { inventory, verifyProgram, programIdentity } = require("./update-program-backup.cjs");
 const { hashFile } = require("../shared/component-contract.cjs");
+const { compareVersions } = require("../shared/launcher-contract.cjs");
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 const registryPath = profile => path.join(profile, "data/cloud-maintenance/components/backup-registry.json");
 function readRegistry(profile) {
@@ -224,7 +225,42 @@ async function retryBackupMaintenance(profile, { version, runtimeRoot } = {}) {
         dataCheck: await inspectPreservedData(profile, set.data, { runtimeRoot }) });
     } catch (error) { console.warn(`Backup confirmation deferred: ${error.code || error.message}`); }
   }
+  await recheckStrandedSets(profile, { version, runtimeRoot });
   return retryRetiringBackups(profile);
+}
+// 1.3.48 → 1.3.49 on the dev machine: the update launched and was acknowledged, but the check failed only on a
+// file since ruled regenerable (the runtime hash cache), so the set stayed prepared and pinned ~25 GB. Once a
+// later version runs, such a set is checked again under today's rules, for its own target. A set that failed on
+// anything else stays as evidence; a failing re-check records its real issue, so it is not checked again.
+// A set older than a confirmed one retires instead of rotating the newer rollback out.
+async function recheckStrandedSets(profile, { version, runtimeRoot } = {}) {
+  if (!version) return;
+  const stranded = set => {
+    try {
+      return set.state === "prepared" && set.rotationPolicy === "latest-confirmed"
+        && typeof set.confirmationTarget === "string" && compareVersions(set.confirmationTarget, version) < 0
+        && Array.isArray(set.confirmationFailure) && set.confirmationFailure.length > 0
+        && set.confirmationFailure.every(issue => typeof issue?.path === "string" && isRegenerableProfileFile(issue.path));
+    } catch { return false; }
+  };
+  for (const set of readRegistry(profile).sets.filter(stranded)) {
+    try {
+      const dataCheck = await inspectPreservedData(profile, set.data, { runtimeRoot });
+      const newer = readRegistry(profile).sets.some(other => other.id !== set.id && other.state === "confirmed"
+        && other.rotationPolicy === "latest-confirmed" && Date.parse(other.createdAt) > Date.parse(set.createdAt));
+      if (dataCheck.ok && !newer) {
+        await confirmSet(profile, set.id, { targetVersion: set.confirmationTarget, ack: { ok: true, version: set.confirmationTarget }, dataCheck });
+        continue;
+      }
+      await withRegistry(profile, async (registry, save) => {
+        const current = registry.sets.find(item => item.id === set.id);
+        if (!current || current.state !== "prepared") return;
+        if (dataCheck.ok) current.state = "retiring";
+        else current.confirmationFailure = dataCheck.issues;
+        save(registry);
+      });
+    } catch (error) { console.warn(`Backup re-check deferred: ${error.code || error.message}`); }
+  }
 }
 // Startup is allowed to update databases and receipts. Require every previously
 // backed-up business file to remain present, instead of comparing mutable bytes.
