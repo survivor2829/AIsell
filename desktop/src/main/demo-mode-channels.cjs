@@ -44,7 +44,7 @@ const READS = new Set([
   "wechat-workflow:pause", "wechat-workflow:show-floating", "wechat-workflow:show-main", "wechat-workflow:sprite-dock-state",
   "wechat-workflow:sprite-drag-end", "wechat-workflow:sprite-drag-start", "wechat-workflow:sprite-interactive",
   "wechat-workflow:sprite-menu", "wechat-workflow:sprite-peek", "wechat-workflow:sprite-walk",
-  "wechat-workflow:sprite-walk-stop", "wechat-workflow:status"
+  "wechat-workflow:sprite-walk-stop", "wechat-workflow:status", "wechat-workflow:unreachable-list"
 ]);
 const QUIET = new Set([
   "contact-sync:auto-detect-paths", "content-engine:backfill-covers", "phone-matrix:checkPhones", "phone-matrix:watch",
@@ -104,7 +104,7 @@ const ACTIONS = new Set([
   "social-publish:remove", "social-publish:removeReference", "social-publish:resolve", "social-publish:retry", "social-publish:saveReference", "social-publish:submit",
   "social-publish:submitFinished", "social-publish:suggest", "touch-task:resolve-unknown", "touch-task:resume",
   "touch-task:retry-skipped", "touch-task:start", "wechat-workflow:add-recipients", "wechat-workflow:add-task",
-  "wechat-workflow:choose-touch-images", "wechat-workflow:delete-tasks", "wechat-workflow:remove-recipient",
+  "wechat-workflow:choose-touch-images", "wechat-workflow:delete-tasks", "wechat-workflow:remove-recipient", "wechat-workflow:remove-unreachable", "wechat-workflow:restore-unreachable", "wechat-workflow:stop-unreachable-delete",
   "wechat-workflow:resolve-touch-unknown", "wechat-workflow:retry-all-and-start", "wechat-workflow:retry-skipped",
   "wechat-workflow:retry-task", "wechat-workflow:set-reply-enabled", "wechat-workflow:start", "wechat-workflow:update-task"
 ]);

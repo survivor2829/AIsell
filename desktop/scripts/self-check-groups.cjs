@@ -133,6 +133,8 @@ const checks = [
   "src/main/space-pause-hotkey.self_check.cjs",
   "src/main/remotion-compositor-route.self_check.cjs",
   "src/main/remotion-render-temp.self_check.cjs",
+  "src/main/edit-context-menu.self_check.cjs",
+  "src/main/touch-cleanup.self_check.cjs",
   "src/main/demo-mode-guard.self_check.cjs",
   "src/main/product-detail-ipc.self_check.cjs",
   "src/main/product-detail-release-smoke.self_check.cjs",

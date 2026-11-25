@@ -1256,6 +1256,7 @@ function verifySendResultDryRun(baseDir = __dirname, titleReader = readWindowTit
 }
 
 module.exports = {
+  customerSearchPlan,
   searchableName,
   wechatWindowBlockText,
   calibrate,

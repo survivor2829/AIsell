@@ -774,6 +774,10 @@ function createPreloadApis(ipcRenderer) {
         });
       },
       removeRecipient: (id) => ipcRenderer.invoke("wechat-workflow:remove-recipient", { id: String(id || "") }),
+      unreachableList: () => ipcRenderer.invoke("wechat-workflow:unreachable-list"),
+      removeUnreachable: (entries, deleteInWechat) => ipcRenderer.invoke("wechat-workflow:remove-unreachable", { entries, deleteInWechat: deleteInWechat === true, clickToken: consumeWorkflowSave() }),
+      stopUnreachableDelete: () => ipcRenderer.invoke("wechat-workflow:stop-unreachable-delete"),
+      restoreUnreachable: (entry) => ipcRenderer.invoke("wechat-workflow:restore-unreachable", { entry, clickToken: consumeWorkflowSave() }),
       addRecipients: (contactIds) => ipcRenderer.invoke("wechat-workflow:add-recipients", { contactIds, clickToken: consumeWorkflowSave() }),
       setReplyEnabled: (enabled) => ipcRenderer.invoke("wechat-workflow:set-reply-enabled", { enabled: enabled === true }),
       showFloating: () => ipcRenderer.invoke("wechat-workflow:show-floating"),

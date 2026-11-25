@@ -123,6 +123,16 @@ app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
 
+def _style_schemes():
+    """The colour schemes the AI 精修 picker shows, from the same table the prompts use."""
+    from ai_refine_v2.style_presets import PRESETS
+    return [{"id": style_id, "label": preset["label"], "line": preset["line"], "swatches": preset["swatches"],
+             "dark": preset["dark"]} for style_id, preset in PRESETS.items()]
+
+
+app.jinja_env.globals["style_schemes"] = _style_schemes()
+
+
 def _positive_int_env(name, default):
     """Read a positive integer limit without making a bad env value fatal."""
     try:

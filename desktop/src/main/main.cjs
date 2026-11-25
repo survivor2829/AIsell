@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, nativeImage, net, Notification, powerMonitor, protocol, safeStorage, screen, session, shell, clipboard } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, nativeImage, net, Notification, powerMonitor, protocol, safeStorage, screen, session, shell, clipboard, Menu } = require("electron");
 // 免费体验 (2026-11-18): installed before any feature registers its requests. The trial flag is
 // cached and refreshed whenever the account changes (account-store onChange below).
 let trialAccountSignedIn = false;
@@ -306,6 +306,9 @@ if (productDetailReleaseSmokeMode && productDetailReleaseSmokeDataDirIsValid) {
 } else if (pilotEdition) {
   app.setPath("userData", path.join(app.getPath("appData"), "xiaoxi-active-touch-delivery"));
 }
+
+// Right-click 剪切/复制/粘贴/全选 in every input, for customers who do not know Ctrl+V.
+require("./edit-context-menu.cjs").installEditContextMenu({ app, Menu, BrowserWindow });
 
 const gotSingleInstanceLock = productDetailReleaseSmokeMode || global.__xiaoxiStableLock || app.requestSingleInstanceLock();
 
@@ -1093,6 +1096,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     workflowController = registerWechatWorkflowIpc({
       ...runtime,
       logger,
+      coordinator,
       createSpacePauseHotkey: require("./space-pause-hotkey.cjs").createSpacePauseHotkey,
       appVersion: components.businessVersion(app),
       buildId: build.buildId || process.env.XIAOXI_BUILD_ID || "",
@@ -1107,6 +1111,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         try { return String(JSON.parse(fs.readFileSync(path.join(runtime.contactSyncDir, "state.json"), "utf8")).account_name || ""); }
         catch { return ""; }
       },
+      // Deleting a friend in WeChat is a real WeChat write: shipped where the other real operations are.
+      deleteWechatContact: internalRealSend ? require("../../rpa/active_touch/wechat_delete_contact.cjs").deleteWechatContact : undefined,
       verifyLiveAccount: internalRealSend ? (accountId) => {
         let wechatRoot = "";
         try { wechatRoot = String(JSON.parse(fs.readFileSync(path.join(runtime.contactSyncDir, "state.json"), "utf8")).wechat_root || ""); } catch {}

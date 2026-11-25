@@ -43,7 +43,7 @@ def test_a_prompt_that_does_not_quote_the_plan_still_gets_the_style():
     source = plan()
     source["screens"][1]["prompt"] = "模型自己写的提示词"
     result = style_presets.apply(source, "bright")
-    assert json.dumps(style_presets.PRESETS["bright"]["style_dna"], ensure_ascii=False) in result["screens"][1]["prompt"]
+    assert json.dumps(style_presets.LEGACY_PRESETS["bright"]["style_dna"], ensure_ascii=False) in result["screens"][1]["prompt"]
 
 
 def test_the_chosen_style_overrides_each_screen_scene():
@@ -55,8 +55,41 @@ def test_no_style_leaves_the_plan_alone():
     assert style_presets.apply(source, None) == source
 
 
-def test_every_style_has_all_the_design_fields():
+def test_ten_professional_schemes_replace_the_old_looks():
+    """2026-11-25: the cheerful looks are no longer offered; ten colour schemes are, each with exact colours."""
+    assert len(style_presets.PRESETS) == 10
+    assert not set(style_presets.PRESETS) & set(style_presets.LEGACY_PRESETS)
     for preset in style_presets.PRESETS.values():
+        base, secondary, accent = preset["swatches"]
+        palette = preset["style_dna"]["color_palette"]
+        assert all(colour in palette for colour in (base, secondary, accent)), "the prompt names the exact colours the card shows"
+        assert palette.index(base) < palette.index(secondary) < palette.index(accent), "base, then secondary, then the sparing accent"
+        assert preset["label"] and preset["line"]
+    assert len({tuple(preset["swatches"]) for preset in style_presets.PRESETS.values()}) == 10
+
+
+def test_text_reads_on_every_scheme():
+    """Review 2026-11-25: light schemes asked for text in a pale secondary (#D0D0D0 on white)."""
+    for preset in style_presets.PRESETS.values():
+        base, secondary, _ = preset["swatches"]
+        hint = preset["style_dna"]["typography_hint"]
+        if preset["dark"]:
+            assert "白色" in hint
+        elif style_presets._luminance(secondary) >= 0.35:
+            assert "#222222" in hint and secondary not in hint
+        assert abs(style_presets._luminance(base) - (0.0 if preset["dark"] else 1.0)) < 0.5
+
+
+def test_a_task_frozen_on_an_old_look_still_renders_it():
+    for style_id, preset in style_presets.LEGACY_PRESETS.items():
+        assert style_presets.resolve(style_id) == style_id
+        assert style_presets.label_of(style_id) == preset["label"]
+        assert style_presets.apply(plan(), style_id)["style_dna"] == preset["style_dna"]
+    assert not {style_presets.resolve("random") for _ in range(200)} & set(style_presets.LEGACY_PRESETS), "a draw never lands on an old look"
+
+
+def test_every_style_has_all_the_design_fields():
+    for preset in [*style_presets.PRESETS.values(), *style_presets.LEGACY_PRESETS.values()]:
         assert set(preset["style_dna"]) >= {"color_palette", "lighting", "composition_style", "mood", "typography_hint", "unified_visual_treatment"}
 
 
@@ -89,9 +122,11 @@ def test_style_is_frozen_for_recovery(tmp_path):
 
 def test_lively_is_commercial_not_cartoon_and_tech_is_light():
     # Customer feedback 2026-11-09: lively looked too cartoonish for a business, tech was too dark navy.
-    bright = style_presets.PRESETS["bright"]["style_dna"]
+    bright = style_presets.LEGACY_PRESETS["bright"]["style_dna"]
     assert "不用卡通" in bright["unified_visual_treatment"] and "商业" in bright["composition_style"]
     assert "圆润" not in bright["typography_hint"] and "圆角信息卡片" not in bright["composition_style"]
-    tech = style_presets.PRESETS["tech"]["style_dna"]
+    tech = style_presets.LEGACY_PRESETS["tech"]["style_dna"]
     assert tech["color_palette"].startswith("浅") and "不使用大面积深蓝" in tech["color_palette"]
     assert "深底" not in tech["typography_hint"] and "深蓝渐变" not in tech["unified_visual_treatment"]
+    for preset in style_presets.PRESETS.values():
+        assert "不用卡通" in preset["style_dna"]["unified_visual_treatment"] and "商业" in preset["style_dna"]["mood"]

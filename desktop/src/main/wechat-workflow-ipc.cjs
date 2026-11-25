@@ -316,6 +316,36 @@ function registerWechatWorkflowIpc(options) {
     return controller.resolveTouchUnknown(id, resolution);
   }, true);
   handle("remove-recipient", (payload) => controller.removeRecipient(String(payload?.id || "")));
+  // Contacts a touch found blocked or deleted: list them, take the confirmed ones out of the contact list, or put one back.
+  const cleanup = () => require("./touch-cleanup.cjs").createTouchCleanup(options.activeTouchDir);
+  handle("unreachable-list", () => cleanup().list());
+  handle("remove-unreachable", (payload) => {
+    const result = cleanup().remove(payload?.entries);
+    if (payload?.deleteInWechat !== true) return result;
+    // Also delete them in WeChat, in the background; 小玺 shows it and the list carries each result. Deleting is a
+    // real WeChat write: main injects it only where real WeChat operations are shipped, with a live account check.
+    const currentAccount = String(options.getAccount?.() || "");
+    if (typeof options.deleteWechatContact !== "function" || typeof options.verifyLiveAccount !== "function" || !currentAccount) {
+      return { ...cleanup().list(), removedNow: result.removedNow, wechatStarted: false, wechatReason: "wechat_delete_unavailable" };
+    }
+    if (cleanup().list().wechatRunning) return { ...cleanup().list(), removedNow: result.removedNow, wechatStarted: false, wechatReason: "wechat_delete_running" };
+    const plan = cleanup().planWechatDelete(payload.entries, { currentAccount });
+    if (!plan.wanted.length) return { ...cleanup().list(), removedNow: result.removedNow, wechatStarted: false, wechatReason: "nothing_to_delete", wechatSkipped: plan.skipped.length };
+    showFloating().catch(() => undefined);
+    const run = cleanup().deleteInWechat(plan.wanted, {
+      deleteContact: options.deleteWechatContact,
+      coordinator: options.coordinator,
+      currentAccount,
+      verifyLiveAccount: options.verifyLiveAccount,
+      onProgress: (progress) => setExternalActivity("contactCleanup", progress.finished ? null : {
+        title: "正在微信里删除无效好友", step: progress.current ? `删除 ${progress.current}` : "准备中",
+        done: progress.done, total: progress.total })
+    });
+    run.catch((failure) => options.logger?.event?.("wechat_workflow", "contact_cleanup.failed", { error: failure }, { level: "warn", code: "contact_cleanup_failed" }));
+    return { ...cleanup().list(), removedNow: result.removedNow, wechatStarted: true, wechatSkipped: plan.skipped.length };
+  }, true);
+  handle("stop-unreachable-delete", () => cleanup().stopWechatDelete());
+  handle("restore-unreachable", (payload) => cleanup().restore(payload?.entry), true);
   handle("add-recipients", (payload) => controller.addRecipients(payload?.contactIds), true);
   handle("set-reply-enabled", (payload) => controller.setReplyEnabled(payload?.enabled));
   handle("show-main", showMain);

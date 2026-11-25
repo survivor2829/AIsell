@@ -54,6 +54,64 @@ function createUnreachableRegistry(directory) {
       return Object.entries(read().accounts[String(accountId || "")] || {})
         .filter(([, entry]) => KINDS.has(entry?.kind))
         .map(([contactKey, entry]) => ({ key: contactKey, ...entry }));
+    },
+    // Every account's entries, for the cleanup list (the page may show contacts of several WeChat accounts).
+    listAll() {
+      return Object.entries(read().accounts).flatMap(([accountId, entries]) => Object.entries(entries || {})
+        .filter(([, entry]) => KINDS.has(entry?.kind))
+        .map(([contactKey, entry]) => ({ accountId, key: contactKey, kind: entry.kind, at: entry.at, name: entry.name,
+          removed: entry.removed === true, removedAt: entry.removedAt || "",
+          ...(entry.wechatDelete ? { wechatDelete: { status: entry.wechatDelete.status, stage: entry.wechatDelete.stage, reason: entry.wechatDelete.reason } } : {}) })));
+    },
+    // The customer confirmed: take these out of the contact list (user 2026-11-25). The contact row is kept here
+    // so it can be put back; a later sync leaves them out too (removedFrom).
+    remove(accountId, keys, contactRows = [], at = new Date().toISOString()) {
+      const value = read();
+      const entries = value.accounts[String(accountId || "")];
+      if (!entries) return [];
+      const removed = [];
+      for (const contactKey of new Set((keys || []).map(String))) {
+        const entry = entries[contactKey];
+        if (!entry || !KINDS.has(entry.kind) || entry.removed) continue;
+        const row = contactRows.find((contact) => account(contact) === String(accountId) && key(contact) === contactKey);
+        Object.assign(entry, { removed: true, removedAt: at, ...(row ? { contact: row } : {}) });
+        removed.push(contactKey);
+      }
+      if (removed.length) write(value);
+      return removed;
+    },
+    // Undo a removal: the contact comes back to the list (still skipped by touch until released).
+    restore(accountId, contactKey) {
+      const value = read();
+      const entry = value.accounts[String(accountId || "")]?.[String(contactKey)];
+      if (!entry?.removed) return null;
+      const row = entry.contact || null;
+      delete entry.removed; delete entry.removedAt; delete entry.contact;
+      write(value);
+      return row;
+    },
+    // The saved contact row of a removed entry (what the WeChat delete needs to find the person).
+    removedContact(accountId, contactKey) {
+      const entry = read().accounts[String(accountId || "")]?.[String(contactKey)];
+      return entry?.removed && entry.contact ? { ...entry.contact } : null;
+    },
+    // How deleting the friend in WeChat went: "deleted", "unknown" (pressed 删除 but could not read it back;
+    // never retried) or "failed" (stopped before 删除, with the step and reason).
+    recordWechatDelete(accountId, contactKey, result, at = new Date().toISOString()) {
+      const value = read();
+      const entry = value.accounts[String(accountId || "")]?.[String(contactKey)];
+      if (!entry) return false;
+      entry.wechatDelete = { status: result.status, stage: String(result.stage || ""), reason: String(result.reason || ""), at };
+      write(value);
+      return true;
+    },
+    isRemoved(contact) {
+      return read().accounts[account(contact)]?.[key(contact)]?.removed === true;
+    },
+    // A contact list without the removed contacts.
+    withoutRemoved(rows) {
+      const accounts = read().accounts;
+      return (Array.isArray(rows) ? rows : []).filter((contact) => accounts[account(contact)]?.[key(contact)]?.removed !== true);
     }
   };
 }
