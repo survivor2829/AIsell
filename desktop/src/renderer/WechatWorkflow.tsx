@@ -448,9 +448,15 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   // Which touch task has its 「看跳过了谁」 list open.
   const [openSkipList, setOpenSkipList] = useState("");
   const [cleanupOpen, setCleanupOpen] = useState(false);
+  // How many blocked/deleted contacts wait to be cleared: an entry on the touch page even after their tasks are deleted.
+  const [cleanupPending, setCleanupPending] = useState(0);
   const editorAnchor = useRef<HTMLDivElement>(null);
   const { state, loading, busy, error, run } = workflow;
   const api = window.xiaoxiWorkflow;
+  useEffect(() => {
+    if (mode !== "touch" || cleanupOpen) return;
+    void api?.unreachableList?.().then((list) => setCleanupPending(list?.pending || 0)).catch(() => undefined);
+  }, [api, mode, cleanupOpen, state.tasks.length]);
   const availableTypes: WorkflowTaskType[] = mode === "touch" ? ["touch"] : mode === "moments" ? ["publish", "interact"] : ["touch", "publish", "interact"];
   const tasks = state.tasks.filter((task) => availableTypes.includes(task.type));
   const activeTasks = tasks.filter((task) => !["completed", "cancelled", "needs_attention"].includes(task.status));
@@ -691,6 +697,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   // 精准触达 and 朋友圈运营 share the full-width page style; 今日计划 keeps its plain header.
   return <section className={`page workflow-page${mode === "home" ? "" : " is-touch"}`}>
     {cleanupOpen && <UnreachableCleanup onClose={() => setCleanupOpen(false)} />}
+    {mode === "touch" && cleanupPending > 0 && <button type="button" className="touch-sum-button cleanup-entry" onClick={() => setCleanupOpen(true)}><Ban />清理无效好友 · {cleanupPending} 人</button>}
     {mode === "touch" ? <TouchHero tasks={heroTasks} contactCount={contacts.length} planned={activeTasks.length}
       toggle={heroToggle} onAdd={() => void addPlannedTask("touch")} addDisabled={addLocked} />
     : mode === "moments" ? <MomentsHero tasks={heroTasks} planned={activeTasks.length} toggle={heroToggle} onAdd={(type) => void addPlannedTask(type)} addDisabled={addLocked} />

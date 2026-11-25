@@ -22,3 +22,4 @@
 .cleanup-removed button{display:inline-flex;align-items:center;gap:5px;height:32px;padding:0 12px;border:0;border-radius:9px;background:#fff;box-shadow:inset 0 0 0 1.5px #d9dce3;font-weight:800;cursor:pointer}
 .cleanup-removed button svg{width:15px;height:15px}
 .cleanup-notice{margin:0;font-size:15px;font-weight:700;color:#047857}
+.cleanup-entry{align-self:flex-start;margin:0 0 12px}

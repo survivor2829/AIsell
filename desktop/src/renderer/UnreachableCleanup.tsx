@@ -12,7 +12,7 @@ const id = (entry: UnreachableEntry) => `${entry.accountId}\u0000${entry.key}`;
 const KIND = { blocked: "拉黑了你", deleted: "删除了你" };
 
 export function UnreachableCleanup({ onClose }: { onClose: () => void }) {
-  const api = window.xiaoxiWechatWorkflow;
+  const api = window.xiaoxiWorkflow;
   const [list, setList] = useState<UnreachableList | null>(null);
   const [unticked, setUnticked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -41,13 +41,13 @@ export function UnreachableCleanup({ onClose }: { onClose: () => void }) {
             })} />
             <span className="cleanup-name">{entry.name}</span><span className={`cleanup-kind is-${entry.kind}`}><Ban />{KIND[entry.kind]}</span>
           </label></li>)}</ul>
-          <button type="button" className="cleanup-primary" disabled={busy || !chosen.length}
+          <button type="button" className="cleanup-primary" data-xiaoxi-workflow-save disabled={busy || !chosen.length}
             onClick={() => void run(() => api?.removeUnreachable?.(chosen.map(({ accountId, key }) => ({ accountId, key }))), (result) => `已从名单移除 ${result.removedNow || 0} 人，以后同步也不会再加回来。`)}>
             从名单移除 {chosen.length} 人</button>
         </> : <p className="cleanup-empty">没有需要清理的人。触达时发现被拉黑或删除，会出现在这里。</p>}
         {removed.length > 0 && <details className="cleanup-removed"><summary>已移除 {removed.length} 人</summary><ul>{removed.map((entry) => <li key={id(entry)}>
           <span className="cleanup-name">{entry.name}</span><span className={`cleanup-kind is-${entry.kind}`}>{KIND[entry.kind]}</span>
-          <button type="button" disabled={busy} onClick={() => void run(() => api?.restoreUnreachable?.({ accountId: entry.accountId, key: entry.key }), () => `${entry.name} 已放回名单。`)}><RotateCcw />恢复</button>
+          <button type="button" data-xiaoxi-workflow-save disabled={busy} onClick={() => void run(() => api?.restoreUnreachable?.({ accountId: entry.accountId, key: entry.key }), () => `${entry.name} 已放回名单。`)}><RotateCcw />恢复</button>
         </li>)}</ul></details>}
         {notice && <p className="cleanup-notice" role="status">{notice}</p>}
       </>}
