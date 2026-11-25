@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -59,6 +60,33 @@ let activeRender = null;
 let browser = null;
 let browserExecutable = null;
 let closing = false;
+
+// Remotion and its Chrome leave profiles and asset folders in the temp folder: Remotion deletes them on close, but on
+// Windows the delete fails silently while Chrome is still exiting, and a killed worker deletes nothing. The engine
+// points TEMP at content-engine/.remotion-runtime, where the dev machine had 55 profiles (458 MB) from three months.
+// Each worker clears Remotion-named leftovers a day old whose Chrome is gone. Nothing is nested under a new folder:
+// long Windows user names already push Chrome profile paths near MAX_PATH.
+const RENDER_LEFTOVER = /^(?:puppeteer_dev_chrome_profile-|remotion-v\d|react-motion-render)/u;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// A running Chrome holds its profile's lockfile open, so removing it fails; anything else is left over.
+function profileInUse(directory) {
+  try { fs.rmSync(path.join(directory, "lockfile"), { force: true }); return false; }
+  catch { return true; }
+}
+
+export async function sweepRenderLeftovers(temp, { now = Date.now() } = {}) {
+  const removed = [];
+  for (const entry of await fs.promises.readdir(temp, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory() || !RENDER_LEFTOVER.test(entry.name)) continue;
+    const directory = path.join(temp, entry.name);
+    const stat = await fs.promises.stat(directory).catch(() => null);
+    if (!stat || now - stat.mtimeMs < DAY_MS || profileInUse(directory)) continue;
+    try { await fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 2 }); removed.push(entry.name); }
+    catch { /* still busy; the next worker tries again */ }
+  }
+  return removed;
+}
 
 function reply(id, value) {
   const payload = JSON.stringify({ version: 1, id, ...value });
@@ -553,6 +581,8 @@ function acceptEnvelope(value) {
 
 // A self-check imports this file to test compositorBinariesDirectory without starting the loop.
 if (process.env.XIAOXI_REMOTION_WORKER_IMPORT_ONLY !== "1") {
+  // Cleanup runs alongside the first render and never blocks or fails it.
+  void sweepRenderLeftovers(os.tmpdir()).catch(() => undefined);
   process.stdin.on("data", (chunk) => {
     inputBuffer = Buffer.concat([inputBuffer, Buffer.from(chunk)]);
     if (inputBuffer.length > MAX_ENVELOPE_BYTES && !inputBuffer.includes(0x0a)) {
