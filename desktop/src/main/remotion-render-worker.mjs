@@ -69,10 +69,24 @@ let closing = false;
 const RENDER_LEFTOVER = /^(?:puppeteer_dev_chrome_profile-|remotion-v\d|react-motion-render)/u;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-// A running Chrome holds its profile's lockfile open, so removing it fails; anything else is left over.
+// A running Chrome holds its profile's lockfile open, so removing it fails (seen on a real headless render,
+// 2026-11-24); any failure counts as in use, so a doubtful folder is kept rather than removed.
 function profileInUse(directory) {
   try { fs.rmSync(path.join(directory, "lockfile"), { force: true }); return false; }
   catch { return true; }
+}
+
+// A folder's own time moves only when its direct entries change, so also look one level down (a Chrome
+// profile writes inside Default/): a folder still in use never looks a day old.
+async function lastWritten(directory) {
+  const stat = await fs.promises.stat(directory).catch(() => null);
+  if (!stat) return null;
+  let newest = stat.mtimeMs;
+  for (const name of await fs.promises.readdir(directory).catch(() => [])) {
+    const child = await fs.promises.stat(path.join(directory, name)).catch(() => null);
+    if (child) newest = Math.max(newest, child.mtimeMs);
+  }
+  return newest;
 }
 
 export async function sweepRenderLeftovers(temp, { now = Date.now() } = {}) {
@@ -80,8 +94,8 @@ export async function sweepRenderLeftovers(temp, { now = Date.now() } = {}) {
   for (const entry of await fs.promises.readdir(temp, { withFileTypes: true }).catch(() => [])) {
     if (!entry.isDirectory() || !RENDER_LEFTOVER.test(entry.name)) continue;
     const directory = path.join(temp, entry.name);
-    const stat = await fs.promises.stat(directory).catch(() => null);
-    if (!stat || now - stat.mtimeMs < DAY_MS || profileInUse(directory)) continue;
+    const written = await lastWritten(directory);
+    if (written === null || now - written < DAY_MS || profileInUse(directory)) continue;
     try { await fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 2 }); removed.push(entry.name); }
     catch { /* still busy; the next worker tries again */ }
   }
