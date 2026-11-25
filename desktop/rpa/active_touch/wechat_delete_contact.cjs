@@ -61,12 +61,35 @@ function Find-Elements($root, [string]$type, $elementName, [string]$className) {
 # The first WeChat window holding a matching element: the 更多 menu and the delete confirm are drawn inside the
 # profile card on 4.2.0.53, but another build or Windows version may give them a popup window of their own
 # (user report 2026-11-25: the menu showed and vanished because it was looked for in the card only).
-function Find-Anywhere([string]$type, $elementName) {
-  foreach ($w in (Get-WxWindows)) { $hit = Find-Elements $w $type $elementName "" | Select-Object -First 1; if ($hit) { return $hit } }
+# Popups are searched before the main window, and by a UIA condition (not a full tree walk) so a short-lived menu
+# is read before it closes.
+function Find-Anywhere([string]$type, [string]$elementName) {
+  $condition = New-Object System.Windows.Automation.AndCondition(
+    (New-Object System.Windows.Automation.PropertyCondition($ui::ControlTypeProperty, [System.Windows.Automation.ControlType]::$type)),
+    (New-Object System.Windows.Automation.PropertyCondition($ui::NameProperty, $elementName)))
+  $windows = @(Get-WxWindows)
+  foreach ($w in @($windows | Where-Object { $_.Current.ClassName -ne "mmui::MainWindow" }) + @($windows | Where-Object { $_.Current.ClassName -eq "mmui::MainWindow" })) {
+    $hit = $w.FindFirst($scope::Descendants, $condition); if ($hit) { return $hit }
+  }
   return $null
 }
-function Find-WindowWith([string]$type, $elementName) {
-  foreach ($w in (Get-WxWindows)) { if ((Find-Elements $w $type $elementName "").Count) { return $w } }
+# The confirm's own button: walk up from the 删除"<name>"？ text to the nearest container holding exactly one button
+# with this name. Never the first 删除 of a whole window (another build may draw the confirm inside the main window).
+function Find-ConfirmButton([string]$buttonName) {
+  $text = Find-Anywhere "Text" $question
+  if (-not $text) { return $null }
+  $condition = New-Object System.Windows.Automation.AndCondition(
+    (New-Object System.Windows.Automation.PropertyCondition($ui::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)),
+    (New-Object System.Windows.Automation.PropertyCondition($ui::NameProperty, $buttonName)))
+  $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+  $node = $text
+  foreach ($level in 1..4) {
+    $node = $walker.GetParent($node)
+    if (-not $node) { return $null }
+    $buttons = $node.FindAll($scope::Descendants, $condition)
+    if ($buttons.Count -eq 1) { return $buttons[0] }
+    if ($buttons.Count -gt 1) { return $null }
+  }
   return $null
 }
 function Wait-Element([scriptblock]$probe, [int]$timeoutMs = 3000) {
@@ -107,8 +130,7 @@ function Close-Profile {
     if ($innerCancel) { Click-Element $innerCancel | Out-Null; Start-Sleep -Milliseconds 300 }
   }
   if ($question) {
-    $confirmWindow = Find-WindowWith "Text" $question
-    $cancel = if ($confirmWindow) { Find-Elements $confirmWindow "Button" "取消" "" | Select-Object -First 1 }
+    $cancel = Find-ConfirmButton "取消"
     if ($cancel) { Click-Element $cancel | Out-Null; Start-Sleep -Milliseconds 300 }
   }
   $pop = Get-WxWindow "mmui::ProfileUniquePop"
@@ -135,14 +157,13 @@ $question = '删除"' + $name + '"？'
 # Second call: the confirm dialog the first call left open must still name exactly this person; only then 删除
 # is pressed. Anything after the press that cannot be read back is unknown (the caller treats a timeout the same).
 if ($phase -eq "commit") {
-  $dialog = Find-WindowWith "Text" $question
-  if (-not $dialog) { Stop-Before "commit" "confirm_dialog_gone" @{ notClicked = $true } }
-  $deleteButton = Find-Elements $dialog "Button" "删除" "" | Select-Object -First 1
+  if (-not (Find-Anywhere "Text" $question)) { Stop-Before "commit" "confirm_dialog_gone" @{ notClicked = $true } }
+  $deleteButton = Find-ConfirmButton "删除"
   if (-not $deleteButton) { Stop-Before "commit" "confirm_button_not_found" @{ notClicked = $true } }
   if (Test-UserInput) { Stop-Before "commit" "wechat_external_input_detected" @{ notClicked = $true } }
   Click-Element $deleteButton | Out-Null
   $gone = Wait-Element {
-    $p = if (Get-WxWindow "mmui::ProfileUniquePop") { $true } else { Find-WindowWith "Text" $question }
+    $p = if (Get-WxWindow "mmui::ProfileUniquePop") { $true } else { Find-Anywhere "Text" $question }
     $m = Get-WxWindow "mmui::MainWindow"
     $rows = Find-Elements $m "ListItem" $null "mmui::ChatSessionCell" | Where-Object { $_.Current.Name -eq $name -or $_.Current.Name.StartsWith($name + " ") }
     $open = Find-Elements $m "Text" $name "mmui::XTextView"
@@ -208,9 +229,9 @@ if (-not $menuItem) {
 Press-Element $menuItem "confirm"
 
 # 5. The confirm text names exactly this person; the dialog is left open for the commit call.
-$dialog = Wait-Element { Find-WindowWith "Text" $question } 4000
+$dialog = Wait-Element { Find-Anywhere "Text" $question } 4000
 if (-not $dialog) { Stop-Before "confirm" "confirm_text_mismatch" }
-if (-not (Find-Elements $dialog "Button" "删除" "").Count) { Stop-Before "confirm" "confirm_button_not_found" }
+if (-not (Find-ConfirmButton "删除")) { Stop-Before "confirm" "confirm_button_not_found" }
 if (-not $confirm) { Stop-Before "confirm" "dry_run_stopped_before_delete" @{ dryRun = $true; reached = "confirm" } }
 Out-Result $true "confirm" "" @{ ready = $true }
 `;

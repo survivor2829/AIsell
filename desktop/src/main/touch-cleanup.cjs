@@ -12,7 +12,9 @@ const wechatRun = { running: false, progress: { done: 0, total: 0, deleted: 0, f
 // Tries per person when it stopped before 删除; searching again cannot help with these.
 const ATTEMPTS = 3;
 const NO_RETRY = new Set(["contact_name_not_unique", "delete_name_missing", "contact_not_saved", "wechat_version_unsupported",
-  "wechat_account_changed", "wechat_account_unverified", "wechat_account_mismatch", "stopped_by_user", "wechat_operation_busy"]);
+  "wechat_account_changed", "wechat_account_unverified", "wechat_account_mismatch", "stopped_by_user", "wechat_operation_busy",
+  // Someone is using the computer: never take the mouse back from them; the person stays for 再删一次.
+  "wechat_external_input_detected"]);
 
 function createTouchCleanup(activeTouchDir) {
   const registry = createUnreachableRegistry(activeTouchDir);
@@ -108,7 +110,9 @@ function createTouchCleanup(activeTouchDir) {
             catch (error) { result = { ok: false, outcomeUnknown: true, stage: "script", reason: String(error?.message || "delete_failed").slice(0, 120) }; }
             if (result?.deleted || result?.outcomeUnknown || NO_RETRY.has(String(result?.reason || "")) || wechatRun.stopRequested || attempt === ATTEMPTS) break;
             onFailure({ stage: String(result?.stage || ""), reason: String(result?.reason || ""), attempt, retrying: true, ...(Array.isArray(result?.windows) ? { windows: result.windows } : {}), ...(Array.isArray(result?.menuItems) ? { menuItems: result.menuItems } : {}) });
-            await wait(String(result?.reason || "") === "wechat_external_input_detected" ? 6000 : 2500);
+            await wait(2500);
+            // 停止 pressed while waiting: no further attempt.
+            if (wechatRun.stopRequested) break;
           }
           const status = result?.deleted ? "deleted" : result?.outcomeUnknown ? "unknown" : "failed";
           if (status !== "deleted") onFailure({ stage: String(result?.stage || ""), reason: String(result?.reason || ""), status, retrying: false, ...(Array.isArray(result?.windows) ? { windows: result.windows } : {}), ...(Array.isArray(result?.menuItems) ? { menuItems: result.menuItems } : {}) });

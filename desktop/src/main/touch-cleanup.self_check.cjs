@@ -116,6 +116,14 @@ async function checkWechatDelete(base) {
   await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: live, coordinator, wait: async () => {},
     deleteContact: async () => { tries += 1; return { ok: false, stage: "window", reason: "wechat_version_unsupported" }; } });
   assert.equal(tries, 1, "an unsupported WeChat is not searched again");
+  tries = 0;
+  await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: live, coordinator, wait: async () => { cleanup.stopWechatDelete(); },
+    deleteContact: async () => { tries += 1; return { ok: false, stage: "open", reason: "search_result_identity_unverified" }; } });
+  assert.equal(tries, 1, "停止 pressed during the wait before another try: no further attempt");
+  tries = 0;
+  await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: live, coordinator, wait: async () => {},
+    deleteContact: async () => { tries += 1; return { ok: false, stage: "menu", reason: "wechat_external_input_detected" }; } });
+  assert.equal(tries, 1, "someone using the mouse is not fought for it");
 
   // Busy WeChat, a switched account, or an account that cannot be checked: nothing is pressed.
   let pressed = 0;

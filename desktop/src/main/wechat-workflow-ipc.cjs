@@ -40,6 +40,8 @@ function registerWechatWorkflowIpc(options) {
       spacePauseReady: Boolean(spaceHotkey.ready?.()),
       // A moments job the workflow is running already shows as the workflow's own task.
       external: [...external.values()].filter((item) => !(state.currentTaskId && item.kind === { publish: "moments-publish", interact: "moments-campaign" }[current?.type]))
+        // Whether double space stops the cleanup is read live: the keyboard hook may start or fail after the last progress.
+        .map((item) => item.kind === "contactCleanup" ? { ...item, spacePause: Boolean(spaceHotkey.ready?.()) } : item)
     };
   }
   // Double press of the space bar pauses the run from anywhere (user decision 2026-11-18); the hook
