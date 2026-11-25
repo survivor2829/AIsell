@@ -7,6 +7,7 @@ const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { backupFilter, isRegenerableProfileFile, checkCopySpace, createOwnedDirectory, removeOwnedDirectory, metadataInventory, copySnapshot, verifySnapshot } = require("./update-storage.cjs");
 const { inventory, verifyProgram, programIdentity } = require("./update-program-backup.cjs");
 const { hashFile } = require("../shared/component-contract.cjs");
+const { compareVersions } = require("../shared/launcher-contract.cjs");
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 const registryPath = profile => path.join(profile, "data/cloud-maintenance/components/backup-registry.json");
 function readRegistry(profile) {
@@ -205,6 +206,9 @@ async function retryBackupMaintenance(profile, { version, runtimeRoot } = {}) {
   const acknowledged = set => {
     if (!version) return false;
     if (set.confirmationTarget === version) return true;
+    // Its target launched and was acknowledged, and the app has since moved past it: check again under today's rules,
+    // so a rule fixed later does not strand a set forever. A failing check still keeps the set.
+    try { if (set.confirmationTarget && compareVersions(set.confirmationTarget, version) < 0) return true; } catch { /* malformed: stay protected */ }
     // A helper may have completed but lost the registry lock before confirmSet.
     // Recover its durable job + ACK instead of stranding an unmarked snapshot.
     try {

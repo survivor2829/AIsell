@@ -423,6 +423,34 @@ if (process.argv[2] === "--hold-registry") {
     assert.equal(readRegistry(profile).sets.find(set => set.id === pending.id).state, "confirmed");
     assert.equal(readRegistry(profile).sets.filter(set => set.rotationPolicy === "latest-confirmed" && set.state === "confirmed").length, 1);
     assert.equal(await fs.readFile(path.join(preservedRoot, "objects", oldDatabase.sha256), "utf8"), "business database", "later updates cannot rotate unique historical data");
+    // 1.3.48 → 1.3.49 on the dev machine: the runtime hash cache was judged business data, so the set never confirmed
+    // and pinned ~25 GB. The cache may change, and a later version re-checks a set its target already acknowledged.
+    const runtimeCache = path.join(profile, "content-engine", "remotion-runtime-verification.json");
+    const strandedNote = path.join(profile, "data", "stranded-note.txt");
+    await fs.mkdir(path.dirname(runtimeCache), { recursive: true });
+    await fs.writeFile(runtimeCache, "old runtime hash");
+    await fs.writeFile(strandedNote, "customer note");
+    const stranded = await make();
+    await fs.writeFile(runtimeCache, "new runtime hash");
+    assert.equal(stranded.data.files.some(file => file.path.replaceAll("\\", "/") === "content-engine/remotion-runtime-verification.json"), false,
+      "new backups leave out the regenerable runtime cache");
+    assert.equal(await checkPreservedData(profile, { ...stranded.data, files: [{ path: "content-engine/remotion-runtime-verification.json", size: 1, sha256: "old" }] }), true,
+      "older snapshots that hold the runtime cache are not judged changed");
+    await withRegistry(profile, async (registry, save) => {
+      const set = registry.sets.find(item => item.id === stranded.id);
+      set.confirmationFailure = [{ path: "content-engine\\remotion-runtime-verification.json", reason: "business_content_changed" }];
+      set.confirmationTarget = "1.1.81";
+      save(registry);
+    });
+    await retryBackupMaintenance(profile, { version: "1.1.80" });
+    assert.equal(readRegistry(profile).sets.find(set => set.id === stranded.id).state, "prepared", "an older running version never retries");
+    await fs.writeFile(strandedNote, "lost customer note");
+    await retryBackupMaintenance(profile, { version: "1.1.85" });
+    assert.equal(readRegistry(profile).sets.find(set => set.id === stranded.id).state, "prepared", "a real data change still keeps the set");
+    await fs.writeFile(strandedNote, "customer note");
+    await retryBackupMaintenance(profile, { version: "1.1.85" });
+    assert.equal(readRegistry(profile).sets.find(set => set.id === stranded.id).state, "confirmed", "a later version re-checks the stranded set");
+    await fs.rm(strandedNote); await fs.rm(runtimeCache);
     // An unconfirmed internal acceptance run older than a newly confirmed one is superseded and rotates out;
     // an unconfirmed customer (automatic) set made later stays as failure evidence.
     // Like the real case: the stale run was backed up to a different folder, so the same-folder rule does not apply.
