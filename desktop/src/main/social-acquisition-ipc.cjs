@@ -2,11 +2,15 @@ const fs = require("node:fs");
 const { createSocialAcquisition } = require("./social-acquisition.cjs");
 const { DRIVERS } = require("./social-acquire-drivers.cjs");
 
-function registerSocialAcquisitionIpc({ ipcMain, dialog, shell, dataDir, accounts, getMainWindow, options = {} }) {
+const { reportSocialFailure } = require("./social-publish-ipc.cjs");
+
+function registerSocialAcquisitionIpc({ ipcMain, dialog, shell, dataDir, accounts, getMainWindow, logger, evidenceDir, options = {} }) {
   let acquisition; let initializationError;
   try {
     if (!accounts) throw Object.assign(new Error("accounts unavailable"), { code: "ACQUIRE_ACCOUNTS_UNAVAILABLE" });
-    acquisition = createSocialAcquisition({ dataDir, accounts, ...options,
+    acquisition = createSocialAcquisition({ dataDir, accounts,
+      // Failed or unknown actions reach the failure report like 一键分发's (user 2026-11-25: no silent failures).
+      onFailure: (failure) => reportSocialFailure({ logger, evidenceDir }, "social_acquisition", failure), ...options,
       onChange: (state) => { const window = getMainWindow(); if (window && !window.isDestroyed()) window.webContents.send("social-acquisition:update", state); } });
   } catch (error) { initializationError = { ok: false, code: error.code || "ACQUIRE_UNAVAILABLE", error: error.code === "ACQUIRE_STATE_INVALID" ? error.message : "关键词获客暂时无法打开，请重新打开软件。" }; }
   const id = (payload) => String(payload?.id || "");

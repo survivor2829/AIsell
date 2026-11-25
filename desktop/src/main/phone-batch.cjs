@@ -22,7 +22,7 @@ const stamp = (date) => `${date.getFullYear()}${String(date.getMonth() + 1).padS
 const safeName = (name) => String(name || "").replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 40) || "phone";
 const failure = (message, code = "PHONE_BATCH_FAILED") => Object.assign(new Error(message), { code });
 
-function createPhoneBatch({ adbPath, screenshotDir, paste = () => false, onState = () => {}, adb = (args, timeout, as) => runAdb(adbPath, args, timeout, as), now = () => new Date() }) {
+function createPhoneBatch({ adbPath, screenshotDir, paste = () => false, onState = () => {}, onFailure = () => {}, adb = (args, timeout, as) => runAdb(adbPath, args, timeout, as), now = () => new Date() }) {
   let current = null; // { id, kind, label, total, done, failed, results, running, stopping, startedAt, folder }
   let nextId = 1;
 
@@ -115,7 +115,11 @@ function createPhoneBatch({ adbPath, screenshotDir, paste = () => false, onState
     // note: what the user has to do on this phone right now ("" clears it).
     const note = (text) => { if (result.hint !== text) { result.hint = text; entry.waitingUser = entry.results.filter((item) => item.hint).length; emit(); } };
     try { await steps[entry.kind](serial, options, { note }); result.status = "done"; }
-    catch (error) { result.status = "failed"; result.error = /^PHONE_/.test(String(error.code || "")) ? error.message : adbReason(error); entry.failed += 1; }
+    catch (error) {
+      result.status = "failed"; result.error = /^PHONE_/.test(String(error.code || "")) ? error.message : adbReason(error); entry.failed += 1;
+      // Codes only (no phone serials or text) for the failure report (user 2026-11-25: no silent failures).
+      try { onFailure({ kind: entry.kind, code: /^[A-Z_]+$/.test(String(error.code || "")) ? error.code : "PHONE_ADB_FAILED" }); } catch { /* Diagnostics never change the batch. */ }
+    }
     entry.done += 1; emit();
   }
 

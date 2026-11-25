@@ -9,6 +9,10 @@ const { createUnreachableRegistry } = require("./touch-unreachable.cjs");
 
 // One WeChat delete run per app; the panel polls the list while it runs.
 const wechatRun = { running: false, progress: { done: 0, total: 0, deleted: 0, failed: 0, unknown: 0, current: "" } };
+// Tries per person when it stopped before 删除; searching again cannot help with these.
+const ATTEMPTS = 3;
+const NO_RETRY = new Set(["contact_name_not_unique", "delete_name_missing", "contact_not_saved", "wechat_version_unsupported",
+  "wechat_account_changed", "wechat_account_unverified", "wechat_account_mismatch", "stopped_by_user", "wechat_operation_busy"]);
 
 function createTouchCleanup(activeTouchDir) {
   const registry = createUnreachableRegistry(activeTouchDir);
@@ -61,7 +65,8 @@ function createTouchCleanup(activeTouchDir) {
     // the logged-in account, holds the WeChat lock so touch and replies wait, and can be stopped between people.
     // A friend with no usable 微信号 is deleted only when no other synced friend shows the same name. A result that
     // cannot be read back is "unknown" and is never retried.
-    async deleteInWechat(wanted, { deleteContact, coordinator, currentAccount = "", verifyLiveAccount, onProgress = () => {} } = {}) {
+    async deleteInWechat(wanted, { deleteContact, coordinator, currentAccount = "", verifyLiveAccount, onProgress = () => {}, onFailure = () => {},
+      wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
       if (wechatRun.running) return { started: false, reason: "wechat_delete_running" };
       if (!Array.isArray(wanted) || !wanted.length) return { started: false, reason: "nothing_to_delete" };
       if (typeof deleteContact !== "function" || typeof verifyLiveAccount !== "function" || !currentAccount) return { started: false, reason: "wechat_delete_unavailable" };
@@ -95,10 +100,19 @@ function createTouchCleanup(activeTouchDir) {
           onProgress({ ...wechatRun.progress });
           if (!contact) { finish(entry, "failed", "input", "contact_not_saved"); continue; }
           const uniqueName = !rows.some((row) => shown(row) === shown(contact));
+          // Stopped before 删除 was pressed (search missed, a dialog in the way, the mouse moved): search again,
+          // up to ATTEMPTS times (user 2026-11-25: "重复搜一搜"). A pressed 删除 without a clear answer is never retried.
           let result;
-          try { result = await deleteContact(contact, { confirm: true, uniqueName }); }
-          catch (error) { result = { ok: false, outcomeUnknown: true, stage: "script", reason: String(error?.message || "delete_failed").slice(0, 120) }; }
-          finish(entry, result?.deleted ? "deleted" : result?.outcomeUnknown ? "unknown" : "failed", result?.stage, result?.reason);
+          for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+            try { result = await deleteContact(contact, { confirm: true, uniqueName }); }
+            catch (error) { result = { ok: false, outcomeUnknown: true, stage: "script", reason: String(error?.message || "delete_failed").slice(0, 120) }; }
+            if (result?.deleted || result?.outcomeUnknown || NO_RETRY.has(String(result?.reason || "")) || wechatRun.stopRequested || attempt === ATTEMPTS) break;
+            onFailure({ stage: String(result?.stage || ""), reason: String(result?.reason || ""), attempt, retrying: true, ...(Array.isArray(result?.windows) ? { windows: result.windows } : {}), ...(Array.isArray(result?.menuItems) ? { menuItems: result.menuItems } : {}) });
+            await wait(String(result?.reason || "") === "wechat_external_input_detected" ? 6000 : 2500);
+          }
+          const status = result?.deleted ? "deleted" : result?.outcomeUnknown ? "unknown" : "failed";
+          if (status !== "deleted") onFailure({ stage: String(result?.stage || ""), reason: String(result?.reason || ""), status, retrying: false, ...(Array.isArray(result?.windows) ? { windows: result.windows } : {}), ...(Array.isArray(result?.menuItems) ? { menuItems: result.menuItems } : {}) });
+          finish(entry, status, result?.stage, result?.reason);
         }
         return { started: true, ...wechatRun.progress };
       } finally {

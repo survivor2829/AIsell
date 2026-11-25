@@ -58,6 +58,17 @@ function Find-Elements($root, [string]$type, $elementName, [string]$className) {
     (-not $className -or $c.ClassName -eq $className)
   })
 }
+# The first WeChat window holding a matching element: the 更多 menu and the delete confirm are drawn inside the
+# profile card on 4.2.0.53, but another build or Windows version may give them a popup window of their own
+# (user report 2026-11-25: the menu showed and vanished because it was looked for in the card only).
+function Find-Anywhere([string]$type, $elementName) {
+  foreach ($w in (Get-WxWindows)) { $hit = Find-Elements $w $type $elementName "" | Select-Object -First 1; if ($hit) { return $hit } }
+  return $null
+}
+function Find-WindowWith([string]$type, $elementName) {
+  foreach ($w in (Get-WxWindows)) { if ((Find-Elements $w $type $elementName "").Count) { return $w } }
+  return $null
+}
 function Wait-Element([scriptblock]$probe, [int]$timeoutMs = 3000) {
   $deadline = [DateTime]::UtcNow.AddMilliseconds($timeoutMs)
   do { $found = & $probe; if ($found) { return $found }; Start-Sleep -Milliseconds 150 } while ([DateTime]::UtcNow -lt $deadline)
@@ -95,6 +106,11 @@ function Close-Profile {
     $innerCancel = Find-Elements $inner "Button" "取消" "" | Select-Object -First 1
     if ($innerCancel) { Click-Element $innerCancel | Out-Null; Start-Sleep -Milliseconds 300 }
   }
+  if ($question) {
+    $confirmWindow = Find-WindowWith "Text" $question
+    $cancel = if ($confirmWindow) { Find-Elements $confirmWindow "Button" "取消" "" | Select-Object -First 1 }
+    if ($cancel) { Click-Element $cancel | Out-Null; Start-Sleep -Milliseconds 300 }
+  }
   $pop = Get-WxWindow "mmui::ProfileUniquePop"
   if (-not $pop) { return }
   $cancel = Find-Elements $pop "Button" "取消" "" | Select-Object -First 1
@@ -107,24 +123,26 @@ function Close-Profile {
   $script:ownInputTick = [XiaoxiDel]::LastInputTick()
 }
 function Stop-Before($stage, $reason, $extra = @{}) {
-  $extra["windows"] = @(Get-WxWindows | ForEach-Object { $_.Current.ClassName })
+  # Which WeChat windows were open and what the step saw: the failure report then shows where a build differs.
+  $extra["windows"] = @(Get-WxWindows | ForEach-Object { $_.Current.ClassName + "/" + $_.Current.ControlType.ProgrammaticName.Replace("ControlType.", "") })
   Close-Profile; Out-Result $false $stage $reason $extra
 }
 
+$question = ""
 if (-not $name) { Out-Result $false "input" "delete_name_missing" }
 $question = '删除"' + $name + '"？'
 
 # Second call: the confirm dialog the first call left open must still name exactly this person; only then 删除
 # is pressed. Anything after the press that cannot be read back is unknown (the caller treats a timeout the same).
 if ($phase -eq "commit") {
-  $dialog = Get-WxWindow "mmui::ProfileUniquePop"
-  if (-not $dialog -or -not (Find-Elements $dialog "Text" $question "").Count) { Stop-Before "commit" "confirm_dialog_gone" @{ notClicked = $true } }
+  $dialog = Find-WindowWith "Text" $question
+  if (-not $dialog) { Stop-Before "commit" "confirm_dialog_gone" @{ notClicked = $true } }
   $deleteButton = Find-Elements $dialog "Button" "删除" "" | Select-Object -First 1
   if (-not $deleteButton) { Stop-Before "commit" "confirm_button_not_found" @{ notClicked = $true } }
   if (Test-UserInput) { Stop-Before "commit" "wechat_external_input_detected" @{ notClicked = $true } }
   Click-Element $deleteButton | Out-Null
   $gone = Wait-Element {
-    $p = Get-WxWindow "mmui::ProfileUniquePop"
+    $p = if (Get-WxWindow "mmui::ProfileUniquePop") { $true } else { Find-WindowWith "Text" $question }
     $m = Get-WxWindow "mmui::MainWindow"
     $rows = Find-Elements $m "ListItem" $null "mmui::ChatSessionCell" | Where-Object { $_.Current.Name -eq $name -or $_.Current.Name.StartsWith($name + " ") }
     $open = Find-Elements $m "Text" $name "mmui::XTextView"
@@ -173,12 +191,24 @@ if ($wechatId -and $shownId -ne $wechatId) { Stop-Before "profile" "profile_wech
 $more = Find-Elements $pop "Button" "更多" "" | Select-Object -First 1
 if (-not $more) { Stop-Before "menu" "profile_more_not_found" }
 Press-Element $more "menu"
-$menuItem = Wait-Element { Find-Elements (Get-WxWindow "mmui::ProfileUniquePop") "MenuItem" "删除联系人" "" | Select-Object -First 1 }
-if (-not $menuItem) { Stop-Before "menu" "delete_menu_item_not_found" }
+$menuItem = Wait-Element { Find-Anywhere "MenuItem" "删除联系人" } 4000
+# The menu closed again before it could be read (it flashes when the card is still settling): open it once more,
+# only while the card is still there.
+if (-not $menuItem) {
+  $more = Find-Elements (Get-WxWindow "mmui::ProfileUniquePop") "Button" "更多" "" | Select-Object -First 1
+  if (-not $more) { Stop-Before "menu" "profile_card_closed" }
+  Start-Sleep -Milliseconds 400
+  Press-Element $more "menu"
+  $menuItem = Wait-Element { Find-Anywhere "MenuItem" "删除联系人" } 4000
+}
+if (-not $menuItem) {
+  $items = @(Get-WxWindows | ForEach-Object { Find-Elements $_ "MenuItem" $null "" } | ForEach-Object { $_.Current.Name } | Select-Object -First 8)
+  Stop-Before "menu" "delete_menu_item_not_found" @{ menuItems = $items }
+}
 Press-Element $menuItem "confirm"
 
 # 5. The confirm text names exactly this person; the dialog is left open for the commit call.
-$dialog = Wait-Element { $p = Get-WxWindow "mmui::ProfileUniquePop"; if ($p -and (Find-Elements $p "Text" $question "").Count) { $p } }
+$dialog = Wait-Element { Find-WindowWith "Text" $question } 4000
 if (-not $dialog) { Stop-Before "confirm" "confirm_text_mismatch" }
 if (-not (Find-Elements $dialog "Button" "删除" "").Count) { Stop-Before "confirm" "confirm_button_not_found" }
 if (-not $confirm) { Stop-Before "confirm" "dry_run_stopped_before_delete" @{ dryRun = $true; reached = "confirm" } }
@@ -221,7 +251,8 @@ async function deleteOnce(contact, { confirm = false, uniqueName = false, runner
   const environment = { XIAOXI_DELETE_NAME: name, XIAOXI_DELETE_WECHAT_ID: wechatId, XIAOXI_EXPECTED_PID: String(window.pid || "") };
   const shape = (result, fallback) => ({ ok: result?.ok === true, deleted: result?.deleted === true, outcomeUnknown: result?.outcomeUnknown === true,
     dryRun: result?.dryRun === true, stage: String(result?.stage || "script"), reason: String(result?.reason || (result?.ok ? "" : fallback)),
-    ...(Array.isArray(result?.windows) ? { windows: result.windows } : {}) });
+    ...(Array.isArray(result?.windows) ? { windows: result.windows.map(String).slice(0, 12) } : {}),
+    ...(Array.isArray(result?.menuItems) ? { menuItems: result.menuItems.map(String).slice(0, 8) } : {}) });
   // 1) Up to the confirm dialog, every identity checked; nothing is deleted.
   const prepared = await Promise.resolve(runner(DELETE_SCRIPT, { ...environment, XIAOXI_DELETE_PHASE: "prepare", XIAOXI_DELETE_CONFIRM: confirm ? "1" : "0" }, { ensure: false, timeout: 40000 }));
   if (!prepared?.ok || prepared.ready !== true) return shape(prepared, "delete_script_failed");

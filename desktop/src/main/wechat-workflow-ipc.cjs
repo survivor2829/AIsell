@@ -54,14 +54,25 @@ function registerWechatWorkflowIpc(options) {
       if (!disposed) setImmediate(() => { if (!disposed) broadcast(controller.status()); });
     }
   });
+  // Deleting invalid friends in WeChat (清理无效好友) stops the same way as a run (user 2026-11-25: "无法暂停").
+  let cleanupRunning = false;
   function syncSpaceHotkey(state) {
-    if (!disposed && state?.enabled && state.phase !== "pausing") {
+    if (!disposed && cleanupRunning) {
+      spaceHotkey.start();
+      spaceHotkey.setSwallow?.(true);
+    } else if (!disposed && state?.enabled && state.phase !== "pausing") {
       spaceHotkey.start();
       // Between steps (auto-reply listening, waiting for the next task) the customer may type in WeChat.
       spaceHotkey.setSwallow?.(Boolean(state.currentTaskId) && !["listening", "replying"].includes(state.phase));
     } else spaceHotkey.stop();
   }
   async function pauseFromSpaceBar() {
+    if (!disposed && cleanupRunning) {
+      options.logger?.event?.("wechat_workflow", "space_pause.requested", { phase: "contact_cleanup" }, { level: "info" });
+      cleanup().stopWechatDelete();
+      say({ text: "收到！删完这一个就停", sub: "没删的人还在已移除名单里，可以再删" });
+      return;
+    }
     const state = controller.status();
     if (disposed || !state.enabled || state.phase === "pausing") return;
     options.logger?.event?.("wechat_workflow", "space_pause.requested", { phase: state.phase }, { level: "info" });
@@ -332,6 +343,8 @@ function registerWechatWorkflowIpc(options) {
     const plan = cleanup().planWechatDelete(payload.entries, { currentAccount });
     if (!plan.wanted.length) return { ...cleanup().list(), removedNow: result.removedNow, wechatStarted: false, wechatReason: "nothing_to_delete", wechatSkipped: plan.skipped.length };
     showFloating().catch(() => undefined);
+    cleanupRunning = true;
+    syncSpaceHotkey(controller.status());
     const run = cleanup().deleteInWechat(plan.wanted, {
       deleteContact: options.deleteWechatContact,
       coordinator: options.coordinator,
@@ -339,9 +352,16 @@ function registerWechatWorkflowIpc(options) {
       verifyLiveAccount: options.verifyLiveAccount,
       onProgress: (progress) => setExternalActivity("contactCleanup", progress.finished ? null : {
         title: "正在微信里删除无效好友", step: progress.current ? `删除 ${progress.current}` : "准备中",
-        done: progress.done, total: progress.total })
+        done: progress.done, total: progress.total, pausable: true, spacePause: Boolean(spaceHotkey.ready?.()) }),
+      // Each miss is logged (step and reason, no names) so a failure report shows where deleting stops.
+      onFailure: (failure) => options.logger?.event?.("wechat_workflow", failure.retrying ? "contact_cleanup.retry" : "contact_cleanup.person_failed", failure,
+        { level: failure.retrying ? "warn" : "error", code: failure.reason || "contact_cleanup_failed" })
     });
-    run.catch((failure) => options.logger?.event?.("wechat_workflow", "contact_cleanup.failed", { error: failure }, { level: "warn", code: "contact_cleanup_failed" }));
+    const ended = () => { cleanupRunning = false; syncSpaceHotkey(controller.status()); };
+    run.then(ended, (failure) => {
+      ended();
+      options.logger?.event?.("wechat_workflow", "contact_cleanup.failed", { error: failure }, { level: "warn", code: "contact_cleanup_failed" });
+    });
     return { ...cleanup().list(), removedNow: result.removedNow, wechatStarted: true, wechatSkipped: plan.skipped.length };
   }, true);
   handle("stop-unreachable-delete", () => cleanup().stopWechatDelete());

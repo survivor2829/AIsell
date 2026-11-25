@@ -81,17 +81,22 @@ async function checkWechatDelete(base) {
   assert.equal((await cleanup.deleteInWechat(plan.wanted, { deleteContact: async () => ({}), currentAccount: "当前号" })).reason, "wechat_delete_unavailable", "no live account check, no delete");
   const lockLog = [];
   const coordinator = { acquire: (value) => { lockLog.push(["acquire", value.phase]); return { ok: true, lock: { owner: "o1" } }; }, release: (owner) => lockLog.push(["release", owner]) };
-  const seen = [];
+  const seen = [], failures = [], waits = [];
   const outcomes = { 测试客户一: { ok: true, deleted: true, stage: "done" }, 测试客户二: { ok: false, outcomeUnknown: true, stage: "commit", reason: "powershell_timeout" },
     测试客户三: { ok: false, stage: "confirm", reason: "confirm_text_mismatch" } };
   const done = await cleanup.deleteInWechat(plan.wanted, { coordinator, currentAccount: "当前号", verifyLiveAccount: live,
+    onFailure: (failure) => failures.push(failure), wait: async (ms) => { waits.push(ms); },
     deleteContact: async (contact, options) => {
       seen.push([contact.name, options.confirm, options.uniqueName]);
       if (contact.name === "测试客户五") throw new Error("crashed");
       return outcomes[contact.name];
     } });
-  assert.deepEqual(seen, [["测试客户一", true, true], ["测试客户二", true, true], ["测试客户三", true, true], ["测试客户五", true, false]],
-    "a friend sharing a synced name is flagged not unique");
+  assert.deepEqual(seen, [["测试客户一", true, true], ["测试客户二", true, true], ["测试客户三", true, true], ["测试客户三", true, true], ["测试客户三", true, true], ["测试客户五", true, false]],
+    "stopped before 删除 is searched again up to 3 times; unknown is never retried; a friend sharing a synced name is flagged not unique");
+  assert.deepEqual(waits, [2500, 2500]);
+  assert.deepEqual(failures.map((failure) => [failure.reason, failure.retrying]), [["powershell_timeout", false], ["confirm_text_mismatch", true],
+    ["confirm_text_mismatch", true], ["confirm_text_mismatch", false], ["crashed", false]], "every miss is reported (no names) for the failure report");
+  assert.ok(failures.every((failure) => !JSON.stringify(failure).includes("测试客户")));
   assert.deepEqual([done.deleted, done.unknown, done.failed], [1, 2, 1]);
   const status = Object.fromEntries(cleanup.list().entries.map((entry) => [entry.name, entry.wechatDelete]));
   assert.equal(status.测试客户二.status, "unknown", "a timeout after 删除 is unknown, never retried");
@@ -100,6 +105,17 @@ async function checkWechatDelete(base) {
   assert.deepEqual([status.测试客户四.status, status.测试客户四.reason], ["failed", "wechat_account_mismatch"]);
   assert.deepEqual(lockLog, [["acquire", "touch:delete-contact"], ["release", "o1"]], "the WeChat lock is held for the run and released");
   assert.equal(cleanup.list().wechatRunning, false);
+
+  // A search that misses once and then finds the person deletes them; a permanent reason is not retried.
+  const flaky = [{ ok: false, stage: "open", reason: "search_result_identity_unverified" }, { ok: true, deleted: true, stage: "done" }];
+  let tries = 0;
+  const recovered = await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: live, coordinator, wait: async () => {},
+    deleteContact: async () => flaky[tries++] });
+  assert.deepEqual([tries, recovered.deleted], [2, 1]);
+  tries = 0;
+  await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: live, coordinator, wait: async () => {},
+    deleteContact: async () => { tries += 1; return { ok: false, stage: "window", reason: "wechat_version_unsupported" }; } });
+  assert.equal(tries, 1, "an unsupported WeChat is not searched again");
 
   // Busy WeChat, a switched account, or an account that cannot be checked: nothing is pressed.
   let pressed = 0;

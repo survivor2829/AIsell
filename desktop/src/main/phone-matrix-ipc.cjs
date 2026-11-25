@@ -6,12 +6,13 @@ const path = require("node:path");
 // 手机矩阵: the page reads the phone list, edits a phone's name / number / note / group, and gets
 // updates as phones are plugged in or allow debugging.
 // onActivity: what 小玺 shows while a batch runs; sayDone: 小玺's one line when it ends.
-function registerPhoneMatrixIpc({ ipcMain, dialog, shell, dataDir, screenshotDir, getMainWindow, onActivity = () => {}, sayDone = () => {}, options = {} }) {
+function registerPhoneMatrixIpc({ ipcMain, dialog, shell, dataDir, screenshotDir, getMainWindow, logger, onActivity = () => {}, sayDone = () => {}, options = {} }) {
   const toPage = (channel, payload) => { const window = getMainWindow(); if (window && !window.isDestroyed()) window.webContents.send(channel, payload); };
   const matrix = createPhoneMatrix({ dataDir, ...options, onChange: (state) => toPage("phone-matrix:update", state) });
   const screens = createPhoneScreens({ adbPath: matrix.adbPath, serverPath: options.serverPath || serverPathIn(VENDOR_DIR), send: toPage });
   const batch = createPhoneBatch({ adbPath: matrix.adbPath, screenshotDir, paste: (serial, text) => screens.paste(serial, text),
-    onState: (state) => { toPage("phone-matrix:batch", state); onActivity(batchActivity(state)); } });
+    onState: (state) => { toPage("phone-matrix:batch", state); onActivity(batchActivity(state)); },
+    onFailure: ({ kind, code }) => logger?.event?.("phone_matrix", "batch_phone_failed", { batch_kind: kind }, { level: "error", code: String(code).toLowerCase() }) });
   const fromPage = (event) => { const trusted = getMainWindow()?.webContents; return Boolean(trusted && event.sender === trusted); };
   const methods = {
     status: () => matrix.snapshot(),

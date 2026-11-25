@@ -883,7 +883,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     socialAccountsRegistration = registerSocialAccountsIpc({ ipcMain, getMainWindow: () => mainWindow,
       dataDir: path.join(runtime.rootDir, "social_accounts"), logger });
     socialAcquisitionRegistration = registerSocialAcquisitionIpc({ ipcMain, dialog, shell, getMainWindow: () => mainWindow,
-      dataDir: path.join(runtime.rootDir, "social_acquisition"), accounts: socialAccountsRegistration.accounts });
+      dataDir: path.join(runtime.rootDir, "social_acquisition"), accounts: socialAccountsRegistration.accounts,
+      logger, evidenceDir: path.join(runtime.rootDir, "failure-evidence") });
     geoWorkbenchRegistration = registerGeoWorkbenchIpc({ ipcMain, shell, deepSeekClient, getMainWindow: () => mainWindow,
       dataDir: path.join(runtime.rootDir, "geo_workbench"), logger, evidenceDir: path.join(runtime.rootDir, "failure-evidence") });
     socialPublishRegistration = registerSocialPublishIpc({ ipcMain, getMainWindow: () => mainWindow, copyClient: deepSeekClient,
@@ -912,7 +913,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     // 养号 shares the accounts and hands its day-8 test video to 一键分发.
     // 手机矩阵: Android phones on a USB hub (user project of 2026-10-30).
     phoneMatrixRegistration = registerPhoneMatrixIpc({ ipcMain, dialog, shell, getMainWindow: () => mainWindow, dataDir: path.join(runtime.rootDir, "phone_matrix"),
-      screenshotDir: path.join(app.getPath("pictures"), "手机矩阵截图"),
+      screenshotDir: path.join(app.getPath("pictures"), "手机矩阵截图"), logger,
       onActivity: (activity) => workflowController?.setExternalActivity?.("phones", activity),
       sayDone: (line) => workflowController?.say?.(line) });
     socialNurtureRegistration = registerSocialNurtureIpc({ ipcMain, getMainWindow: () => mainWindow, accounts: socialAccountsRegistration.accounts,
