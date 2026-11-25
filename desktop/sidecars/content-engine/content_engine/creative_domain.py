@@ -6338,8 +6338,9 @@ class CreativeDomain:
             recipe["packaging"]["brand_profile_id"] = private_state["narrated_brand"].get("brand_profile_id")
         if private_state.get("narrated_reference_captions"):
             from .video_presentation import presentation
+            # A title the user typed for the batch replaces each script's own picture title.
             recipe["presentation"] = presentation(recipe["captions"],
-                run["title"],
+                private_state.get("narrated_display_title") or run["title"],
                 private_state.get("video_template") or "topic_fixed")
             recipe["packaging"]["cover"]["auto_generate"] = True
         if private_state.get("narrated_original_frame"):
@@ -6358,8 +6359,10 @@ class CreativeDomain:
             # keywords come from the title and the voice-over, no model call.
             from .video_presentation import mix_emphasis
             recipe["caption_style_id"] = private_state["caption_style_id"]
-            recipe["emphasis_phrases"] = mix_emphasis(
-                run["title"], "".join(str(item.get("text") or "") for item in public_plan["speechCaptions"]))
+            # A typed title rarely repeats the voice-over word for word, so the script's own title still names the keywords.
+            spoken = "".join(str(item.get("text") or "") for item in public_plan["speechCaptions"])
+            recipe["emphasis_phrases"] = list(dict.fromkeys(
+                [*mix_emphasis(private_state.get("narrated_display_title") or "", spoken), *mix_emphasis(run["title"], spoken)]))[:8]
             if recipe.get("presentation"):
                 recipe["presentation"]["showTitle"] = True
         if "reuse_cover_generated_video_id" in private_state:

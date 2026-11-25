@@ -18,7 +18,7 @@ from .auto_mix_v2 import (
     AUTO_MIX_SPEC_VERSION, canonical_hash, build_material_timeline,
     build_material_evidence_facts, build_music_brief, normalize_text_tracks,
 )
-from .video_presentation import DEFAULT_MIX_CAPTION_STYLE
+from .video_presentation import mix_caption_style
 from .auto_mix_resources import rotation_voice_personas, voice_preview_sample
 from .errors import ContentEngineError
 from .provider_usage import usage_scope
@@ -1391,11 +1391,18 @@ class NarratedBatchDomain:
         settings = request.get("settings", b.get("settings", {}) if b else {})
         require(isinstance(settings, dict) and not set(settings) - {
             "voice_persona_id", "brand_profile_id", "minimum_duration_seconds", "workflow_version", "music_mode", "music_track_ids", "video_template",
-            "strict_visual_review", "caption_style_id"},
+            "strict_visual_review", "caption_style_id", "display_title"},
                 "invalid_narrated_settings", "批量创作设置格式无效。")
         require(settings.get("video_template", "topic_fixed") in {"topic_fixed", "key_points"}, "invalid_narrated_settings", "视频模板无效。")
-        from .video_presentation import MIX_CAPTION_STYLES
-        require(settings.get("caption_style_id", MIX_CAPTION_STYLES[0]) in MIX_CAPTION_STYLES, "invalid_narrated_settings", "网感模板无效。")
+        from .video_presentation import MIX_CAPTION_STYLES, RANDOM_MIX_CAPTION_STYLE, MAX_DISPLAY_TITLE
+        require(settings.get("caption_style_id", MIX_CAPTION_STYLES[0]) in (*MIX_CAPTION_STYLES, RANDOM_MIX_CAPTION_STYLE), "invalid_narrated_settings", "网感模板无效。")
+        # Optional title the user types for every video's picture title; empty keeps each script's own title.
+        require(isinstance(settings.get("display_title", ""), str) and len(settings.get("display_title", "").strip()) <= MAX_DISPLAY_TITLE,
+                "invalid_narrated_settings", f"视频标题最多 {MAX_DISPLAY_TITLE} 个字。")
+        if "display_title" in settings:
+            settings = {**settings, "display_title": settings["display_title"].strip()}
+            if not settings["display_title"]:
+                settings.pop("display_title")
         # Absent in older batches, which keep the default: follow the confirmed script.
         require(type(settings.get("strict_visual_review", False)) is bool, "invalid_narrated_settings", "画面核对开关无效。")
         require(settings.get("workflow_version", 1) in {1, 2}, "invalid_narrated_settings", "创作流程版本无效。")
@@ -4994,7 +5001,9 @@ class NarratedBatchDomain:
                  "narrated_reference_captions": (b.get("settings") or {}).get("workflow_version") == 2,
                  "video_template": (b.get("settings") or {}).get("video_template") or "topic_fixed",
                  # New productions use a v5 packaging template (older batches get the default).
-                 "caption_style_id": (b.get("settings") or {}).get("caption_style_id") or DEFAULT_MIX_CAPTION_STYLE,
+                 "caption_style_id": mix_caption_style((b.get("settings") or {}).get("caption_style_id"), b["batch_id"],
+                                                       next((index for index, item in enumerate(b["candidates"]) if item["candidate_id"] == c["candidate_id"]), 0)),
+                 **({"narrated_display_title": b["settings"]["display_title"]} if (b.get("settings") or {}).get("display_title") else {}),
                  "used_music_track_ids": [item["music_track_id"] for item in b["candidates"]
                                           if item.get("status") == "completed" and item.get("music_track_id")],
                  "narrated_cover_avoid": self.cover_avoid(b, c["candidate_id"]),

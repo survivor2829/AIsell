@@ -608,6 +608,19 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class MixTemplateChoiceTests(unittest.TestCase):
+    def test_random_takes_the_templates_in_turn(self):
+        from content_engine.video_presentation import mix_caption_style, MIX_CAPTION_STYLES
+        picks = [mix_caption_style("random", "batch-a", order) for order in range(6)]
+        self.assertEqual(set(MIX_CAPTION_STYLES), set(picks[:3]), "every template shows up within three videos")
+        self.assertTrue(all(left != right for left, right in zip(picks, picks[1:])), "neighbouring videos differ")
+        self.assertEqual(picks, [mix_caption_style("random", "batch-a", order) for order in range(6)], "a video keeps its template on rerun")
+        starts = {mix_caption_style("random", f"batch-{index}", 0) for index in range(30)}
+        self.assertGreater(len(starts), 1, "batches start from different templates")
+        self.assertEqual("kinetic_v5", mix_caption_style("kinetic_v5", "batch-a", 4))
+        self.assertEqual("rise_v5", mix_caption_style(None, "batch-a", 0))
+
+
 class MixEmphasisTests(unittest.TestCase):
     def test_keywords_are_what_the_title_and_voice_over_share(self):
         from content_engine.video_presentation import mix_emphasis
