@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Ban, RotateCcw, UserX, X } from "lucide-react";
+import { Ban, ChevronDown, RotateCcw, UserX, X } from "lucide-react";
 import "./UnreachableCleanup.css";
 
 // Contacts a touch found blocked (消息被拒收) or deleted (需要朋友验证). The customer confirms who leaves the
@@ -35,7 +35,15 @@ const STOPPED: Record<string, string> = {
 const wechatText = (result: WechatDelete) => result.status === "deleted" ? "微信里已删"
   : result.status === "unknown" ? "微信里结果不明，请到微信看一眼"
   : `微信里没删成：${STOPPED[result.reason] || (result.stage === "open" ? "在微信里没找到这个人" : "没找到删除按钮，已停下")}`;
+// People removed from the list whose WeChat delete stopped before 删除 and may work on another try.
+// (A friend of another WeChat account is left for when that account is logged in, not counted here.)
+const PERMANENT = new Set(["contact_name_not_unique", "delete_name_missing", "contact_not_saved", "wechat_version_unsupported", "wechat_account_mismatch"]);
+const retryable = (entry: UnreachableEntry) => entry.removed && entry.wechatDelete?.status === "failed" && !PERMANENT.has(entry.wechatDelete.reason);
+// What the touch page entry counts: people to clear plus people to try deleting in WeChat again.
+export const cleanupCount = (list: UnreachableList | null | undefined) => (list?.entries || []).filter((entry) => !entry.removed || retryable(entry)).length;
 
+// One click clears everyone found (user 2026-11-25: "直接一键清理", no scrolling through names first); the names
+// are folded away for whoever wants to untick someone. Deleting runs in the background; 小玺 and the space bar stop it.
 export function UnreachableCleanup({ onClose }: { onClose: () => void }) {
   const api = window.xiaoxiWorkflow;
   const [list, setList] = useState<UnreachableList | null>(null);
@@ -60,6 +68,9 @@ export function UnreachableCleanup({ onClose }: { onClose: () => void }) {
   }, [api, list?.wechatRunning]);
   const pending = list?.entries.filter((entry) => !entry.removed) || [];
   const removed = list?.entries.filter((entry) => entry.removed) || [];
+  const again = removed.filter(retryable);
+  // Pressed 删除 but could not read it back: the customer has to look in WeChat (never retried), so it stays in sight.
+  const unknown = removed.filter((entry) => entry.wechatDelete?.status === "unknown");
   const chosen = pending.filter((entry) => !unticked.has(id(entry)));
   const running = Boolean(list?.wechatRunning);
   const progress = list?.wechatProgress;
@@ -72,38 +83,56 @@ export function UnreachableCleanup({ onClose }: { onClose: () => void }) {
     } catch (error) { setNotice((error as Error).message); }
     finally { setBusy(false); }
   };
+  // What happened to the WeChat side of a click, as short sentences.
+  const wechatNotice = (result: UnreachableList) => [
+    result.wechatStarted ? "正在微信里逐个删除，请别动鼠标键盘" : "",
+    result.wechatSkipped ? `${result.wechatSkipped} 人不在当前登录的微信号上，没有删` : "",
+    !result.wechatStarted && result.wechatReason && result.wechatReason !== "nothing_to_delete" ? `微信里没有删：${STOPPED[result.wechatReason] || "暂时不能删"}` : ""
+  ].filter(Boolean);
+  const clear = () => void run(() => api?.removeUnreachable?.(chosen.map(({ accountId, key }) => ({ accountId, key })), alsoWechat),
+    (result) => [`已清理 ${result.removedNow || 0} 人`, ...(alsoWechat ? wechatNotice(result) : [])].join("；") + "。");
+  const retry = () => void run(() => api?.removeUnreachable?.(again.map(({ accountId, key }) => ({ accountId, key })), true),
+    (result) => (wechatNotice(result).join("；") || "没有可以再删的人") + "。");
   const locked = busy || running;
+  const blocked = pending.filter((entry) => entry.kind === "blocked").length;
   return <div className="cleanup-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
     <section className="cleanup-panel" role="dialog" aria-modal="true" aria-labelledby="cleanup-title">
       <header><h2 id="cleanup-title"><UserX />清理无效好友</h2><button type="button" className="cleanup-close" aria-label="关闭" disabled={busy} onClick={onClose}><X /></button></header>
       {!list ? <p className="cleanup-empty">{notice || "正在读取…"}</p> : <>
-        {running && progress && <div className="cleanup-progress" role="status">
-          <span>正在微信里删除 {progress.done}/{progress.total}{progress.current ? `：${progress.current}` : ""}</span>
+        {running && progress ? <div className="cleanup-progress" role="status">
+          <div><strong>正在微信里删除 {progress.done}/{progress.total}</strong><span>{progress.current ? `当前：${progress.current}` : "准备中"}</span></div>
+          <button type="button" disabled={list.wechatStopping} onClick={() => void api?.stopUnreachableDelete?.().then((next) => next && setList(next))}>{list.wechatStopping ? "删完这一个就停" : "停止"}</button>
           <i style={{ width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%` }} />
-          <button type="button" disabled={list?.wechatStopping} onClick={() => void api?.stopUnreachableDelete?.().then((next) => next && setList(next))}>{list?.wechatStopping ? "删完这一个就停" : "停止"}</button>
-        </div>}
-        {pending.length ? <>
+        </div> : pending.length ? <div className="cleanup-hero">
+          <p><b>{pending.length}</b>人<span>{[blocked ? `${blocked} 人拉黑了你` : "", pending.length - blocked ? `${pending.length - blocked} 人删除了你` : ""].filter(Boolean).join(" · ")}</span></p>
+          <button type="button" className="cleanup-primary" data-xiaoxi-workflow-save disabled={locked || !chosen.length} onClick={clear}>
+            一键清理{chosen.length !== pending.length ? ` ${chosen.length} 人` : ""}</button>
+          <label className="cleanup-wechat"><input type="checkbox" checked={alsoWechat} disabled={locked} onChange={(event) => setAlsoWechat(event.target.checked)} />
+            同时在微信里删除<small>删了找不回来</small></label>
+        </div> : again.length ? <div className="cleanup-hero">
+          <p><b>{again.length}</b>人<span>微信里还没删掉</span></p>
+          <button type="button" className="cleanup-primary" data-xiaoxi-workflow-save disabled={locked} onClick={retry}>再删一次</button>
+        </div> : unknown.length ? <p className="cleanup-unknown">{unknown.length} 人点了删除但没能确认结果，请到微信里看一眼（展开下面的名单）。</p>
+        : <p className="cleanup-empty">没有需要清理的人。触达时发现被拉黑或删除，会出现在这里。</p>}
+        {notice && <p className="cleanup-notice" role="status">{notice}</p>}
+        {pending.length > 0 && !running && <details className="cleanup-fold">
+          <summary><ChevronDown />看名单{unticked.size ? `（已取消 ${unticked.size} 人）` : ""}</summary>
           <ul className="cleanup-list">{pending.map((entry) => <li key={id(entry)}><label>
             <input type="checkbox" checked={!unticked.has(id(entry))} disabled={locked} onChange={(event) => setUnticked((current) => {
               const next = new Set(current); if (event.target.checked) next.delete(id(entry)); else next.add(id(entry)); return next;
             })} />
             <span className="cleanup-name">{entry.name}</span><span className={`cleanup-kind is-${entry.kind}`}><Ban />{KIND[entry.kind]}</span>
           </label></li>)}</ul>
-          <label className="cleanup-wechat"><input type="checkbox" checked={alsoWechat} disabled={locked} onChange={(event) => setAlsoWechat(event.target.checked)} />
-            同时在微信里删除这些好友<small>删了就找不回来；删除时请不要动鼠标键盘</small></label>
-          <button type="button" className="cleanup-primary" data-xiaoxi-workflow-save disabled={locked || !chosen.length}
-            onClick={() => void run(() => api?.removeUnreachable?.(chosen.map(({ accountId, key }) => ({ accountId, key })), alsoWechat),
-              (result) => `已从名单移除 ${result.removedNow || 0} 人${result.wechatStarted ? "，正在微信里逐个删除" : ""}${result.wechatSkipped ? `，${result.wechatSkipped} 人不在当前登录的微信号上，没有删` : ""}${alsoWechat && !result.wechatStarted && result.wechatReason && result.wechatReason !== "nothing_to_delete" ? `；微信里没有删：${STOPPED[result.wechatReason] || "暂时不能删"}` : ""}。`)}>
-            从名单移除 {chosen.length} 人{alsoWechat ? "，并在微信里删除" : ""}</button>
-        </> : <p className="cleanup-empty">没有需要清理的人。触达时发现被拉黑或删除，会出现在这里。</p>}
-        {removed.length > 0 && <details className="cleanup-removed" open={running || removed.some((entry) => entry.wechatDelete && entry.wechatDelete.status !== "deleted")}>
-          <summary>已移除 {removed.length} 人</summary><ul>{removed.map((entry) => <li key={id(entry)}>
+        </details>}
+        {removed.length > 0 && <details className="cleanup-fold cleanup-removed" open={running || unknown.length > 0}>
+          <summary><ChevronDown />已清理 {removed.length} 人{again.length && pending.length ? `（${again.length} 人微信里还没删掉）` : ""}</summary>
+          {again.length > 0 && pending.length > 0 && <button type="button" className="cleanup-again" data-xiaoxi-workflow-save disabled={locked} onClick={retry}>再删一次没删掉的 {again.length} 人</button>}
+          <ul>{removed.map((entry) => <li key={id(entry)}>
             <span className="cleanup-name">{entry.name}</span>
             {entry.wechatDelete ? <span className={`cleanup-wechat-result is-${entry.wechatDelete.status}`}>{wechatText(entry.wechatDelete)}</span>
               : <span className={`cleanup-kind is-${entry.kind}`}>{KIND[entry.kind]}</span>}
             {entry.wechatDelete?.status !== "deleted" && <button type="button" data-xiaoxi-workflow-save disabled={locked} onClick={() => void run(() => api?.restoreUnreachable?.({ accountId: entry.accountId, key: entry.key }), (result) => result.restored ? `${entry.name} 已放回名单。` : `${entry.name} 没能放回名单，请重新同步联系人。`)}><RotateCcw />恢复</button>}
           </li>)}</ul></details>}
-        {notice && <p className="cleanup-notice" role="status">{notice}</p>}
       </>}
     </section>
   </div>;

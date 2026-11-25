@@ -213,7 +213,7 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
             bubble never promises a pause that cannot happen. */}
         {activity?.pausable && (activity.spacePause
           ? <span className="xiaoxi-space-hint"><b>双击空格</b>暂停</span>
-          : <button type="button" className="xiaoxi-link" onClick={() => void workflow.run(() => api!.pause())}>先暂停</button>)}
+          : <button type="button" className="xiaoxi-link" onClick={() => void (activity.kind === "contactCleanup" ? api?.stopUnreachableDelete?.() : workflow.run(() => api!.pause()))}>先暂停</button>)}
       </section>}
       <button type="button" className="xiaoxi-buddy" aria-label="吉祥物：双击回到软件，按住可以拖动，右键可以藏到边上或先隐藏"
         onClick={(event) => { if (event.detail === 0) void api?.showMain(); }}

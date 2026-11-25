@@ -32,7 +32,9 @@ const nextMidnight = (ms) => { const date = new Date(ms); date.setHours(24, 0, 0
 // "unknown" and is never redone automatically. Platform verification is left to the user,
 // and an account the platform says is too busy rests until the next day.
 function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, executable = findBrowser(), driverFor = drivers.acquireDriverFor, capture: makeCapture = captureResponses, makePage = pageFor,
-  onChange = () => {}, now = () => Date.now(), timing = {}, random = Math.random }) {
+  onChange = () => {}, onFailure = () => {}, now = () => Date.now(), timing = {}, random = Math.random }) {
+  // Every action or run that ends failed or unknown goes to the failure report (codes only, no names), like 一键分发.
+  const report = (failure) => { try { onFailure(failure); } catch { /* Diagnostics never change the run. */ } };
   // Timestamps and "today" usage must read the same clock, or daily caps drift.
   const stamp = () => new Date(now()).toISOString();
   const wait = { response: 15_000, verify: 10 * 60_000, poll: 1500, gapMin: 5000, gapMax: 10_000, actionGapMin: 25_000, actionGapMax: 60_000, scroll: 600, wheel: 900, ...timing };
@@ -227,7 +229,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
     state.runs.unshift(run); state.runs = state.runs.slice(0, 200);
     if (task) task.lastRunAt = stamp();
     save();
-    const control = { task, run, driver, accountId, accountLabel, stop: false, rest: "" };
+    const control = { task, run, driver, platform, accountId, accountLabel, stop: false, rest: "" };
     control.shouldStop = () => control.stop || closed || Boolean(control.rest);
     active = control; emit();
     control.done = execute(control, body).catch(() => {}).finally(() => { if (active === control) active = null; emit(); if (!closed && kind === "actions" && run.status === "done") pump({ quiet: true }); });
@@ -245,6 +247,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
     } catch (error) {
       const patch = control.stop || closed ? { status: "stopped", reason: `已停下，${KEEP[run.kind]}。` } : { status: "failed", reason: userMessage(error, `运行中出错，${KEEP[run.kind]}，可以再次开始。`) };
       Object.assign(run, patch, { detail: "", finishedAt: stamp() }); save(); emit();
+      if (patch.status === "failed") report({ platform: control.platform || "", step: run.kind || "run", code: /^[A-Z_]+$/.test(String(error?.code || "")) ? error.code : "ACQUIRE_RUN_ERROR" });
     } finally {
       await control.browser?.close().catch(() => {});
       release();
@@ -296,7 +299,11 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
 
   // ---- Outward actions ----
   const newAction = (fields) => ({ id: crypto.randomUUID(), status: "queued", reason: "", createdAt: stamp(), clickedAt: "", finishedAt: "", already: false, ...fields });
-  const settleAction = (session, action, patch) => { Object.assign(action, patch, { finishedAt: stamp() }); session.update({}); };
+  const settleAction = (session, action, patch, code = "") => {
+    Object.assign(action, patch, { finishedAt: stamp() }); session.update({});
+    if (["failed", "unknown"].includes(patch.status)) report({ platform: action.platform || "", step: action.kind, clicked: Boolean(action.clickedAt),
+      code: code || (patch.status === "unknown" ? "ACQUIRE_ACTION_OUTCOME_UNKNOWN" : "ACQUIRE_ACTION_FAILED") });
+  };
   // The platform refused: nothing happened. Too-frequent rests the account until tomorrow,
   // and a lead action goes back in the queue for then.
   function refused(session, control, action, message) {
@@ -304,7 +311,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
       state.pauses[action.accountId] = nextMidnight(now());
       control.rest = `${control.driver.name}提示操作太频繁，这个账号今天先停下，明天再继续。`;
       settleAction(session, action, { status: "queued", clickedAt: "", reason: "平台提示操作频繁，明天再做。" });
-    } else settleAction(session, action, { status: "failed", reason: message ? `平台提示：${message}` : "平台没有通过这次操作。" });
+    } else settleAction(session, action, { status: "failed", reason: message ? `平台提示：${message}` : "平台没有通过这次操作。" }, "ACQUIRE_PLATFORM_REFUSED");
   }
   async function confirm(session, control, action, response, stillThere) {
     if (response) {
@@ -373,7 +380,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
       if (action.clickedAt) settleAction(session, action, { status: "unknown", reason: "已经点下，但之后出了问题。请到平台上看一下，再标记结果。" });
       else if (control.stop || closed) settleAction(session, action, { status: "queued", reason: "" });
       else if (/^SOCIAL_BROWSER_/.test(String(error?.code))) { settleAction(session, action, { status: "queued", reason: "" }); throw error; }
-      else { settleAction(session, action, { status: "failed", reason: userMessage(error, "这一步没做成。") }); if (/LOGIN|VERIFY/.test(String(error?.code))) throw error; }
+      else { settleAction(session, action, { status: "failed", reason: userMessage(error, "这一步没做成。") }, /^[A-Z_]+$/.test(String(error?.code || "")) ? error.code : "ACQUIRE_ACTION_ERROR"); if (/LOGIN|VERIFY/.test(String(error?.code))) throw error; }
     }
     if (action.status === "done") control.run.sent += 1;
     if (["failed", "unknown"].includes(action.status)) control.run.failed += 1;

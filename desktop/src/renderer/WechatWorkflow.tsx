@@ -1,6 +1,6 @@
 import { AlertTriangle, ArrowLeft, ArrowRight, Ban, Bot, CalendarClock, Check, CheckCircle2, ChevronRight, CircleHelp, Clock3, ImagePlus, List, ListTodo, Pause, Pencil, Play, Plus, Repeat2, Send, SkipForward, ThumbsUp, Trash2, Unlink, X } from "lucide-react";
 import { touchPhase } from "./touch-role";
-import { UnreachableCleanup, type UnreachableList } from "./UnreachableCleanup";
+import { UnreachableCleanup, cleanupCount, type UnreachableList } from "./UnreachableCleanup";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { momentsProgressLabel } from "./MomentsCampaignPanel";
 import { XiaoxiSprite, type SpriteActivity } from "./XiaoxiSprite";
@@ -100,7 +100,7 @@ export type WorkflowState = {
   spacePauseReady?: boolean;
   momentsProgress?: { stage: string; scanned: number; scrolled: number; liked: number; commented: number; skipped?: number; alreadyLiked?: number; skipReason?: string } | null;
   // Automation running outside the app in Chrome (养号, 一键分发), shown by 小玺 as well.
-  external?: Array<{ kind: string; title: string; detail?: string; done?: number; total?: number; attention?: boolean }>;
+  external?: Array<{ kind: string; title: string; step?: string; detail?: string; done?: number; total?: number; attention?: boolean; pausable?: boolean; spacePause?: boolean }>;
 };
 export type WorkflowResult = { ok: boolean; state?: WorkflowState; task?: WorkflowTask; error?: string; retriedCount?: number; taskCount?: number; contactCount?: number; excludedCount?: number; unchangedCount?: number; excludedReasons?: Record<string, number> };
 export type WorkflowContact = { id: string; name: string; remark?: string; nickname?: string; wechatId?: string; allowed: boolean };
@@ -456,7 +456,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   const api = window.xiaoxiWorkflow;
   useEffect(() => {
     if (mode !== "touch" || cleanupOpen) return;
-    void api?.unreachableList?.().then((list) => setCleanupPending(list?.pending || 0)).catch(() => undefined);
+    void api?.unreachableList?.().then((list) => setCleanupPending(cleanupCount(list))).catch(() => undefined);
   }, [api, mode, cleanupOpen, state.tasks.map((task) => `${task.id}:${task.status}:${task.progress?.done || 0}`).join("|")]);
   const availableTypes: WorkflowTaskType[] = mode === "touch" ? ["touch"] : mode === "moments" ? ["publish", "interact"] : ["touch", "publish", "interact"];
   const tasks = state.tasks.filter((task) => availableTypes.includes(task.type));
@@ -698,7 +698,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   // 精准触达 and 朋友圈运营 share the full-width page style; 今日计划 keeps its plain header.
   return <section className={`page workflow-page${mode === "home" ? "" : " is-touch"}`}>
     {cleanupOpen && <UnreachableCleanup onClose={() => setCleanupOpen(false)} />}
-    {mode === "touch" && cleanupPending > 0 && <button type="button" className="touch-sum-button cleanup-entry" onClick={() => setCleanupOpen(true)}><Ban />清理无效好友 · {cleanupPending} 人</button>}
+    {mode === "touch" && cleanupPending > 0 && <button type="button" className="touch-sum-button cleanup-entry" onClick={() => setCleanupOpen(true)}><Ban />一键清理无效好友 · {cleanupPending} 人</button>}
     {mode === "touch" ? <TouchHero tasks={heroTasks} contactCount={contacts.length} planned={activeTasks.length}
       toggle={heroToggle} onAdd={() => void addPlannedTask("touch")} addDisabled={addLocked} />
     : mode === "moments" ? <MomentsHero tasks={heroTasks} planned={activeTasks.length} toggle={heroToggle} onAdd={(type) => void addPlannedTask(type)} addDisabled={addLocked} />
@@ -984,7 +984,9 @@ export function FloatingWorkflowWindow() {
   if (touchStep?.contactIndex) contactOwner.current = `${current!.id}:${touchStep.contactIndex}`;
   const step = touchStep ? touchPhase(touchStep) : "";
   const touchExtra = useTouchFooter(touchStep);
-  const activity: SpriteActivity | null = wechatActive ? {
+  // Deleting friends holds WeChat while it runs: 小玺 shows it first, so 先暂停 stops it and not the listening auto-reply.
+  const cleanupRun = (state.external || []).find((item) => item.kind === "contactCleanup");
+  const activity: SpriteActivity | null = cleanupRun ? { ...cleanupRun } : wechatActive ? {
     kind: "wechat",
     title: sync?.running ? (SYNC_STAGE_LABELS[sync.stage] || "正在读取微信联系人") : touching ? "正在联系客户" : workflowStatusText(state),
     ...(touching ? { step, owner: contactOwner.current || current!.id } : {}),
