@@ -17,6 +17,8 @@ const workflowPolicies = Object.freeze({
   search_result_not_found: { classification: "recoverable", attentionScope: "task" },
   search_result_ambiguous: { classification: "blocker", attentionScope: "task" },
   search_results_not_loaded: { classification: "recoverable", attentionScope: "task" },
+  // The customer pressed 停止 (or double space) while friends were being deleted.
+  stopped_by_user: { classification: "environment", attentionScope: "task" },
   search_box_not_focused: { classification: "recoverable", attentionScope: "task" },
   search_input_failed: { classification: "blocker", attentionScope: "task" },
   confirm_dialog_not_shown: { classification: "recoverable", attentionScope: "task" },

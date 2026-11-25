@@ -130,7 +130,8 @@ function createTouchCleanup(activeTouchDir) {
           // Deleted although the 微信号 on the card could not be confirmed (name unique): reported once per person so the
           // failure report shows how the card was read.
           if (status === "deleted" && result?.idCheck?.id_check_state === "degraded_unread") onFailure({ stage: "profile", reason: "contact_cleanup_id_check_degraded", status, degraded: true, ...evidenceOf(result) });
-          if (status !== "deleted") onFailure({ stage: String(result?.stage || ""), reason: String(result?.reason || ""), status, retrying: false, ...evidenceOf(result) });
+          // A stop the customer asked for is not a failure to report.
+          if (status !== "deleted" && result?.reason !== "stopped_by_user") onFailure({ stage: String(result?.stage || ""), reason: String(result?.reason || ""), status, retrying: false, ...evidenceOf(result) });
           finish(entry, status, result?.stage, result?.reason);
         }
         return { started: true, ...wechatRun.progress };
