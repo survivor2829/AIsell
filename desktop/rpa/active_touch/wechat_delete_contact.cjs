@@ -8,7 +8,7 @@
 // Identity is checked four times — chat title, member cell, profile card name (and 微信号 when known), and the
 // confirm text — and any mismatch stops before 删除. After 删除 the result is read back; if it cannot be, the
 // outcome is unknown and nothing is retried.
-const { openWechatSearchResultAsync, focusWechatWindowAsync, runPowerShellAsync } = require("./wechat_window_driver.cjs");
+const { focusWechatWindowAsync, runPowerShellAsync } = require("./wechat_window_driver.cjs");
 const { customerSearchPlan } = require("./state_machine.cjs");
 
 const DELETE_SCRIPT = String.raw`
@@ -21,6 +21,35 @@ public static class XiaoxiDel {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, UIntPtr e);
   [DllImport("user32.dll")] public static extern void keybd_event(byte k, byte s, uint f, UIntPtr e);
+  // KEYBDINPUT inside INPUT: the union starts at 8 on 64-bit, at 4 on 32-bit (either PowerShell may run this).
+  [StructLayout(LayoutKind.Explicit, Size = 40)] public struct INPUT64 {
+    [FieldOffset(0)] public uint type; [FieldOffset(8)] public ushort vk; [FieldOffset(10)] public ushort scan;
+    [FieldOffset(12)] public uint flags; [FieldOffset(16)] public uint time; [FieldOffset(24)] public IntPtr extra; }
+  [StructLayout(LayoutKind.Explicit, Size = 28)] public struct INPUT32 {
+    [FieldOffset(0)] public uint type; [FieldOffset(4)] public ushort vk; [FieldOffset(6)] public ushort scan;
+    [FieldOffset(8)] public uint flags; [FieldOffset(12)] public uint time; [FieldOffset(16)] public IntPtr extra; }
+  [DllImport("user32.dll", EntryPoint = "SendInput")] static extern uint Send64(uint count, INPUT64[] inputs, int size);
+  [DllImport("user32.dll", EntryPoint = "SendInput")] static extern uint Send32(uint count, INPUT32[] inputs, int size);
+  // Types text as Unicode key presses: no clipboard, no input method in the way. False when Windows refused a key.
+  public static bool TypeText(string text) {
+    foreach (char ch in text) {
+      uint sent;
+      if (IntPtr.Size == 8) {
+        var press = new INPUT64[2];
+        press[0].type = 1; press[0].scan = ch; press[0].flags = 0x0004;
+        press[1].type = 1; press[1].scan = ch; press[1].flags = 0x0004 | 0x0002;
+        sent = Send64(2, press, Marshal.SizeOf(typeof(INPUT64)));
+      } else {
+        var press = new INPUT32[2];
+        press[0].type = 1; press[0].scan = ch; press[0].flags = 0x0004;
+        press[1].type = 1; press[1].scan = ch; press[1].flags = 0x0004 | 0x0002;
+        sent = Send32(2, press, Marshal.SizeOf(typeof(INPUT32)));
+      }
+      if (sent != 2) return false;
+      System.Threading.Thread.Sleep(15);
+    }
+    return true;
+  }
   [StructLayout(LayoutKind.Sequential)] public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
   [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
   public static uint LastInputTick() { var info = new LASTINPUTINFO(); info.cbSize = (uint)Marshal.SizeOf(info);
@@ -33,6 +62,7 @@ $wechatId = [string]$env:XIAOXI_DELETE_WECHAT_ID
 $confirm = $env:XIAOXI_DELETE_CONFIRM -eq "1"
 $phase = [string]$env:XIAOXI_DELETE_PHASE
 $expectedPid = [string]$env:XIAOXI_EXPECTED_PID
+$uniqueName = $env:XIAOXI_DELETE_UNIQUE_NAME -eq "1"
 $ui = [System.Windows.Automation.AutomationElement]
 $all = [System.Windows.Automation.Condition]::TrueCondition
 $scope = [System.Windows.Automation.TreeScope]
@@ -146,13 +176,80 @@ function Close-Profile {
 }
 function Stop-Before($stage, $reason, $extra = @{}) {
   # Which WeChat windows were open and what the step saw: the failure report then shows where a build differs.
-  $extra["windows"] = @(Get-WxWindows | ForEach-Object { $_.Current.ClassName + "/" + $_.Current.ControlType.ProgrammaticName.Replace("ControlType.", "") })
+  # (Plain identifiers under *_kind keys: the diagnostic log keeps those readable and hashes anything else.)
+  $extra["window_kind"] = @(Get-WxWindows | ForEach-Object { $_.Current.ClassName })
   Close-Profile; Out-Result $false $stage $reason $extra
 }
 
 $question = ""
 if (-not $name) { Out-Result $false "input" "delete_name_missing" }
 $question = '删除"' + $name + '"？'
+
+# First call: open this person's chat from WeChat's own search (user 2026-11-25: type the 微信号 and click the result,
+# the way that works; no screenshot reading, no Enter). The result rows are read by UI Automation (class
+# SearchContentCellView, named by the display name): the topmost row named exactly this person. Section headings
+# (联系人/群聊) are not relied on: UI Automation does not always list them. Rows of the same name may be this person's
+# chat history, or a group chat: a group is refused by the member-cell check, another friend by the card's 微信号.
+# Keys go to the search box only: it is cleared and typed into only while it has the keyboard focus, so a draft in
+# the chat input can never be touched.
+function Clear-Search($searchBox) {
+  if (-not $searchBox -or -not $searchBox.Current.HasKeyboardFocus) { return }
+  [XiaoxiDel]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero); [XiaoxiDel]::keybd_event(0x41, 0, 0, [UIntPtr]::Zero)
+  [XiaoxiDel]::keybd_event(0x41, 0, 2, [UIntPtr]::Zero); [XiaoxiDel]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)
+  [XiaoxiDel]::keybd_event(0x08, 0, 0, [UIntPtr]::Zero); [XiaoxiDel]::keybd_event(0x08, 0, 2, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 120
+  $script:ownInputTick = [XiaoxiDel]::LastInputTick()
+}
+function Get-ContactResults($mainWindow) {
+  if (-not $mainWindow) { return @() }
+  $condition = New-Object System.Windows.Automation.PropertyCondition($ui::ClassNameProperty, "mmui::SearchContentCellView")
+  @($mainWindow.FindAll($scope::Descendants, $condition))
+}
+if ($phase -eq "open") {
+  $query = [string]$env:XIAOXI_DELETE_QUERY
+  Close-Profile
+  $main = Get-WxWindow "mmui::MainWindow"
+  if (-not $main) { Out-Result $false "open" "wechat_main_window_not_found" }
+  # Only the box WeChat names 搜索; never another edit box (the chat input holds the customer's drafts).
+  $box = Find-Elements $main "Edit" "搜索" "" | Select-Object -First 1
+  if (-not $box) { Out-Result $false "open" "search_box_not_found" }
+  # The first click after WeChat comes to the front may only activate the window: click the box again if needed.
+  $focused = $false
+  foreach ($try in 1..3) {
+    Press-Element $box "open"
+    if (Wait-Element { if ($box.Current.HasKeyboardFocus) { $true } } 1500) { $focused = $true; break }
+  }
+  if (-not $focused) { Out-Result $false "open" "search_box_not_focused" }
+  Clear-Search $box
+  if (-not [XiaoxiDel]::TypeText($query)) { Clear-Search $box; Out-Result $false "open" "search_input_failed" }
+  $script:ownInputTick = [XiaoxiDel]::LastInputTick()
+  # What landed in the box, when WeChat exposes it: anything else is not searched on.
+  $typed = $null
+  try { $typed = [string]$box.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value } catch { }
+  if ($null -ne $typed -and $typed -and $typed -ne $query) { Clear-Search $box; Out-Result $false "open" "search_input_failed" }
+  $state = @{ rows = 0 }
+  $found = Wait-Element {
+    $rows = @(Get-ContactResults (Get-WxWindow "mmui::MainWindow"))
+    $state.rows = $rows.Count
+    $same = @($rows | Where-Object { $_.Current.Name -eq $name })
+    if ($same.Count) { ,$same }
+  } 6000
+  # No rows at all: WeChat had not answered yet (worth another try). Rows without this name: not found.
+  if (-not $found) { Clear-Search $box; Out-Result $false "open" $(if ($state.rows) { "search_result_not_found" } else { "search_results_not_loaded" }) @{ result_count = $state.rows } }
+  $target = @($found) | Sort-Object { $_.Current.BoundingRectangle.Y } | Select-Object -First 1
+  Press-Element $target "open"
+  # The chat is open when its title (left of 聊天信息) is this person.
+  $opened = Wait-Element {
+    $m = Get-WxWindow "mmui::MainWindow"
+    $infoButton = Find-Elements $m "Button" "聊天信息" "" | Select-Object -First 1
+    if ($infoButton) {
+      $ib = $infoButton.Current.BoundingRectangle
+      Find-Elements $m "Text" $name "" | Where-Object { $b = $_.Current.BoundingRectangle; $b.X -lt $ib.X -and [Math]::Abs(($b.Y + $b.Height / 2) - ($ib.Y + $ib.Height / 2)) -le $ib.Height } | Select-Object -First 1
+    }
+  } 4000
+  if (-not $opened) { Out-Result $false "open" "chat_not_opened" }
+  Out-Result $true "open" "" @{ opened = $true }
+}
 
 # Second call: the confirm dialog the first call left open must still name exactly this person; only then 删除
 # is pressed. Anything after the press that cannot be read back is unknown (the caller treats a timeout the same).
@@ -197,16 +294,43 @@ Press-Element $members[0] "profile"
 # 3. The profile card shows the same name, and the same 微信号 when the contact list has one.
 $pop = Wait-Element { $p = Get-WxWindow "mmui::ProfileUniquePop"; if ($p -and (Find-Elements $p "Text" $name "").Count) { $p } }
 if (-not $pop) { Stop-Before "profile" "profile_card_not_found" }
-$idLabel = Find-Elements $pop "Text" "微信号：" "" | Select-Object -First 1
-$shownId = ""
-if ($idLabel) {
-  $labelBox = $idLabel.Current.BoundingRectangle
-  $value = Find-Elements $pop "Text" $null "" | Where-Object {
-    $b = $_.Current.BoundingRectangle; $b.X -gt $labelBox.X -and [Math]::Abs($b.Y - $labelBox.Y) -le $labelBox.Height
-  } | Sort-Object { $_.Current.BoundingRectangle.X } | Select-Object -First 1
-  if ($value) { $shownId = [string]$value.Current.Name }
+# The 微信号 is read the way WeChat may draw it: a "微信号：" label with the value beside it (Text, or a selectable
+# Edit whose text is its Value), or one element "微信号：xxx". Same row = vertical centres within the label height.
+function Get-ElementText($element) {
+  $text = [string]$element.Current.Name
+  if (-not $text) { try { $text = [string]$element.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value } catch { } }
+  return $text
 }
-if ($wechatId -and $shownId -ne $wechatId) { Stop-Before "profile" "profile_wechat_id_mismatch" }
+$idCheck = @{ id_label_kind = "none"; id_value_kind = "none"; shown_length = 0; stored_length = $wechatId.Length }
+$shownId = ""
+$cardNodes = @($pop.FindAll($scope::Descendants, $all))
+$idLabel = $cardNodes | Where-Object { $_.Current.Name -match '^\s*微信号\s*[:：]?' } | Select-Object -First 1
+if ($idLabel) {
+  $inline = ([string]$idLabel.Current.Name -replace '^\s*微信号\s*[:：]?\s*', '')
+  if ($inline) { $shownId = $inline; $idCheck.id_label_kind = "inline"; $idCheck.id_value_kind = "inline" }
+  else {
+    $idCheck.id_label_kind = "separate"
+    $labelBox = $idLabel.Current.BoundingRectangle
+    $middle = $labelBox.Y + $labelBox.Height / 2
+    $value = $cardNodes | Where-Object {
+      $b = $_.Current.BoundingRectangle
+      $b.X -ge ($labelBox.X + $labelBox.Width - 2) -and $b.Width -gt 0 -and [Math]::Abs(($b.Y + $b.Height / 2) - $middle) -le [Math]::Max($labelBox.Height, 12) -and (Get-ElementText $_)
+    } | Sort-Object { $_.Current.BoundingRectangle.X } | Select-Object -First 1
+    if ($value) { $shownId = Get-ElementText $value; $idCheck.id_value_kind = $value.Current.ControlType.ProgrammaticName.Replace("ControlType.", "").ToLower() }
+  }
+}
+$normal = { param($text) ([string]$text -replace '[\s\u200b-\u200f\ufeff]', '').ToLowerInvariant() }
+$idCheck.shown_length = $shownId.Length
+$idCheck.same_ignoring_case = ((& $normal $shownId) -eq (& $normal $wechatId))
+# Evidence only (a 微信号 differing in _ or - is a different 微信号): shows in the report whether a read lost symbols.
+$idCheck.same_ignoring_symbols = (((& $normal $shownId) -replace '[_\-]', '') -eq ((& $normal $wechatId) -replace '[_\-]', ''))
+$idCheck.id_check_state = if (-not $wechatId) { "no_stored_id" } elseif ($idCheck.same_ignoring_case) { "matched" }
+  elseif ($shownId) { "mismatch" } elseif ($uniqueName) { "degraded_unread" } else { "unread" }
+# Name already matched three times (title, member cell, card). A 微信号 read on the card that differs is another person:
+# always stop (a delete cannot be undone). One that cannot be read at all is skipped only when no other synced friend
+# shows this name (degraded, reported with how the card was read); otherwise stop.
+if ($idCheck.id_check_state -eq "mismatch") { Stop-Before "profile" "profile_wechat_id_mismatch" @{ id_check = $idCheck } }
+if ($idCheck.id_check_state -eq "unread") { Stop-Before "profile" "profile_wechat_id_unreadable" @{ id_check = $idCheck } }
 
 # 4. 更多 (the card's own) → 删除联系人.
 $more = Find-Elements $pop "Button" "更多" "" | Select-Object -First 1
@@ -229,11 +353,15 @@ if (-not $menuItem) {
 Press-Element $menuItem "confirm"
 
 # 5. The confirm text names exactly this person; the dialog is left open for the commit call.
-$dialog = Wait-Element { Find-Anywhere "Text" $question } 4000
-if (-not $dialog) { Stop-Before "confirm" "confirm_text_mismatch" }
+$dialog = Wait-Element { Find-Anywhere "Text" $question } 5000
+if (-not $dialog) {
+  # A confirm naming someone else is a wrong person; no confirm at all is WeChat being slow (worth another try).
+  $other = @(Get-WxWindows | ForEach-Object { Find-Elements $_ "Text" $null "" } | Where-Object { ([string]$_.Current.Name).StartsWith('删除"') })
+  Stop-Before "confirm" $(if ($other.Count) { "confirm_text_mismatch" } else { "confirm_dialog_not_shown" })
+}
 if (-not (Find-ConfirmButton "删除")) { Stop-Before "confirm" "confirm_button_not_found" }
-if (-not $confirm) { Stop-Before "confirm" "dry_run_stopped_before_delete" @{ dryRun = $true; reached = "confirm" } }
-Out-Result $true "confirm" "" @{ ready = $true }
+if (-not $confirm) { Stop-Before "confirm" "dry_run_stopped_before_delete" @{ dryRun = $true; reached = "confirm"; id_check = $idCheck } }
+Out-Result $true "confirm" "" @{ ready = $true; id_check = $idCheck }
 `;
 
 // contact: { name, remark, nickname, wechatId } from the synced contact list. confirm=false stops at the confirm
@@ -249,7 +377,7 @@ async function deleteWechatContact(contact, options = {}) {
   }
 }
 
-async function deleteOnce(contact, { confirm = false, uniqueName = false, runner = runPowerShellAsync, openConversation = openWechatSearchResultAsync, focus = focusWechatWindowAsync } = {}, markCommitting) {
+async function deleteOnce(contact, { confirm = false, uniqueName = false, runner = runPowerShellAsync, focus = focusWechatWindowAsync, stopped = () => false } = {}, markCommitting) {
   const name = String(contact?.remark || contact?.name || contact?.nickname || "").trim();
   if (!name) return { ok: false, stage: "input", reason: "delete_name_missing" };
   const plan = customerSearchPlan(contact);
@@ -263,24 +391,34 @@ async function deleteOnce(contact, { confirm = false, uniqueName = false, runner
   if (!/^weixin$/iu.test(String(window.processName || ""))) {
     return { ok: false, stage: "window", reason: "wechat_version_unsupported" };
   }
-  const context = { pid: window.pid, hWnd: window.hWnd };
-  let opened = await Promise.resolve(openConversation(plan.query, { ...context, searchQueryType: plan.queryType, searchIdentity: { query: plan.query, expectedName: name } }));
-  if (!opened?.ok && plan.fallbackQuery && plan.fallbackQuery !== plan.query) {
-    opened = await Promise.resolve(openConversation(plan.fallbackQuery, { ...context, searchQueryType: "name_fallback", searchIdentity: { query: plan.fallbackQuery, expectedName: name } }));
+  // Open the chat: by 微信号 first, then by name, each time clicking the search result named exactly this person.
+  const queries = [...new Set([wechatId, name].filter(Boolean))];
+  let opened = null;
+  for (const query of queries) {
+    if (stopped()) return { ok: false, stage: "open", reason: "stopped_by_user" };
+    opened = await Promise.resolve(runner(DELETE_SCRIPT, { XIAOXI_DELETE_PHASE: "open", XIAOXI_DELETE_QUERY: query, XIAOXI_DELETE_NAME: name, XIAOXI_EXPECTED_PID: String(window.pid || "") },
+      { ensure: false, timeout: 25000 }));
+    if (opened?.ok === true && opened.opened === true) break;
+    // Only "WeChat shows no such row" moves on to the name; anything else (someone at the mouse, no search box) stops.
+    if (!["search_result_not_found", "search_results_not_loaded"].includes(String(opened?.reason || ""))) break;
   }
-  if (!opened?.ok) return { ok: false, stage: "open", reason: String(opened?.reason || "conversation_open_failed") };
-  const environment = { XIAOXI_DELETE_NAME: name, XIAOXI_DELETE_WECHAT_ID: wechatId, XIAOXI_EXPECTED_PID: String(window.pid || "") };
+  if (!(opened?.ok === true && opened.opened === true)) return { ok: false, stage: "open", reason: String(opened?.reason || "conversation_open_failed"),
+    ...(Number.isFinite(opened?.result_count) ? { resultCount: opened.result_count } : {}) };
+  const environment = { XIAOXI_DELETE_NAME: name, XIAOXI_DELETE_WECHAT_ID: wechatId, XIAOXI_EXPECTED_PID: String(window.pid || ""),
+    XIAOXI_DELETE_UNIQUE_NAME: uniqueName === true ? "1" : "0" };
   const shape = (result, fallback) => ({ ok: result?.ok === true, deleted: result?.deleted === true, outcomeUnknown: result?.outcomeUnknown === true,
     dryRun: result?.dryRun === true, stage: String(result?.stage || "script"), reason: String(result?.reason || (result?.ok ? "" : fallback)),
     ...(Array.isArray(result?.windows) ? { windows: result.windows.map(String).slice(0, 12) } : {}),
-    ...(Array.isArray(result?.menuItems) ? { menuItems: result.menuItems.map(String).slice(0, 8) } : {}) });
+    ...(Array.isArray(result?.menuItems) ? { menuItems: result.menuItems.map(String).slice(0, 8) } : {}),
+    ...(Array.isArray(result?.window_kind) ? { window_kind: result.window_kind.map(String).slice(0, 12) } : {}),
+    ...(result?.id_check && typeof result.id_check === "object" ? { idCheck: result.id_check } : {}) });
   // 1) Up to the confirm dialog, every identity checked; nothing is deleted.
   const prepared = await Promise.resolve(runner(DELETE_SCRIPT, { ...environment, XIAOXI_DELETE_PHASE: "prepare", XIAOXI_DELETE_CONFIRM: confirm ? "1" : "0" }, { ensure: false, timeout: 40000 }));
   if (!prepared?.ok || prepared.ready !== true) return shape(prepared, "delete_script_failed");
   // 2) Press 删除 and read it back. Whatever this call returns short of a clear answer is unknown, never retried.
   markCommitting();
   const committed = await Promise.resolve(runner(DELETE_SCRIPT, { ...environment, XIAOXI_DELETE_PHASE: "commit", XIAOXI_DELETE_CONFIRM: "1" }, { ensure: false, timeout: 20000 }));
-  if (committed?.deleted === true) return shape(committed, "");
+  if (committed?.deleted === true) return { ...shape(committed, ""), ...(prepared.id_check ? { idCheck: prepared.id_check } : {}) };
   if (committed?.notClicked === true) return shape(committed, "delete_not_pressed");
   return { ...shape(committed, "delete_outcome_unknown"), ok: false, deleted: false, outcomeUnknown: true, stage: String(committed?.stage || "commit") };
 }

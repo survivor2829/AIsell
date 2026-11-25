@@ -13,6 +13,22 @@ const workflowPolicies = Object.freeze({
   contact_name_not_unique: { classification: "blocker", attentionScope: "task" },
   // The delete steps are measured on WeChat 4 (Weixin.exe); another version is left alone.
   wechat_version_unsupported: { classification: "environment", attentionScope: "task" },
+  // 1.3.71: the chat is opened from WeChat's search by UI Automation (row named exactly this person, clicked).
+  search_result_not_found: { classification: "recoverable", attentionScope: "task" },
+  search_result_ambiguous: { classification: "blocker", attentionScope: "task" },
+  search_results_not_loaded: { classification: "recoverable", attentionScope: "task" },
+  // The customer pressed 停止 (or double space) while friends were being deleted.
+  stopped_by_user: { classification: "environment", attentionScope: "task" },
+  search_box_not_focused: { classification: "recoverable", attentionScope: "task" },
+  search_input_failed: { classification: "blocker", attentionScope: "task" },
+  confirm_dialog_not_shown: { classification: "recoverable", attentionScope: "task" },
+  // The card's 微信号 could not be read and another synced friend shows the same name: never guessed.
+  profile_wechat_id_unreadable: { classification: "blocker", attentionScope: "task" },
+  search_box_not_found: { classification: "recoverable", attentionScope: "task" },
+  chat_not_opened: { classification: "recoverable", attentionScope: "task" },
+  profile_card_closed: { classification: "recoverable", attentionScope: "task" },
+  // Deleted although the card's 微信号 could not be confirmed (the name is unique): reported with how the card read.
+  contact_cleanup_id_check_degraded: { classification: "recoverable", attentionScope: "task" },
   atomic_draft_changed: { classification: "recoverable", attentionScope: "task" },
   // A chat title OCR could not read: only this scan is skipped; the next poll looks again.
   conversation_title_unresolved: { classification: "recoverable", attentionScope: "task" },

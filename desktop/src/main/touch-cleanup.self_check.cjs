@@ -91,11 +91,11 @@ async function checkWechatDelete(base) {
       if (contact.name === "测试客户五") throw new Error("crashed");
       return outcomes[contact.name];
     } });
-  assert.deepEqual(seen, [["测试客户一", true, true], ["测试客户二", true, true], ["测试客户三", true, true], ["测试客户三", true, true], ["测试客户三", true, true], ["测试客户五", true, false]],
-    "stopped before 删除 is searched again up to 3 times; unknown is never retried; a friend sharing a synced name is flagged not unique");
-  assert.deepEqual(waits, [2500, 2500]);
-  assert.deepEqual(failures.map((failure) => [failure.reason, failure.retrying]), [["powershell_timeout", false], ["confirm_text_mismatch", true],
-    ["confirm_text_mismatch", true], ["confirm_text_mismatch", false], ["crashed", false]], "every miss is reported (no names) for the failure report");
+  assert.deepEqual(seen, [["测试客户一", true, true], ["测试客户二", true, true], ["测试客户三", true, true], ["测试客户五", true, false]],
+    "a wrong person on the confirm is not retried; unknown is never retried; a friend sharing a synced name is flagged not unique");
+  assert.deepEqual(waits, []);
+  assert.deepEqual(failures.map((failure) => [failure.reason, failure.retrying]), [["powershell_timeout", false], ["confirm_text_mismatch", false], ["crashed", false]],
+    "every miss is reported (no names) for the failure report");
   assert.ok(failures.every((failure) => !JSON.stringify(failure).includes("测试客户")));
   assert.deepEqual([done.deleted, done.unknown, done.failed], [1, 2, 1]);
   const status = Object.fromEntries(cleanup.list().entries.map((entry) => [entry.name, entry.wechatDelete]));
@@ -111,7 +111,16 @@ async function checkWechatDelete(base) {
   let tries = 0;
   const recovered = await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: live, coordinator, wait: async () => {},
     deleteContact: async () => flaky[tries++] });
-  assert.deepEqual([tries, recovered.deleted], [2, 1]);
+  assert.deepEqual([tries, recovered.deleted], [2, 1], "a step WeChat was not ready for gets one more try");
+  // Deleted although the card's 微信号 could not be confirmed (name unique): reported as degraded with how it was read.
+  const degradedLog = [];
+  await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: live, coordinator, wait: async () => {}, onFailure: (item) => degradedLog.push(item),
+    deleteContact: async () => ({ ok: true, deleted: true, idCheck: { id_check_state: "degraded_unread", id_label_kind: "inline", shown_length: 5, stored_length: 5 } }) });
+  assert.deepEqual(degradedLog.map((item) => [item.reason, item.degraded, item.id_check.id_label_kind]), [["contact_cleanup_id_check_degraded", true, "inline"]]);
+  tries = 0;
+  await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: live, coordinator, wait: async () => {},
+    deleteContact: async () => { tries += 1; return { ok: false, stage: "open", reason: "search_result_not_found" }; } });
+  assert.equal(tries, 1, "a search WeChat answers with no such person is not repeated");
   tries = 0;
   await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: live, coordinator, wait: async () => {},
     deleteContact: async () => { tries += 1; return { ok: false, stage: "window", reason: "wechat_version_unsupported" }; } });
@@ -150,29 +159,64 @@ async function checkDeleteModule() {
   const { deleteWechatContact, DELETE_SCRIPT } = require("../../rpa/active_touch/wechat_delete_contact.cjs");
   const contact = { name: "测试客户", remark: "测试客户", wechatId: "test_alias" };
   const focus = async () => ({ ok: true, pid: 1, hWnd: 2, processName: "Weixin", windowClass: "Qt51514QWindowIcon" });
-  const openConversation = async () => ({ ok: true });
+  const openConversation = undefined; // (the chat is opened by the script's own search step now)
   const calls = [];
-  const runner = (answers) => async (_script, env) => { calls.push({ phase: env.XIAOXI_DELETE_PHASE, id: env.XIAOXI_DELETE_WECHAT_ID }); return answers[env.XIAOXI_DELETE_PHASE]; };
+  const runner = (answers) => async (_script, env) => {
+    calls.push({ phase: env.XIAOXI_DELETE_PHASE, id: env.XIAOXI_DELETE_WECHAT_ID, query: env.XIAOXI_DELETE_QUERY });
+    return env.XIAOXI_DELETE_PHASE === "open" && !("open" in answers) ? { ok: true, opened: true } : answers[env.XIAOXI_DELETE_PHASE];
+  };
   const ready = { ok: true, stage: "confirm", ready: true };
   assert.equal((await deleteWechatContact(contact, { confirm: true, focus, openConversation, runner: runner({ prepare: ready, commit: { ok: true, deleted: true, stage: "done" } }) })).deleted, true);
-  assert.deepEqual(calls.map((call) => call.phase), ["prepare", "commit"], "删除 is pressed only in a second call, after the confirm was reached");
+  assert.deepEqual(calls.map((call) => call.phase), ["open", "prepare", "commit"], "删除 is pressed only in a last call, after the confirm was reached");
+  assert.equal(calls[0].query, "test_alias", "the chat is opened by searching the 微信号 first");
+  // 微信号 gives no single result: the name is searched the same way (click the exact row, never Enter); neither: stop.
+  calls.length = 0;
+  const byName = await deleteWechatContact(contact, { confirm: true, focus, runner: async (script, env) => { calls.push(env.XIAOXI_DELETE_QUERY || env.XIAOXI_DELETE_PHASE);
+    if (env.XIAOXI_DELETE_PHASE === "open") return env.XIAOXI_DELETE_QUERY === "测试客户" ? { ok: true, opened: true } : { ok: false, stage: "open", reason: "search_result_not_found", result_count: 0 };
+    return env.XIAOXI_DELETE_PHASE === "prepare" ? ready : { ok: true, deleted: true }; } });
+  assert.deepEqual([byName.deleted, calls], [true, ["test_alias", "测试客户", "prepare", "commit"]]);
+  // Someone at the mouse during the 微信号 search: the name search does not take the mouse back.
+  calls.length = 0;
+  const touched = await deleteWechatContact(contact, { confirm: true, focus, runner: async (_s, env) => { calls.push(env.XIAOXI_DELETE_QUERY || env.XIAOXI_DELETE_PHASE);
+    return { ok: false, stage: "open", reason: "wechat_external_input_detected" }; } });
+  assert.deepEqual([touched.reason, calls], ["wechat_external_input_detected", ["test_alias"]]);
+  // 停止 pressed during the 微信号 search: no name search.
+  let stopNow = false;
+  calls.length = 0;
+  const halted = await deleteWechatContact(contact, { confirm: true, focus, stopped: () => stopNow, runner: async (_s, env) => { calls.push(env.XIAOXI_DELETE_QUERY); stopNow = true;
+    return { ok: false, stage: "open", reason: "search_result_not_found" }; } });
+  assert.deepEqual([halted.reason, calls], ["stopped_by_user", ["test_alias"]]);
+  const nowhere = await deleteWechatContact(contact, { confirm: true, focus, runner: runner({ open: { ok: false, stage: "open", reason: "search_result_not_found", result_count: 0 } }) });
+  assert.deepEqual([nowhere.stage, nowhere.reason, nowhere.resultCount], ["open", "search_result_not_found", 0]);
+  calls.length = 0;
   for (const commit of [{ ok: false, reason: "powershell_timeout" }, { ok: false, reason: "powershell_output_invalid" }, undefined]) {
     const result = await deleteWechatContact(contact, { confirm: true, focus, openConversation, runner: runner({ prepare: ready, commit }) });
     assert.equal(result.outcomeUnknown, true, `after the press, ${commit?.reason || "no answer"} is unknown`);
   }
-  const throwing = await deleteWechatContact(contact, { confirm: true, focus, openConversation, runner: async (_s, env) => { if (env.XIAOXI_DELETE_PHASE === "commit") throw new Error("crash"); return ready; } });
+  const throwing = await deleteWechatContact(contact, { confirm: true, focus, openConversation, runner: async (_s, env) => { if (env.XIAOXI_DELETE_PHASE === "commit") throw new Error("crash"); return env.XIAOXI_DELETE_PHASE === "open" ? { ok: true, opened: true } : ready; } });
   assert.equal(throwing.outcomeUnknown, true);
   const notPressed = await deleteWechatContact(contact, { confirm: true, focus, openConversation, runner: runner({ prepare: ready, commit: { ok: false, stage: "commit", reason: "confirm_dialog_gone", notClicked: true } }) });
   assert.deepEqual([notPressed.outcomeUnknown, notPressed.reason], [false, "confirm_dialog_gone"]);
   calls.length = 0;
   const look = await deleteWechatContact(contact, { confirm: false, focus, openConversation, runner: runner({ prepare: { ok: false, stage: "confirm", reason: "dry_run_stopped_before_delete", dryRun: true } }) });
-  assert.deepEqual([look.dryRun, calls.map((call) => call.phase)], [true, ["prepare"]], "a look-only run never reaches the commit call");
+  assert.deepEqual([look.dryRun, calls.map((call) => call.phase)], [true, ["open", "prepare"]], "a look-only run never reaches the commit call");
   // No usable 微信号: refused unless the name is known to be unique.
   assert.equal((await deleteWechatContact({ name: "测试客户" }, { confirm: true, focus, openConversation, runner: runner({}) })).reason, "contact_name_not_unique");
   // Not WeChat 4: nothing is opened.
-  let opened = 0;
-  const old = await deleteWechatContact(contact, { confirm: true, focus: async () => ({ ok: true, processName: "WeChat", windowClass: "WeChatMainWndForPC" }), openConversation: async () => { opened += 1; return { ok: true }; }, runner: runner({}) });
-  assert.deepEqual([old.reason, opened], ["wechat_version_unsupported", 0]);
+  calls.length = 0;
+  const old = await deleteWechatContact(contact, { confirm: true, focus: async () => ({ ok: true, processName: "WeChat", windowClass: "WeChatMainWndForPC" }), runner: runner({}) });
+  assert.deepEqual([old.reason, calls.length], ["wechat_version_unsupported", 0]);
+  // The search result is read by UI Automation and clicked; nothing is pressed with Enter.
+  assert.ok(DELETE_SCRIPT.includes("mmui::SearchContentCellView"));
+  assert.doesNotMatch(DELETE_SCRIPT, /keybd_event\(0x0D/u, "no Enter key");
+  // Keys only into the box named 搜索 while it has the focus (never the chat input with a draft).
+  assert.ok(!DELETE_SCRIPT.includes('"Edit" $null "mmui::XValidatorTextEdit"'), "no fallback to another edit box");
+  assert.ok(DELETE_SCRIPT.includes("if (-not $searchBox -or -not $searchBox.Current.HasKeyboardFocus) { return }"));
+  // The 微信号 patterns keep their backslashes (String.raw): a backslash-s is whitespace, not the letter s.
+  const slash = String.fromCharCode(92);
+  assert.ok(DELETE_SCRIPT.includes("'^" + slash + "s*微信号" + slash + "s*[:：]?'") && DELETE_SCRIPT.includes("[" + slash + "s" + slash + "u200b-" + slash + "u200f" + slash + "ufeff]"));
+  // A 微信号 read on the card that differs always stops; only an unreadable one may go on (unique name).
+  assert.ok(DELETE_SCRIPT.includes('elseif ($shownId) { "mismatch" } elseif ($uniqueName) { "degraded_unread" } else { "unread" }'));
 
   // Every element is found by name and pressed at its live centre: no coordinate is written down; the identity
   // checks and the user-input stop are in place.

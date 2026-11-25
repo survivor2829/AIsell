@@ -29,7 +29,16 @@ const STOPPED: Record<string, string> = {
   wechat_delete_running: "上一轮删除还没做完",
   wechat_delete_unavailable: "这个版本不能自动删除微信好友",
   chat_title_mismatch: "打开的聊天对不上这个人，已停下",
-  profile_wechat_id_mismatch: "资料卡上的微信号对不上，已停下",
+  profile_wechat_id_mismatch: "资料卡上的微信号跟名单里的不一样，可能不是同一个人，为免删错没有删",
+  profile_wechat_id_unreadable: "有同名好友，资料卡上的微信号又读不出来，为免删错没有删",
+  search_results_not_loaded: "微信搜索结果一直没出来，请稍后再删一次",
+  search_box_not_focused: "没能点进微信的搜索框，请稍后再删一次",
+  search_input_failed: "没能在微信搜索框里输入，已停下",
+  confirm_dialog_not_shown: "删除确认框没出来，请稍后再删一次",
+  search_result_not_found: "在微信里按微信号和名字都没搜到这个人",
+  search_result_ambiguous: "微信里搜到好几个同名的人，为免删错没有删",
+  chat_not_opened: "点开搜索结果后没进到这个人的聊天，已停下",
+  search_box_not_found: "没找到微信的搜索框，已停下",
   confirm_text_mismatch: "确认框上的名字对不上，已停下"
 };
 const wechatText = (result: WechatDelete) => result.status === "deleted" ? "微信里已删"
