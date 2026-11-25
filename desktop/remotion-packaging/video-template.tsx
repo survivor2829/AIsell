@@ -191,17 +191,29 @@ function cameraState(manifest: MotionManifest, nowMs: number) {
   };
 }
 
+// Mild grades so videos of one batch do not share a picture (see contract.cjs "look").
+const GRADES: Record<string, string> = {
+  none: "none",
+  warm: "sepia(0.12) saturate(1.08) hue-rotate(-6deg)",
+  cool: "saturate(0.95) hue-rotate(8deg) brightness(1.02)",
+  crisp: "contrast(1.08) saturate(1.1)",
+  soft: "contrast(0.95) brightness(1.04) saturate(0.96)"
+};
+
 const VideoBase: React.FC<{ manifest: MotionManifest; pack: StylePack; frame: number; zoomProgress: number; nowMs: number }> = ({ manifest, pack, frame, zoomProgress, nowMs }) => {
   const reference = manifest.captionPresentation === "reference_narration";
   const camera = reference ? cameraState(manifest, nowMs) : null;
   const base = camera ? camera.scale : reference ? 1 : pack.video.scale + Math.sin(frame / pack.video.pulseDivisor) * pack.video.pulse + zoomProgress * 0.035;
   // v5 templates lean the camera in when a keyword is said.
-  const scale = base * (1 + keywordPush(manifest.captionStyleId || '', manifest.captions, manifest.emphasisPhrases, manifest.narrationPlan, nowMs));
+  // A batch's own framing applies to mixes only; a digital human's camera plan frames itself.
+  const look = reference && !camera ? manifest.look : undefined;
+  const scale = base * (look?.zoom || 1) * (1 + keywordPush(manifest.captionStyleId || '', manifest.captions, manifest.emphasisPhrases, manifest.narrationPlan, nowMs));
   return (
     <AbsoluteFill style={{ backgroundColor: pack.palette.ink, overflow: "hidden" }}>
       <OffthreadVideo
         src={staticFile(manifest.sourceFile)}
-        style={{ width: "100%", height: "100%", objectFit: "cover", transform: `scale(${scale})`, transformOrigin: camera?.origin || "50% 50%" }}
+        style={{ width: "100%", height: "100%", objectFit: "cover", transform: `scale(${scale})`,
+          transformOrigin: camera?.origin || (look ? `${look.originX * 100}% ${look.originY * 100}%` : "50% 50%"), filter: GRADES[look?.grade || "none"] }}
       />
       {!reference && <AbsoluteFill style={{ background: pack.video.overlay }} />}
       {camera && camera.flash > 0 ? <AbsoluteFill style={{ background: "#fff", opacity: camera.flash }} /> : null}

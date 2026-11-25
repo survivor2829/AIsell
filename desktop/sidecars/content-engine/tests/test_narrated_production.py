@@ -1886,6 +1886,26 @@ class NarratedProductionTests(unittest.TestCase):
             self.assertLessEqual(len(item['opening']), 60)
             self.assertNotIn('再加一句收尾', item['opening'], 'an opener, not the full text')
         self.assertNotIn(texts[-1], json.dumps(requests[0], ensure_ascii=False))
+        # Each variation opens from its own entry point (seven earlier ones: the eighth takes the third entry).
+        self.assertEqual(narrated_production.ENTRY_POINTS[7 % len(narrated_production.ENTRY_POINTS)], requests[0]['entry_point'])
+
+    def test_variation_must_differ_more_than_rewording(self):
+        """2026-11-24: copies of one batch were about 80% alike, which the old 90% bar let through."""
+        state = self.domain._load(self.batch['batch_id'])
+        self.draft_options(state)
+        source = '水痕特别多，订单就没成。现场演示抬起吸水阀，倒退再吸回来，就把水全部刮干了。验收这关就好过了，你可以来现场试一试。'
+        selected = {'script_id': self.options[0]['candidate_id'], 'title': '水痕', 'narration': source, 'direction': {}}
+        close = '订单没成，就因为水痕特别多。现场演示抬起吸水阀，倒退再吸回来，就把水全部刮干了。验收这关就好过了，你可以来现场试一试。'  # 88% alike
+        seen = []
+        def cloud(payload, instruction, **kwargs):
+            seen.append(payload['entry_point'])
+            issue = kwargs['validation_error']({'title': '水痕', 'narration': close})
+            self.assertIsNotNone(issue, 'a close rewording is sent back')
+            self.assertIn('entry_point', issue)
+            return {'title': '验收', 'narration': close}
+        with patch.object(self.domain, '_cloud', side_effect=cloud), self.assertRaises(ContentEngineError):
+            narrated_production.rewrite_variation(self.domain, state, selected)
+        self.assertEqual([narrated_production.ENTRY_POINTS[0]], seen, 'the first variation takes the first entry point')
 
     def test_continue_rearranges_an_old_variation_by_script_in_default_mode(self):
         """A variation planned by an earlier build (no review_mode) is retried without the paid visual review."""

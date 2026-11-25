@@ -6359,6 +6359,8 @@ class CreativeDomain:
             # keywords come from the title and the voice-over, no model call.
             from .video_presentation import mix_emphasis
             recipe["caption_style_id"] = private_state["caption_style_id"]
+            if private_state.get("narrated_look"):
+                recipe["look"] = dict(private_state["narrated_look"])
             # A typed title rarely repeats the voice-over word for word, so the script's own title still names the keywords.
             spoken = "".join(str(item.get("text") or "") for item in public_plan["speechCaptions"])
             recipe["emphasis_phrases"] = list(dict.fromkeys(

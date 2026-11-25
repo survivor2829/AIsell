@@ -19,6 +19,21 @@ RANDOM_MIX_CAPTION_STYLE = "random"
 MAX_DISPLAY_TITLE = 30
 
 
+# Each video of a batch gets its own framing and mild grade (against platform duplicate checks, user
+# 2026-11-24). The first keeps the source picture; later ones take these in turn.
+MIX_LOOKS = (
+    {"zoom": 1.0, "originX": 0.5, "originY": 0.5, "grade": "none"},
+    {"zoom": 1.08, "originX": 0.5, "originY": 0.38, "grade": "warm"},
+    {"zoom": 1.06, "originX": 0.5, "originY": 0.6, "grade": "cool"},
+    {"zoom": 1.1, "originX": 0.42, "originY": 0.46, "grade": "crisp"},
+    {"zoom": 1.05, "originX": 0.58, "originY": 0.5, "grade": "soft"},
+)
+
+
+def mix_look(order):
+    return dict(MIX_LOOKS[int(order) % len(MIX_LOOKS)])
+
+
 def mix_caption_style(choice, batch_id, order):
     if choice != RANDOM_MIX_CAPTION_STYLE:
         return choice or DEFAULT_MIX_CAPTION_STYLE

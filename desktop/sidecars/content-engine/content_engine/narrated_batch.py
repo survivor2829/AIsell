@@ -18,7 +18,7 @@ from .auto_mix_v2 import (
     AUTO_MIX_SPEC_VERSION, canonical_hash, build_material_timeline,
     build_material_evidence_facts, build_music_brief, normalize_text_tracks,
 )
-from .video_presentation import mix_caption_style
+from .video_presentation import mix_caption_style, mix_look
 from .auto_mix_resources import rotation_voice_personas, voice_preview_sample
 from .errors import ContentEngineError
 from .provider_usage import usage_scope
@@ -5001,8 +5001,9 @@ class NarratedBatchDomain:
                  "narrated_reference_captions": (b.get("settings") or {}).get("workflow_version") == 2,
                  "video_template": (b.get("settings") or {}).get("video_template") or "topic_fixed",
                  # New productions use a v5 packaging template (older batches get the default).
-                 "caption_style_id": mix_caption_style((b.get("settings") or {}).get("caption_style_id"), b["batch_id"],
-                                                       next((index for index, item in enumerate(b["candidates"]) if item["candidate_id"] == c["candidate_id"]), 0)),
+                 "caption_style_id": mix_caption_style((b.get("settings") or {}).get("caption_style_id"), b["batch_id"], next((index for index, item in enumerate(b["candidates"]) if item["candidate_id"] == c["candidate_id"]), 0)),
+                 # Its own framing and grade, so the videos of one batch do not share a picture.
+                 "narrated_look": mix_look(next((index for index, item in enumerate(b["candidates"]) if item["candidate_id"] == c["candidate_id"]), 0)),
                  **({"narrated_display_title": b["settings"]["display_title"]} if (b.get("settings") or {}).get("display_title") else {}),
                  "used_music_track_ids": [item["music_track_id"] for item in b["candidates"]
                                           if item.get("status") == "completed" and item.get("music_track_id")],

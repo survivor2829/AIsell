@@ -3115,6 +3115,7 @@ class HybridCreativeRenderer:
             **({"captionStyleId": recipe["caption_style_id"]} if recipe.get("caption_style_id") else {}),
             **({"narrationPlan": recipe["narration_plan"]} if recipe.get("narration_plan") else {}),
             **({"emphasisPhrases": recipe["emphasis_phrases"]} if recipe.get("emphasis_phrases") else {}),
+            **({"look": recipe["look"]} if recipe.get("look") else {}),
             "events": events,
             "focusRects": rectangles("focus_rects"),
             "protectedRects": rectangles("protected_rects", protected=True),

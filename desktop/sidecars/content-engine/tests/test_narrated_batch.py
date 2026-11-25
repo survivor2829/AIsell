@@ -169,6 +169,9 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertEqual(mix_caption_style("random", batch["batch_id"], 0), private["caption_style_id"], "a random batch gives each video one of the templates")
         self.assertEqual("洗地机怎么选", private.pop("narrated_display_title"))
         private["caption_style_id"] = "rise_v5"
+        from content_engine.video_presentation import mix_look
+        self.assertEqual(mix_look(0), private["narrated_look"], "each video records its own framing and grade")
+        private["narrated_look"] = mix_look(1)
         private["narrated_reference_captions"] = True
         modern = self.s.creative_domain._auto_mix_recipe(run, json.loads(run["public_plan_json"]), private,
                                                         persona={"id": run["selected_voice_persona_id"]}, music=None)
@@ -177,6 +180,10 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertNotIn("caption_style_id", recipe, "a workflow 1 mix keeps its own captions and event graphics")
         self.assertEqual("rise_v5", modern["caption_style_id"])
         self.assertTrue(modern["presentation"]["showTitle"])
+        self.assertEqual(mix_look(1), modern["look"])
+        from content_engine.creative_render import HybridCreativeRenderer
+        self.assertEqual(mix_look(1), HybridCreativeRenderer._public_props(modern, {})["look"], "the look reaches the render manifest")
+        self.assertNotIn("look", recipe, "a workflow 1 mix keeps its picture")
         self.assertIsInstance(modern["emphasis_phrases"], list)
         self.assertEqual("不同现场的清洁展示", modern["presentation"]["topic"], "without a typed title each script keeps its own")
         # A title typed for the batch replaces the picture title and feeds the keywords.

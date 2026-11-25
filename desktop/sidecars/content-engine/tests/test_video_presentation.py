@@ -621,6 +621,18 @@ class MixTemplateChoiceTests(unittest.TestCase):
         self.assertEqual("rise_v5", mix_caption_style(None, "batch-a", 0))
 
 
+class MixLookTests(unittest.TestCase):
+    def test_each_video_of_a_batch_gets_its_own_picture(self):
+        from content_engine.video_presentation import mix_look, MIX_LOOKS
+        looks = [mix_look(order) for order in range(len(MIX_LOOKS))]
+        self.assertEqual({"zoom": 1.0, "originX": 0.5, "originY": 0.5, "grade": "none"}, looks[0], "the first keeps the source picture")
+        self.assertEqual(len(looks), len({json.dumps(look, sort_keys=True) for look in looks}), "no two videos share framing and grade")
+        self.assertTrue(all(1 <= look["zoom"] <= 1.12 for look in looks), "framing stays mild")
+        self.assertEqual(looks[0], mix_look(len(MIX_LOOKS)), "a long batch cycles")
+        looks[1]["zoom"] = 9
+        self.assertNotEqual(9, mix_look(1)["zoom"], "callers get their own copy")
+
+
 class MixEmphasisTests(unittest.TestCase):
     def test_keywords_are_what_the_title_and_voice_over_share(self):
         from content_engine.video_presentation import mix_emphasis
