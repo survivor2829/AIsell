@@ -3,6 +3,12 @@ const catalog = require("./wechat-rule-catalog.json");
 const FAILURE_CLASSIFICATIONS = Object.freeze(["environment", "recoverable", "blocker"]);
 
 const workflowPolicies = Object.freeze({
+  // Deleting blocked/deleted contacts in WeChat from 清理无效好友 (2026-11-25): each person's result is shown in
+  // the list; these concern the run itself.
+  wechat_delete_running: { classification: "environment", attentionScope: "task" },
+  nothing_to_delete: { classification: "recoverable", attentionScope: "task" },
+  delete_name_missing: { classification: "blocker", attentionScope: "task" },
+  wechat_delete_unavailable: { classification: "blocker", attentionScope: "task" },
   atomic_draft_changed: { classification: "recoverable", attentionScope: "task" },
   // A chat title OCR could not read: only this scan is skipped; the next poll looks again.
   conversation_title_unresolved: { classification: "recoverable", attentionScope: "task" },

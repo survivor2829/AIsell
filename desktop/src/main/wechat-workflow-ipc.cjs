@@ -319,7 +319,22 @@ function registerWechatWorkflowIpc(options) {
   // Contacts a touch found blocked or deleted: list them, take the confirmed ones out of the contact list, or put one back.
   const cleanup = () => require("./touch-cleanup.cjs").createTouchCleanup(options.activeTouchDir);
   handle("unreachable-list", () => cleanup().list());
-  handle("remove-unreachable", (payload) => cleanup().remove(payload?.entries), true);
+  handle("remove-unreachable", (payload) => {
+    const result = cleanup().remove(payload?.entries);
+    if (payload?.deleteInWechat !== true) return result;
+    // Also delete them in WeChat, in the background; 小玺 shows it and the list carries each result.
+    const run = cleanup().deleteInWechat(payload.entries, {
+      deleteContact: options.deleteWechatContact || require("../../rpa/active_touch/wechat_delete_contact.cjs").deleteWechatContact,
+      coordinator: options.coordinator,
+      currentAccount: String(options.getAccount?.() || ""),
+      verifyLiveAccount: options.verifyLiveAccount,
+      onProgress: (progress) => setExternalActivity("contactCleanup", progress.finished ? null : {
+        title: "正在微信里删除无效好友", step: progress.current ? `删除 ${progress.current}` : "准备中",
+        done: progress.done, total: progress.total })
+    });
+    run.catch((failure) => options.logger?.event?.("wechat_workflow", "contact_cleanup.failed", { error: failure }, { level: "warn", code: "contact_cleanup_failed" }));
+    return { ...cleanup().list(), removedNow: result.removedNow, wechatStarted: true };
+  }, true);
   handle("restore-unreachable", (payload) => cleanup().restore(payload?.entry), true);
   handle("add-recipients", (payload) => controller.addRecipients(payload?.contactIds), true);
   handle("set-reply-enabled", (payload) => controller.setReplyEnabled(payload?.enabled));

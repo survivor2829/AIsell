@@ -139,7 +139,7 @@ declare global {
       getTask: (id: string) => Promise<WorkflowResult>;
       removeRecipient: (id: string) => Promise<WorkflowResult>;
       unreachableList?: () => Promise<UnreachableList>;
-      removeUnreachable?: (entries: { accountId: string; key: string }[]) => Promise<UnreachableList>;
+      removeUnreachable?: (entries: { accountId: string; key: string }[], deleteInWechat?: boolean) => Promise<UnreachableList>;
       restoreUnreachable?: (entry: { accountId: string; key: string }) => Promise<UnreachableList>;
       addRecipients: (contactIds: string[]) => Promise<WorkflowResult>;
       setReplyEnabled: (enabled: boolean) => Promise<WorkflowResult>;

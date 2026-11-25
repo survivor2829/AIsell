@@ -23,3 +23,12 @@
 .cleanup-removed button svg{width:15px;height:15px}
 .cleanup-notice{margin:0;font-size:15px;font-weight:700;color:#047857}
 .cleanup-entry{align-self:flex-start;margin:0 0 12px}
+.cleanup-wechat{display:flex;align-items:center;flex-wrap:wrap;gap:8px 10px;font-size:16px;font-weight:800;color:#111827;cursor:pointer}
+.cleanup-wechat input{width:20px;height:20px;accent-color:#e60000}
+.cleanup-wechat small{flex-basis:100%;padding-left:30px;font-size:13px;font-weight:600;color:#b45309}
+.cleanup-progress{position:relative;overflow:hidden;padding:12px 14px;border-radius:12px;background:#fff7ed;color:#9a3412;font-size:15px;font-weight:800}
+.cleanup-progress i{position:absolute;left:0;bottom:0;height:3px;background:#f97316;transition:width .3s}
+.cleanup-wechat-result{font-size:13px;font-weight:800;padding:3px 10px;border-radius:999px}
+.cleanup-wechat-result.is-deleted{background:#dcfce7;color:#166534}
+.cleanup-wechat-result.is-failed{background:#fef3c7;color:#92400e}
+.cleanup-wechat-result.is-unknown{background:#fee2e2;color:#b91c1c}

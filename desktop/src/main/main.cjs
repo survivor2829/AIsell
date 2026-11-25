@@ -1096,6 +1096,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     workflowController = registerWechatWorkflowIpc({
       ...runtime,
       logger,
+      coordinator,
       createSpacePauseHotkey: require("./space-pause-hotkey.cjs").createSpacePauseHotkey,
       appVersion: components.businessVersion(app),
       buildId: build.buildId || process.env.XIAOXI_BUILD_ID || "",
