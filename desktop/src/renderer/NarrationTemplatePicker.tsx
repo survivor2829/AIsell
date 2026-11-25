@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { NarrationLayout } from '../../remotion-packaging/NarrationLayout';
 import catalog from '../../remotion-packaging/narration-templates.json';
 import type { NarrationPlan } from '../../remotion-packaging/NarrationLayoutV4';
+import './NarrationTemplatePicker.css';
 
 // Preview and export use the same composition. These labelled sample cues
 // demonstrate layout; they are never used as a customer's subtitle timeline.

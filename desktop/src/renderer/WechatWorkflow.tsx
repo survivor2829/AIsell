@@ -1,5 +1,5 @@
 import { AlertTriangle, ArrowLeft, ArrowRight, Ban, Bot, CalendarClock, Check, CheckCircle2, ChevronRight, CircleHelp, Clock3, ImagePlus, List, ListTodo, Pause, Pencil, Play, Plus, Repeat2, Send, SkipForward, ThumbsUp, Trash2, Unlink, X } from "lucide-react";
-import { touchRole } from "./touch-role";
+import { touchPhase } from "./touch-role";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { momentsProgressLabel } from "./MomentsCampaignPanel";
 import { XiaoxiSprite, type SpriteActivity } from "./XiaoxiSprite";
@@ -320,8 +320,28 @@ const TOUCH_STAGE_LABELS: Record<string, string> = {
   post_confirm: "正在确认图片发送结果", image_retry_wait: "图片发送前检查超时，等待恢复", part_complete: "当前内容已发送并确认"
 };
 
-// withLabel=false leaves out the step label, for 小玺 whose title already names the role and step.
-function useExecutionDetail(execution?: WorkflowExecution | null, withLabel = true) {
+// The footer of 小玺's touch card, never the step itself (the log shows it): that the text already went out
+// while pictures are sending (so nobody resends it by hand), a countdown, recovery counts, and how long a
+// step has run once it is slow enough to look stuck. Ticks on its own timer.
+function useTouchFooter(execution: WorkflowExecution | null) {
+  const [now, setNow] = useState(() => Date.now());
+  const running = Boolean(execution);
+  useEffect(() => {
+    if (!running) return undefined;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+  if (!execution) return "";
+  const seconds = execution.waitUntil ? Math.max(0, Math.ceil((execution.waitUntil - now) / 1000)) : null;
+  const elapsed = Math.max(0, Math.floor((now - execution.startedAt) / 1000));
+  const recovery = (execution.readAttempt && execution.readAttempt > 1 ? execution.readAttempt - 1 : 0) + (execution.retryAttempt || 0);
+  return [execution.textSent && execution.partKind !== "text" ? "文字已发送" : "",
+    seconds !== null ? seconds > 0 ? `${seconds} 秒后继续` : "即将继续" : elapsed >= 8 ? `本步骤 ${elapsed} 秒` : "",
+    recovery ? `已自动恢复 ${recovery} 次` : ""].filter(Boolean).join(" · ");
+}
+
+function useExecutionDetail(execution?: WorkflowExecution | null) {
   const [timestamp, setTimestamp] = useState(() => Date.now());
   const startedAt = execution?.startedAt;
   useEffect(() => {
@@ -339,7 +359,7 @@ function useExecutionDetail(execution?: WorkflowExecution | null, withLabel = tr
   const recovery = [execution.readAttempt && execution.readAttempt > 1 ? `读回恢复 ${execution.readAttempt - 1} 次` : "",
     execution.retryAttempt ? `发送前恢复 ${execution.retryAttempt} 次` : ""].filter(Boolean).join(" · ");
   const seconds = execution.waitUntil ? Math.max(0, Math.ceil((execution.waitUntil - timestamp) / 1000)) : null;
-  return [contact, execution.textSent && execution.partKind !== "text" ? "文字已发送" : "", part, withLabel ? label : "", recovery,
+  return [contact, execution.textSent && execution.partKind !== "text" ? "文字已发送" : "", part, label, recovery,
     seconds === null ? `本步骤 ${elapsed} 秒` : seconds > 0 ? `${seconds} 秒后继续` : "即将继续"].filter(Boolean).join(" · ");
 }
 
@@ -934,22 +954,27 @@ export function FloatingWorkflowWindow() {
   const waitingSeconds = useRemainingSeconds(state.waitUntil);
   const waitingDetail = waitingDetailText(state, waitingSeconds);
   const executionDetail = useExecutionDetail(state.currentExecution);
-  const executionDetailNoLabel = useExecutionDetail(state.currentExecution, false);
   const sync = state.contactSync;
   const moments = sync || state.phase === "replying" ? null : state.momentsProgress;
   const wechatActive = Boolean(state.enabled || sync?.running);
   const outside = (state.external || [])[0];
-  // 触达时小玺说出谁在干哪一步（用户 2026-11-24）：角色按执行器真实报的段与步骤；下面一行沿用原来的第几位、
-  // 哪一段、文字已发送、恢复次数、用时/倒计时，只去掉已写进标题的步骤名。
+  // 触达时小玺卡片常驻（用户 2026-11-24 选 C 版）：标题固定“正在联系客户”，下面滚动最近三步（大步骤，不写角色名），
+  // 页脚只放等待倒计时和恢复次数；卡片不随步骤重新弹出。
+  // The card stays a touch card for the whole touch task: between contacts the executor briefly reports
+  // nothing, and the title must not flash back to the generic status. The log starts over per contact.
   const execution = state.currentExecution;
-  const touchStep = current?.type === "touch" && execution?.taskId === current.id ? execution : null;
-  const role = touchStep ? touchRole(touchStep) : "";
-  const stepTitle = role && touchStep ? `${role}：${TOUCH_STAGE_LABELS[touchStep.stage] || "正在处理"}` : "";
+  const touching = !sync?.running && state.phase !== "replying" && current?.type === "touch";
+  const touchStep = touching && execution?.taskId === current!.id ? execution : null;
+  const contactOwner = useRef("");
+  if (touchStep?.contactIndex) contactOwner.current = `${current!.id}:${touchStep.contactIndex}`;
+  const step = touchStep ? touchPhase(touchStep) : "";
+  const touchExtra = useTouchFooter(touchStep);
   const activity: SpriteActivity | null = wechatActive ? {
     kind: "wechat",
-    title: sync?.running ? (SYNC_STAGE_LABELS[sync.stage] || "正在读取微信联系人") : stepTitle || workflowStatusText(state),
+    title: sync?.running ? (SYNC_STAGE_LABELS[sync.stage] || "正在读取微信联系人") : touching ? "正在联系客户" : workflowStatusText(state),
+    ...(touching ? { step, owner: contactOwner.current || current!.id } : {}),
     detail: moments && current ? `已赞 ${moments.liked} · 已评 ${moments.commented}`
-      : (stepTitle && executionDetailNoLabel) || executionDetail || (state.waitingTaskId ? waitingDetail : "") || (current && current.title !== TASK_LABELS[current.type] ? current.title : ""),
+      : touching ? touchExtra : executionDetail || (state.waitingTaskId ? waitingDetail : "") || (current && current.title !== TASK_LABELS[current.type] ? current.title : ""),
     ...(!sync && state.phase !== "replying" && displayed && displayed.progress?.total > 0 ? { done: displayed.progress.done, total: displayed.progress.total } : {}),
     pausable: state.enabled && state.phase !== "pausing",
     spacePause: state.spacePauseReady === true

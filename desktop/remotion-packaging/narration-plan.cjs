@@ -1,6 +1,8 @@
 const catalog = require('./narration-templates.json');
 const { wordBoundaries } = require('./word-breaks.cjs');
-const current = () => catalog.templates.filter(t => t.version === 4);
+// Templates offered for new work; every template since v4 can still render its saved plan.
+const current = () => catalog.templates.filter(t => t.version === catalog.version);
+const planned = () => catalog.templates.filter(t => t.version >= 4);
 const key = text => String(text || '').replace(/[\s，。！？；、,.!?;：:]/gu, '');
 function normalizeCue(c) { return { text: c.text, startMs: Number(c.startMs ?? c.start_time ?? c.start_ms), endMs: Number(c.endMs ?? c.end_time ?? c.end_ms), words: c.words?.map(normalizeCue) }; }
 
@@ -9,10 +11,12 @@ function choose(task, visual = {}) {
   const hits = patterns => patterns.filter(pattern => new RegExp(pattern, 'u').test(task.script || '')).length;
   const viewpoint = hits(rules.viewpoint), structured = hits(rules.structured);
   // 人物动作多时只放慢动效（见 buildPlan 的 motion），不再退回最素的版式：重点词高亮和花字照常显示。
-  let preferred = viewpoint >= 2 ? 'impact_v4' : structured >= 2 ? 'layered_v4' : 'minimal_v4';
+  // v5 (2026-11-24): glow is the default; strong viewpoints get kinetic, steps get the big rising title.
+  let preferred = viewpoint >= 2 ? 'kinetic_v5' : structured >= 2 ? 'rise_v5' : 'glow_v5';
   const reasons = [viewpoint >= 2 ? '稿件包含对比与明确观点' : structured >= 2 ? '稿件包含步骤或选型问题' : '以清晰讲解为主，使用克制包装'];
   const available = current().map(t => t.id);
-  if (task.packagingMode === 'manual' && available.includes(task.captionStyleId)) { preferred = task.captionStyleId; reasons[0] = '使用手动选择的风格'; }
+  // A manual choice is kept even when it is an older planned template (saved drafts, explicit repackage).
+  if (task.packagingMode === 'manual' && planned().some(t => t.id === task.captionStyleId)) { preferred = task.captionStyleId; reasons[0] = '使用手动选择的风格'; }
   const candidates = available;
   return { templateId: preferred, candidates, reasons };
 }
@@ -172,7 +176,7 @@ function buildPlan(task, visual = {}, cues = [], final = false, recent = []) {
   const chosen = frozen?.variant ? frozen : chooseVariant(task, recent, frozen?.templateId || picked.templateId);
   const templateId = chosen.templateId;
   if (templateId !== picked.templateId && !frozen) picked.reasons.push('和上一条换一套版式，避免重样');
-  const definition = current().find(t => t.id === templateId) || current()[2];
+  const definition = planned().find(t => t.id === templateId) || current().find(t => t.id === catalog.defaultTemplateId);
   const warnings = visual.note ? [visual.note] : [];
   const safe = catalog.safeLayout, t = catalog.typography;
   const faceBottom = visual.union ? Math.ceil(visual.union.bottom * 1920) + safe.facePadding : 1230;
@@ -216,7 +220,9 @@ function buildPlan(task, visual = {}, cues = [], final = false, recent = []) {
   const titleLines = (headings.length > 1 ? [headings[0], headings.slice(1).join('，')] : [title])
     .reduce((n, part) => n + Math.ceil(part.length * titleSize / 850), 0);
   const titleHeight = definition.layout === 'minimal' ? Math.ceil(title.length * 48 / 772) * 60 + 30 : titleLines * titleSize * 1.22 + 26;
-  const showTitle = !upper && titleTop + titleHeight + safe.facePadding < faceTop;
+  // v5 titles may lie over the hair (2026-11-24 previews the user approved) but stop at the face.
+  const titleRoom = Math.max(0, Math.floor(faceTop - 20 - titleTop));
+  const showTitle = definition.version === 5 ? !upper && titleRoom >= 150 : !upper && titleTop + titleHeight + safe.facePadding < faceTop;
   if (!showTitle && !upper) warnings.push('头部靠近顶部，已隐藏片内装饰标题；标题仍保留在独立封面。');
   const soundEvents = []; let last = -Infinity;
   if (task.soundEffects !== false) for (const page of displayPages) {
@@ -224,7 +230,9 @@ function buildPlan(task, visual = {}, cues = [], final = false, recent = []) {
       soundEvents.push({ startMs: page.startMs, sound: definition.layout === 'impact' ? 'pop' : 'click', gain: .055 }); last = page.startMs;
     }
   }
-  const layoutBox = { revision: 2, align: 'center', left: 115, width: 850, top, bottom, showTitle, titleTop, compact: availableHeight < 310 };
+  const layoutBox = { revision: 2, align: 'center', left: 115, width: 850, top, bottom, showTitle, titleTop, compact: availableHeight < 310,
+    // v5 titles grow to fill the space above the head, never into it.
+    ...(definition.version === 5 ? { titleRoom } : {}) };
   const camera = cameraPlan(displayPages, visual, layoutBox, chosen.variant.rhythm);
   const stickers = stickerPlan(displayPages, visual, camera, 100);
   return { version: 4, templateId, mode: task.packagingMode || 'auto', candidates: picked.candidates,
@@ -236,7 +244,7 @@ function buildPlan(task, visual = {}, cues = [], final = false, recent = []) {
     pages: displayPages, soundEvents, blocked: blocked || displayPages.some(p => p.overflow) };
 }
 function validatePlan(plan, styleId) {
-  if (!plan || plan.version !== 4 || plan.templateId !== styleId || !current().some(t => t.id === styleId)
+  if (!plan || plan.version !== 4 || plan.templateId !== styleId || !planned().some(t => t.id === styleId)
       || JSON.stringify(plan).length > 100000 || !Array.isArray(plan.pages) || plan.pages.length > 500
       || !Array.isArray(plan.soundEvents) || plan.soundEvents.length > 60
       || !plan.layout || !Number.isFinite(plan.layout.top) || !Number.isFinite(plan.layout.bottom) || plan.layout.top < 120 || plan.layout.bottom > (plan.layout.revision === 2 ? catalog.safeLayout.bottom : 1600) || plan.layout.bottom - plan.layout.top < (plan.layout.revision === 2 ? catalog.safeLayout.minHeight : 180)

@@ -1,9 +1,10 @@
 import React from 'react';
 import { NarrationLayoutV4, type NarrationPlan } from './NarrationLayoutV4';
+import { NarrationLayoutV5, isV5 } from './NarrationLayoutV5';
 import catalog from './narration-templates.json';
 
 export type NarrationCue = { text: string; startMs: number; endMs: number; words?: NarrationCue[] };
-export type NarrationLayoutProps = { styleId: string; title: string; cues: NarrationCue[]; nowMs: number; emphasis?: string[]; plan?: NarrationPlan };
+export type NarrationLayoutProps = { styleId: string; title: string; cues: NarrationCue[]; nowMs: number; emphasis?: string[]; plan?: NarrationPlan; showTitle?: boolean };
 
 // Real word boundaries are the only source for page timing. Sentence-only
 // captions remain a sentence; no guessed per-character timestamps.
@@ -28,7 +29,8 @@ export function narrationPages(cues: NarrationCue[], emphasis: string[] = [], pa
   });
 }
 
-export function NarrationLayout({ styleId, title, cues, nowMs, emphasis = [], plan }: NarrationLayoutProps) {
+export function NarrationLayout({ styleId, title, cues, nowMs, emphasis = [], plan, showTitle }: NarrationLayoutProps) {
+  if (isV5(styleId)) return <NarrationLayoutV5 styleId={styleId} title={title} cues={cues} nowMs={nowMs} emphasis={emphasis} plan={plan} showTitle={showTitle} />;
   if (styleId.endsWith('_v4')) return <NarrationLayoutV4 styleId={styleId} title={title} cues={cues} nowMs={nowMs} emphasis={emphasis} plan={plan} />;
   if (catalog.templates.find((item) => item.id === styleId)?.version === 3) return <NarrationLayoutV3 styleId={styleId} title={title} cues={cues} nowMs={nowMs} emphasis={emphasis} />;
   if (catalog.templates.find((item) => item.id === styleId)?.version === 2) {

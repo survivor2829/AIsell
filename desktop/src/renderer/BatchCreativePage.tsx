@@ -3,6 +3,8 @@ import { useSlowFlag } from "./use-slow-flag";
 import { AssetPicker, AssetPreview, AssetThumb } from "./BatchAssets";
 import { Asset, Batch, Candidate, Collection, Group, Groups, batchStatus, callBatch, groupNames, videoUrl } from "./batch-studio-api";
 import "./BatchCreativePage.css";
+import { NarrationTemplatePicker } from "./NarrationTemplatePicker";
+import narrationTemplates from "../../remotion-packaging/narration-templates.json";
 import { AdLawHint, BatchCreativeBrief, BatchTopicChoices, emptyCreativeBrief, expressionText } from "./BatchCreativeBrief";
 import { BatchSoundSettings } from "./BatchSoundSettings";
 import { VideoDownloadButton } from "./VideoPresentation";
@@ -655,8 +657,8 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
       </article>)}</div>}
       {(!visualFlow || flowStep === 2) && <>
       {modern && chosen.length === 1 && <div className="batch-direction-count"><strong>做几条？</strong><MixCount value={selectedCounts[chosen[0].candidate_id] || ""} disabled={locked || !!batch?.script_confirmation || dirty} onChange={(value) => setSelectedCounts({ [chosen[0].candidate_id]: value })} /></div>}
-      <p className="batch-hint" aria-label="制作设置摘要">声音：{voiceSummary} · 配乐：{musicSummary} · 字幕：主题常驻</p>
-      <details className="batch-advanced"><summary>更多设置</summary><BatchSoundSettings settings={settings} locked={locked || !!batch?.script_confirmation} onChange={changeSoundSettings} refreshToken={catalog} /><label>品牌<select value={settings.brand_profile_id || ""} disabled={locked || !!batch?.script_confirmation} onChange={(event) => changeSoundSettings({ ...settings, brand_profile_id: event.target.value || undefined })}><option value="">默认品牌</option>{brands.map((brand) => <option key={brand.brandProfileId} value={brand.brandProfileId}>{brand.name}</option>)}</select></label>
+      <p className="batch-hint" aria-label="制作设置摘要">声音：{voiceSummary} · 配乐：{musicSummary} · 网感模板：{narrationTemplates.templates.find((item) => item.id === (settings.caption_style_id || "rise_v5"))?.name}</p>
+      <details className="batch-advanced"><summary>更多设置</summary><NarrationTemplatePicker value={settings.caption_style_id || "rise_v5"} disabled={locked || !!batch?.script_confirmation} onChange={(caption_style_id) => changeSoundSettings({ ...settings, caption_style_id: caption_style_id as Batch["settings"]["caption_style_id"] })} /><BatchSoundSettings settings={settings} locked={locked || !!batch?.script_confirmation} onChange={changeSoundSettings} refreshToken={catalog} /><label>品牌<select value={settings.brand_profile_id || ""} disabled={locked || !!batch?.script_confirmation} onChange={(event) => changeSoundSettings({ ...settings, brand_profile_id: event.target.value || undefined })}><option value="">默认品牌</option>{brands.map((brand) => <option key={brand.brandProfileId} value={brand.brandProfileId}>{brand.name}</option>)}</select></label>
       {!visualFlow && <p className="batch-hint">先确认完整文案；制作时自动安排并检查镜头，再配音生成视频。</p>}
 </details>
       {soundDirty && <p className="batch-hint">制作设置已更新。</p>}

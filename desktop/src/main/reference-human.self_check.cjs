@@ -15,10 +15,11 @@ const packaging = require('../../remotion-packaging/narration-plan.cjs');
 
 async function main() {
   const text = '先了解地面，再查看通道。', visual = { status: 'measured', union: { y: .2, bottom: .6 }, busy: false };
-  assert.equal(packaging.choose({ script: '首先了解地面，然后检查通道，最后现场测试。' }).templateId, 'layered_v4');
-  assert.equal(packaging.choose({ script: '先别比价格，不是越贵越好，而是看实际效果。' }).templateId, 'impact_v4');
+  assert.equal(packaging.choose({ script: '首先了解地面，然后检查通道，最后现场测试。' }).templateId, 'rise_v5');
+  assert.equal(packaging.choose({ script: '先别比价格，不是越贵越好，而是看实际效果。' }).templateId, 'kinetic_v5');
+  assert.equal(packaging.choose({ script: '这台机器很安静。' }).templateId, 'glow_v5', 'plain talk defaults to glow');
   // 人物动作多不再退回最素的版式（重点词和花字照常显示），只把动效放慢
-  assert.equal(packaging.choose({ script: '首先了解地面，然后检查通道，最后现场测试。' }, { busy: true }).templateId, 'layered_v4');
+  assert.equal(packaging.choose({ script: '首先了解地面，然后检查通道，最后现场测试。' }, { busy: true }).templateId, 'rise_v5');
   assert.equal(packaging.buildPlan({ script: text }, { ...visual, busy: true }).motion, 'quiet');
   const crowded = packaging.buildPlan({ script: text }, { ...visual, union: { y: .1, bottom: .84 } });
   assert.equal(crowded.blocked, true);
@@ -31,8 +32,11 @@ async function main() {
   assert.equal(lower.layout.left + lower.layout.width / 2, 540); assert.equal(lower.layout.align, 'center');
   assert.equal(lower.pages[1].text, '先别比价格'); assert.equal(lower.pages[1].emphasisMode, 'inline', 'tight space keeps readable emphasis without growing onto the face');
   assert.ok(lower.layout.top >= Math.ceil(.7375 * 1920) + 80); packaging.validatePlan(lower, lower.templateId);
-  const heading = packaging.buildPlan({ script: text, title: '工厂采购洗地机这些关键问题要注意，先试再谈价格', packagingMode: 'manual', captionStyleId: 'layered_v4' }, { ...visual, union: { y: 365 / 1920, bottom: .6 } });
-  assert.equal(heading.layout.showTitle, false, 'long title height must also avoid the face');
+  // v5 titles may lie over the hair, sized to the room above the face, and give way when there is none.
+  const heading = packaging.buildPlan({ script: text, title: '工厂采购洗地机这些关键问题要注意，先试再谈价格', packagingMode: 'manual', captionStyleId: 'glow_v5' }, { ...visual, union: { y: 365 / 1920, bottom: .6 } });
+  assert.equal(heading.layout.showTitle, true); assert.equal(heading.layout.titleRoom, 365 - 20 - 120);
+  const tight = packaging.buildPlan({ script: text, title: '洗地机怎么选', packagingMode: 'manual', captionStyleId: 'glow_v5' }, { ...visual, union: { y: 230 / 1920, bottom: .6 } });
+  assert.equal(tight.layout.showTitle, false, 'no room above the face: the title stays on the cover');
   const long = packaging.buildPlan({ script: text.repeat(10) }, visual, [{ text: text.repeat(10), startMs: 0, endMs: 30000 }]);
   assert.equal(long.pages.length, 1, 'no invented word timing'); assert.equal(long.blocked, true);
   const muted = packaging.buildPlan({ script: text, soundEffects: false }, visual, [{ text, startMs: 0, endMs: 4000 }]);
@@ -127,7 +131,7 @@ async function main() {
     },
     analyzeNarration: async () => ({ status: 'measured', coverage: 1, union: { y: .2, bottom: .6 }, busy: false }),
     selectMusic: async () => musicAvailable ? { trackId: 'music_track_owned' } : { status: 'unavailable' },
-    packageVideo: async (payload) => { counts.package++; assert.ok(['moving_pill', 'layered_v1', 'layered_v2', 'layered_v3', 'layered_v4', 'impact_v4', 'minimal_v4'].includes(payload.caption_style_id)); assert.equal(payload.audio_profile, 'narration_v2'); assert.ok(['ai_design', 'local_frame'].includes(payload.cover_mode)); packageModes.push(payload.cover_mode); assert.equal(payload.music_track_id, 'music_track_owned'); return { task_id: 'packaging-1' }; },
+    packageVideo: async (payload) => { counts.package++; assert.ok(['moving_pill', 'layered_v1', 'layered_v2', 'layered_v3', 'layered_v4', 'impact_v4', 'minimal_v4', 'rise_v5', 'kinetic_v5', 'glow_v5'].includes(payload.caption_style_id)); assert.equal(payload.audio_profile, 'narration_v2'); assert.ok(['ai_design', 'local_frame'].includes(payload.cover_mode)); packageModes.push(payload.cover_mode); assert.equal(payload.music_track_id, 'music_track_owned'); return { task_id: 'packaging-1' }; },
     queryPackaging: async () => ({ status: 'completed', result: { generated_video_id: 'generated_video_test' } }),
   };
   try {
@@ -218,7 +222,7 @@ async function main() {
     assert.equal(service.get(nextDraft.id).captionStyleId, 'moving_pill', 'restyling preserves the original history');
     assert.deepEqual({ voice: counts.voice, asr: counts.asr, video: counts.video }, paidBeforeRepackage, 'local restyling must never repeat cloud work');
     let cycled = nextDraft;
-    for (const style of ['layered_v4', 'impact_v4', 'minimal_v4', 'layered_v4']) {
+    for (const style of ['rise_v5', 'kinetic_v5', 'glow_v5', 'rise_v5']) {
       cycled = await service.repackage(cycled.id, { nextStyle: true });
       while (service.isBusy()) await new Promise(resolve => setTimeout(resolve, 5));
       cycled = service.get(cycled.id);

@@ -1,5 +1,6 @@
 import React from "react";
 import { NarrationLayout } from './NarrationLayout';
+import { keywordPush } from './NarrationLayoutV5';
 import narrationTemplates from './narration-templates.json';
 import {
   AbsoluteFill,
@@ -193,7 +194,9 @@ function cameraState(manifest: MotionManifest, nowMs: number) {
 const VideoBase: React.FC<{ manifest: MotionManifest; pack: StylePack; frame: number; zoomProgress: number; nowMs: number }> = ({ manifest, pack, frame, zoomProgress, nowMs }) => {
   const reference = manifest.captionPresentation === "reference_narration";
   const camera = reference ? cameraState(manifest, nowMs) : null;
-  const scale = camera ? camera.scale : reference ? 1 : pack.video.scale + Math.sin(frame / pack.video.pulseDivisor) * pack.video.pulse + zoomProgress * 0.035;
+  const base = camera ? camera.scale : reference ? 1 : pack.video.scale + Math.sin(frame / pack.video.pulseDivisor) * pack.video.pulse + zoomProgress * 0.035;
+  // v5 templates lean the camera in when a keyword is said.
+  const scale = base * (1 + keywordPush(manifest.captionStyleId || '', manifest.captions, manifest.emphasisPhrases, manifest.narrationPlan, nowMs));
   return (
     <AbsoluteFill style={{ backgroundColor: pack.palette.ink, overflow: "hidden" }}>
       <OffthreadVideo
@@ -584,7 +587,7 @@ export const DynamicPackaging: React.FC<MotionManifest> = (manifest) => {
       {activeEvents.map(({ event, definition }, index) => (
         <RegisteredEventEffect key={`${event.startMs}-${event.effect.variantId}-${index}`} event={event} definition={definition} pack={pack} progress={eventProgress(event, frame, fps)} />
       ))}
-      {narrationTemplate ? <NarrationTypeface><NarrationLayout styleId={manifest.captionStyleId!} title={manifest.title} cues={manifest.captions} nowMs={nowMs} emphasis={manifest.emphasisPhrases} plan={manifest.narrationPlan} /></NarrationTypeface> : manifest.presentation
+      {narrationTemplate ? <NarrationTypeface><NarrationLayout styleId={manifest.captionStyleId!} title={manifest.title || manifest.presentation?.topic || ''} cues={manifest.captions} nowMs={nowMs} emphasis={manifest.emphasisPhrases} plan={manifest.narrationPlan} showTitle={manifest.presentation?.showTitle !== false} /></NarrationTypeface> : manifest.presentation
         ? <BoldNarration captions={manifest.captions} nowMs={nowMs} frame={frame} fps={fps} styleId={manifest.captionStyleId} />
         : manifest.captionPresentation === "reference_narration"
         ? manifest.captionStyleId

@@ -163,7 +163,18 @@ class NarratedBatchTests(unittest.TestCase):
         private["narrated_reference_captions"] = True
         modern = self.s.creative_domain._auto_mix_recipe(run, json.loads(run["public_plan_json"]), private,
                                                         persona={"id": run["selected_voice_persona_id"]}, music=None)
-        self.assertFalse(modern["presentation"]["showTitle"])
+        # New productions carry a v5 template: the title shows (drawn in the picture, no box) and
+        # keywords come from the title and the voice-over.
+        self.assertNotIn("caption_style_id", recipe, "a workflow 1 mix keeps its own captions and event graphics")
+        self.assertEqual("rise_v5", modern["caption_style_id"])
+        self.assertTrue(modern["presentation"]["showTitle"])
+        self.assertIsInstance(modern["emphasis_phrases"], list)
+        older = dict(private)
+        older.pop("caption_style_id")
+        before = self.s.creative_domain._auto_mix_recipe(run, json.loads(run["public_plan_json"]), older,
+                                                        persona={"id": run["selected_voice_persona_id"]}, music=None)
+        self.assertFalse(before["presentation"]["showTitle"], "a saved state without a template keeps its old packaging")
+        self.assertNotIn("caption_style_id", before)
         self.assertEqual("reference_narration", modern["caption_presentation"])
         self.assertEqual(recipe["captions"], modern["captions"])
         private.pop("narrated_original_frame")
