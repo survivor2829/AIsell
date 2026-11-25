@@ -1906,6 +1906,24 @@ class NarratedProductionTests(unittest.TestCase):
         with patch.object(self.domain, '_cloud', side_effect=cloud), self.assertRaises(ContentEngineError):
             narrated_production.rewrite_variation(self.domain, state, selected)
         self.assertEqual([narrated_production.ENTRY_POINTS[0]], seen, 'the first variation takes the first entry point')
+        # Against older variations only near copies are refused, so a long batch of a short copy can still go on.
+        state = self.domain._load(self.batch['batch_id'])
+        selected['narration'] = '先说结论：吸水阀抬起来，倒退再吸一遍，地面就干了。很多单子丢在水痕上，验收过不去。欢迎你来现场亲手试试看效果。'
+        oldest = '水痕特别多，订单就没成。现场演示抬起吸水阀，倒退再吸回来，就把水全部刮干了。验收这关就好过了，你可以来现场试一试。'
+        later = [f'第{number}条：设备怎么保养、刷盘多久换一次、电池怎么充，这些都在现场讲清楚了，来了就能上手操作看看。' for number in range(5)]
+        for number, text in enumerate([oldest, *later], 2):
+            state['candidates'].append({'candidate_id': f'narrated_candidate_v{number}', 'title': f'旧稿{number}', 'narration': text,
+                                        'source_script_id': selected['script_id'], 'production_index': number, 'shots': [], 'status': 'completed'})
+        self.domain._store(state)
+        issues = []
+        def later_cloud(payload, instruction, **kwargs):
+            issues.append(kwargs['validation_error']({'title': '验收', 'narration': close}))
+            issues.append(kwargs['validation_error']({'title': '验收', 'narration': oldest}))
+            raise ContentEngineError('stop', 'stop')
+        with patch.object(self.domain, '_cloud', side_effect=later_cloud), self.assertRaises(ContentEngineError):
+            narrated_production.rewrite_variation(self.domain, state, selected)
+        self.assertNotIn('过于相似', issues[0] or '', '88% alike an older variation is allowed')
+        self.assertIn('过于相似', issues[1], 'a copy of an older variation is still refused')
 
     def test_continue_rearranges_an_old_variation_by_script_in_default_mode(self):
         """A variation planned by an earlier build (no review_mode) is retried without the paid visual review."""

@@ -734,7 +734,12 @@ def rewrite_variation(domain, batch, selected):
         count = domain._spoken_char_count(narration)
         if not accepted_minimum <= count <= maximum:
             return f'narration实际{count}字（不计空白），须在{minimum}至{maximum}字之间。'
-        if any(SequenceMatcher(None, compact(narration), compact(text), autojunk=False).ratio() > VARIATION_SIMILARITY_LIMIT for text in previous):
+        # The tight bar applies to the source and the latest few; against older ones only near copies are refused,
+        # so a long batch of a short, fact-dense copy can still find a new way to say it.
+        def limit(index):
+            return VARIATION_SIMILARITY_LIMIT if index == 0 or index >= len(previous) - 4 else .9
+        if any(SequenceMatcher(None, compact(narration), compact(text), autojunk=False).ratio() > limit(index)
+               for index, text in enumerate(previous)):
             return f'与原文或已有改写过于相似；请按entry_point（{entry_point[:4]}）重排开头和段落顺序，并换一种说法。'
         try:
             follow_script_candidate(domain, batch, narration.strip(), title.strip(), direction,

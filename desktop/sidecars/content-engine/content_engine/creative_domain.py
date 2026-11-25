@@ -6361,6 +6361,9 @@ class CreativeDomain:
             recipe["caption_style_id"] = private_state["caption_style_id"]
             if private_state.get("narrated_look"):
                 recipe["look"] = dict(private_state["narrated_look"])
+            if private_state.get("narrated_display_title"):
+                # The cover carries the same typed title as the picture.
+                recipe["display_title"] = private_state["narrated_display_title"]
             # A typed title rarely repeats the voice-over word for word, so the script's own title still names the keywords.
             spoken = "".join(str(item.get("text") or "") for item in public_plan["speechCaptions"])
             recipe["emphasis_phrases"] = list(dict.fromkeys(
@@ -8911,7 +8914,7 @@ class CreativeDomain:
             # Each request is a new design, also after an unbilled upload failure of the same attempt.
             requests = self.connection.execute(
                 "SELECT COUNT(*) AS total FROM cover_generation_ledger WHERE generated_video_id=?", (video_id,)).fetchone()["total"]
-            design = {**auto_design(video_id, finished["title"], subject, finished["duration_ms"], requests),
+            design = {**auto_design(video_id, recipe.get("display_title") or finished["title"], subject, finished["duration_ms"], requests),
                       "style": self._next_auto_cover_style(video_id)}
             self.run_task(self.regenerate_cover(video_id, design)["task_id"])
             if latest_status() != "failed":

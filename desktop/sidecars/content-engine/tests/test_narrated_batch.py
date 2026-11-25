@@ -190,6 +190,7 @@ class NarratedBatchTests(unittest.TestCase):
         titled = self.s.creative_domain._auto_mix_recipe(run, json.loads(run["public_plan_json"]), {**private, "narrated_display_title": "洗地机怎么选"},
                                                          persona={"id": run["selected_voice_persona_id"]}, music=None)
         self.assertEqual("洗地机怎么选", titled["presentation"]["topic"])
+        self.assertEqual("洗地机怎么选", titled["display_title"], "the cover takes the typed title too")
         self.assertEqual(modern["emphasis_phrases"], titled["emphasis_phrases"], "a typed title the voice-over never says keeps the script's keywords")
         self.assertTrue(titled["presentation"]["showTitle"])
         older = dict(private)

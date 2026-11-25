@@ -67,6 +67,8 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
     try { saved = JSON.parse(localStorage.getItem("batch-studio-settings") || "{}"); } catch { /* Use defaults if stored settings are unavailable. */ }
     // The strict switch is per batch: it also governs the paid draft review, before the switch is on screen.
     delete saved.strict_visual_review;
+    // A typed title belongs to its batch; a new batch starts without one.
+    delete saved.display_title;
     return { minimum_duration_seconds: 30, music_mode: "auto", music_track_ids: [], ...saved, voice_persona_id: preferredVoice(saved?.voice_persona_id), workflow_version: 2 };
   });
   const [voices, setVoices] = useState<VoiceItem[]>([]);
@@ -587,7 +589,7 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
         {!total && <div className="batch-library-preview" aria-label="从已有素材开始">{assets.filter(asset => !asset.archived && asset.availableLocationCount !== 0).slice(0, 8).map(asset => <button type="button" key={asset.assetId} onClick={() => changeGroups({ opening: [], middle: [asset.assetId], ending: [] })}><span className="batch-library-thumb"><AssetThumb asset={asset} /><span><Plus size={17} />选用</span></span><span title={asset.displayName}>{asset.displayName}</span></button>)}</div>}
         <BatchMaterialBoard assets={assets} selected={materialIds} onChange={(ids) => changeGroups({ opening: [], middle: ids, ending: [] })} onImport={(folder) => void importTo("middle", folder)} onDropFiles={locked ? undefined : (files) => void importDropped("middle", files)} onBrowse={() => setPicker("middle")} onPreview={setPreview} /></div>
         <div className="batch-brief-rail"><BatchCreativeBrief value={brief} onChange={(value) => { setBrief(value); setDirty(true); }} cta={cta} onCtaChange={(value) => { setCta(value); setDirty(true); }} suggestions={batch?.brief_suggestions} />
-          <label className="batch-display-title">视频标题（选填）<input value={settings.display_title || ""} maxLength={30} placeholder="不填则每条用文案自己的标题" onChange={(e) => { setSettings({ ...settings, display_title: e.target.value || undefined }); setDirty(true); }} /></label>
+          <label className="batch-display-title">视频标题（选填）<input value={settings.display_title || ""} maxLength={30} disabled={!!batch?.script_confirmation} placeholder="不填则每条用文案自己的标题" onChange={(e) => { setSettings({ ...settings, display_title: e.target.value || undefined }); setDirty(true); }} /></label>
           {suppliedScript ? null : <label className="batch-minimum-duration">最短时长（秒）<input aria-label="每条最短时长" type="number" min={30} step={1} value={settings.minimum_duration_seconds || 30} onChange={(e) => { setSettings({ ...settings, minimum_duration_seconds: Number(e.target.value) }); setDirty(true); }} /></label>}
           <p className="batch-hint" role="status">{saving ? "正在保存…" : dirty ? "修改待保存" : batch ? "草稿已保存" : "填写后自动保存"}</p>
         </div>
