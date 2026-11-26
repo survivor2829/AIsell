@@ -41,6 +41,8 @@ const STOPPED: Record<string, string> = {
   search_box_not_found: "没找到微信的搜索框，已停下",
   wechat_main_window_not_found: "没找到微信聊天主窗口，整轮已停下",
   contact_not_friend: "对方已不是好友，微信里没有删除入口",
+  profile_more_not_found: "资料卡上没找到删除入口，请稍后再删一次",
+  visual_script_failed: "删除中途出了点问题，没有删，请稍后再删一次",
   ocr_unavailable: "这台电脑不能识别屏幕文字，整轮已停下",
   chat_info_panel_not_shown: "没打开聊天信息，请稍后再删一次",
   chat_member_not_found: "没找到这个人的头像，请稍后再删一次",

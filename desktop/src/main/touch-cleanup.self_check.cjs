@@ -259,6 +259,16 @@ async function checkDeleteModule() {
   };
   const forced = await run({ options: { visualOnly: true } });
   assert.deepEqual(forced.calls, ["open:wechat_id", "title", "visual:prepare", "visual:commit"]);
+  // The windows already open before prepare reach commit, which never takes, closes or counts them.
+  let baselineSeen = null;
+  await deleteWechatContact(person, { confirm: true, uniqueName: true, focus, visualOnly: true, opener: async () => ({ ok: true }), titleCheck: async () => ({ ok: true }),
+    runner: async (_s, env) => { if (env.XIAOXI_VDEL_PHASE === "commit") baselineSeen = env.XIAOXI_VDEL_BASELINE; return env.XIAOXI_VDEL_PHASE === "prepare" ? { ok: true, ready: true, baseline: "101,202" } : { ok: true, deleted: true }; } });
+  assert.equal(baselineSeen, "101,202");
+  // An unconfirmed 微信号 then the name: the same rule as touch (no first-row guess).
+  const searches = [];
+  await deleteWechatContact(person, { confirm: false, uniqueName: true, focus, visualOnly: true, titleCheck: async () => ({ ok: false }), runner: async () => ({ ok: false, reason: "x" }),
+    opener: async (query, context) => { searches.push([context.searchQueryType, context.searchFallbackReason]); return searches.length === 1 ? { ok: false, reason: "search_result_identity_unverified" } : { ok: false, reason: "y" }; } });
+  assert.deepEqual(searches, [["wechat_id", ""], ["name_fallback", "wechat_id_unverified"]]);
   assert.equal(forced.result.deleted, true); assert.equal(forced.result.visual, true); assert.equal(forced.result.idCheck.id_check_state, "matched");
   const fallback = await run({ uia: { ok: false, stage: "open", reason: "search_box_not_found" }, options: { visualOnly: false } });
   assert.deepEqual(fallback.calls, ["uia:open", "open:wechat_id", "title", "visual:prepare", "visual:commit"], "no UIA tree: the screen is read instead");

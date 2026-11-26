@@ -117,6 +117,8 @@ $pid0 = [uint32]$env:XIAOXI_EXPECTED_PID
 $engine = Initialize-XiaoxiOcr
 function Out-Result($ok, $stage, $reason, $extra = @{}) {
   $result = @{ ok = [bool]$ok; stage = [string]$stage; reason = [string]$reason; visual = $true }
+  # Every stop on commit before the press: 删除 was certainly not pressed, so it may be tried again.
+  if (-not $ok -and $stage -eq "commit" -and -not $script:pressedCommit) { $result.notClicked = $true }
   foreach ($key in $extra.Keys) { $result[$key] = $extra[$key] }
   $result | ConvertTo-Json -Compress -Depth 5
   exit 0
@@ -125,6 +127,8 @@ if (-not $engine) { Out-Result $false "visual" "ocr_unavailable" }
 # Windows' OCR misreads small gray text by a character or two (查找聊天内容 → 亘找孽天内容): a label counts when
 # all but a couple of its characters are there, in order.
 function Like([string]$text, [string]$target, [int]$slack = 2) {
+  # A label, not a sentence: chat messages that mention these words are longer than the label.
+  if ($text.Length -gt $target.Length + 2) { return $false }
   $i = 0; $hit = 0
   foreach ($ch in $target.ToCharArray()) { $j = $text.IndexOf($ch, $i); if ($j -ge 0) { $hit++; $i = $j + 1 } }
   return $hit -ge [Math]::Max(2, $target.Length - $slack)
@@ -171,19 +175,33 @@ function Press($x, $y, [string]$stage) {
   $x = [double]$x; $y = [double]$y
   if ([XiaoxiVisualDelete]::LastInput() -ne $script:lease) { Close-Opened; Out-Result $false $stage "wechat_external_input_detected" }
   $ours = { $front = [XiaoxiVisualDelete]::GetForegroundWindow().ToInt64(); $front -eq $mainHwnd -or @(Get-Popups) -contains $front }
-  if (-not (& $ours)) { [void][XiaoxiVisualDelete]::SetForegroundWindow([IntPtr]$mainHwnd); Start-Sleep -Milliseconds 250 }
+  # On commit nothing is brought to the front: a switch can close the confirm and the press would land in the chat.
+  if (-not (& $ours) -and $stage -ne "commit") { [void][XiaoxiVisualDelete]::SetForegroundWindow([IntPtr]$mainHwnd); Start-Sleep -Milliseconds 250 }
   # Windows may refuse the switch (another program in front, 2026-11-26 on the dev machine): never press then.
   if (-not (& $ours)) { Close-Opened; Out-Result $false $stage "wechat_window_not_foreground" }
   # The point itself must be on a WeChat window, not on something drawn over it.
   if ([XiaoxiVisualDelete]::OwnerAt([int]$x, [int]$y) -ne $pid0) { Close-Opened; Out-Result $false $stage "wechat_target_changed" }
   if ([XiaoxiVisualDelete]::LastInput() -ne $script:lease) { Close-Opened; Out-Result $false $stage "wechat_external_input_detected" }
   [void][XiaoxiVisualDelete]::SetCursorPos([int]$x, [int]$y); Start-Sleep -Milliseconds 90
+  if ($stage -eq "commit") { $script:pressedCommit = $true }
   [XiaoxiVisualDelete]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 50; [XiaoxiVisualDelete]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 120
   $script:lease = [XiaoxiVisualDelete]::LastInput()
 }
 # WeChat's windows other than the chat window (card, menu, confirm).
-function Get-Popups { @([XiaoxiVisualDelete]::Windows($pid0) | Where-Object { $_ -ne $mainHwnd } | Where-Object { $r = Rect $_; ($r.Right - $r.Left) -gt 60 -and ($r.Bottom - $r.Top) -gt 40 }) }
+# Only windows that appeared after this delete began: the user's own detached chats or image viewers are never taken
+# for the card, closed, or counted (the prepare run's baseline is handed to commit).
+function Get-WechatWindows { @([XiaoxiVisualDelete]::Windows($pid0) | Where-Object { $_ -ne $mainHwnd } | Where-Object { $r = Rect $_; ($r.Right - $r.Left) -gt 60 -and ($r.Bottom - $r.Top) -gt 40 }) }
+$script:baseline = if ($env:XIAOXI_VDEL_BASELINE) { @($env:XIAOXI_VDEL_BASELINE -split ',' | Where-Object { $_ } | ForEach-Object { [int64]$_ }) } else { @(Get-WechatWindows) }
+function Get-Popups { @(Get-WechatWindows | Where-Object { $script:baseline -notcontains $_ }) }
+# Anything that breaks midway: close what this run opened and say so. After the press on commit the result is
+# unknown (never retried); before it, nothing was deleted.
+trap {
+  foreach ($h in @(Get-Popups)) { try { [void][XiaoxiVisualDelete]::SendMessage([IntPtr]$h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) } catch { } }
+  if ($script:pressedCommit) { @{ ok = $false; stage = "commit"; reason = "delete_outcome_unknown"; outcomeUnknown = $true; visual = $true } | ConvertTo-Json -Compress; exit 0 }
+  @{ ok = $false; stage = $(if ($phase -eq "commit") { "commit" } else { "script" }); reason = "visual_script_failed"; notClicked = ($phase -eq "commit"); visual = $true } | ConvertTo-Json -Compress
+  exit 0
+}
 function Close-Opened { foreach ($h in @(Get-Popups)) { [void][XiaoxiVisualDelete]::SendMessage([IntPtr]$h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) } }
 function Wait-For([scriptblock]$probe, [int]$ms = 3000) {
   $stop = [Environment]::TickCount + $ms
@@ -194,7 +212,7 @@ function Wait-For([scriptblock]$probe, [int]$ms = 3000) {
 function Read-Confirm {
   foreach ($h in @(Get-Popups) + @($mainHwnd)) {
     $r = Rect $h; $lines = @(Read-Lines $r.Left $r.Top ($r.Right - $r.Left) ($r.Bottom - $r.Top))
-    $question = $lines | Where-Object { $_.text -match '删除' -and ($_.text.Contains($plainName) -or $_.text.Contains((Fold $name))) } | Select-Object -First 1
+    $question = $lines | Where-Object { $_.text -match '删除' -and $_.text -ne '删除联系人' -and (($plainName.Length -ge 2 -and $_.text.Contains($plainName)) -or $_.text.Contains((Fold $name))) } | Select-Object -First 1
     if (-not $question) { continue }
     $button = $lines | Where-Object { $_.text -eq '删除' -and $_.top -gt $question.top } | Select-Object -First 1
     $cancel = $lines | Where-Object { $_.text -eq '取消' -and $_.top -gt $question.top } | Select-Object -First 1
@@ -211,8 +229,13 @@ if ($phase -eq "commit") {
   $dialog = Read-Confirm
   if (-not $dialog -or -not $dialog.button) { Close-Opened; Out-Result $false "commit" "confirm_dialog_gone" @{ notClicked = $true } }
   Press $dialog.button.x $dialog.button.y "commit"
+  # Deleted when the confirm and the card are gone and the chat of this person is closed (its title no longer shown).
   $gone = Wait-For { if (-not (Read-Confirm) -and -not @(Get-Popups).Count) { $true } } 4000
-  if ($gone) { Out-Result $true "commit" "" @{ deleted = $true } }
+  if ($gone) {
+    $head = @(Read-Lines ($main.Left + [int]($mw * 0.25)) $main.Top ([int]($mw * 0.75)) ([Math]::Max(40, [int]($mh * 0.1))))
+    $stillOpen = $head | Where-Object { $_.text -eq (Fold $name) -or ($plainName.Length -ge 2 -and $_.text -eq $plainName) }
+    if (-not $stillOpen) { Out-Result $true "commit" "" @{ deleted = $true } }
+  }
   Out-Result $false "verify" "delete_outcome_unknown" @{ outcomeUnknown = $true }
 }
 
@@ -226,8 +249,8 @@ if ($phase -eq "probe") {
 }
 # 1. The chat's "…" (聊天信息): the rightmost three dots in the band of the chat title, unless the panel is open.
 $script:panelReads = 0; $script:panelLines = 0
-$panelProbe = { $lines = @(Read-Lines ($main.Left + [int]($mw * 0.55)) $main.Top ([int]($mw * 0.45)) $mh); $script:panelReads++; $script:panelLines = $lines.Count
-  $lines | Where-Object { (Like $_.text '查找聊天内容') -or (Like $_.text '消息免打扰') } | Sort-Object { $_.top } | Select-Object -First 1 }
+$panelProbe = { $lines = @(Read-Lines ($main.Left + [int]($mw * 0.7)) $main.Top ([int]($mw * 0.3)) $mh); $script:panelReads++; $script:panelLines = $lines.Count
+  $lines | Where-Object { (Like $_.text '查找聊天内容' 2) -or (Like $_.text '消息免打扰' 1) } | Sort-Object { $_.top } | Select-Object -First 1 }
 $script:panelPresses = @()
 $panel = & $panelProbe
 # A press right after the chat opened can be swallowed while WeChat still switches (seen on the dev machine):
@@ -250,13 +273,14 @@ if (-not $panel) { Close-Opened; Out-Result $false "member" "chat_info_panel_not
 # 2. The one member: the avatar left of 添加 on its row (its label is too small to read reliably; who it is is
 # checked on the card). A group's panel lists group settings and is refused.
 $lines = @(Read-Lines ([int]$panel.left - 30) $main.Top ($main.Right - [int]$panel.left + 30) ($main.Bottom - $main.Top))
-if ($lines | Where-Object { (Like $_.text '群聊名称') -or (Like $_.text '群公告') -or (Like $_.text '我在本群的昵称') }) { Close-Opened; Out-Result $false "member" "chat_member_mismatch" @{ group = $true } }
+if ($lines | Where-Object { (Like $_.text '群聊名称' 1) -or (Like $_.text '群公告' 0) -or (Like $_.text '我在本群的昵称' 1) }) { Close-Opened; Out-Result $false "member" "chat_member_mismatch" @{ group = $true } }
 $add = $lines | Where-Object { $_.text -eq '添加' -or $_.text -eq '添 加' } | Select-Object -First 1
 if (-not $add) { Close-Opened; Out-Result $false "member" "chat_member_not_found" }
 $addHeight = $add.bottom - $add.top
 $rowTop = [int]($add.top - 5 * $addHeight); $rowBottom = [int]$add.top - 2
 # Start left of the 添加 box, which is wider than its label (about 2.8 label heights across).
 $scanRight = [int]($add.x - 2 * $addHeight)
+if (($scanRight - $panel.left + 30) -lt 8 -or ($rowBottom - $rowTop) -lt 8) { Close-Opened; Out-Result $false "member" "chat_member_not_found" }
 $shot = New-Object System.Drawing.Bitmap ([int]($scanRight - $panel.left + 30)), ([int]($rowBottom - $rowTop))
 try {
   [void][XiaoxiScreenPixels]::Copy($shot, [int]$panel.left - 30, $rowTop)
@@ -272,7 +296,8 @@ if (-not $card) { Close-Opened; Out-Result $false "profile" "profile_card_not_fo
 Start-Sleep -Milliseconds 400
 $cr = Rect $card; $cw = $cr.Right - $cr.Left; $ch = $cr.Bottom - $cr.Top
 $cardLines = @(Read-Lines $cr.Left $cr.Top $cw $ch)
-$nameShown = [bool]($cardLines | Where-Object { $_.text -eq (Fold $name) -or ($plainName.Length -ge 2 -and $_.text.StartsWith($plainName)) })
+# The whole line, or the line with one extra character (the card's small person icon read as a character).
+$nameShown = [bool]($cardLines | Where-Object { $t = $_.text; @((Fold $name), $plainName) | Where-Object { $_.Length -ge 2 -and ($t -eq $_ -or ($t.StartsWith($_) -and $t.Length -eq $_.Length + 1)) } })
 $idLine = $cardLines | Where-Object { $_.text -match '^微信号[:：]?(.+)$' } | Select-Object -First 1
 $shownId = if ($idLine) { [regex]::Match($idLine.text, '^微信号[:：]?(.+)$').Groups[1].Value } else { "" }
 $normal = { param($text) ([string]$text -replace '[\s​-‏﻿]', '').ToLowerInvariant() }
@@ -285,6 +310,7 @@ if ($idLine -and $wechatId -and (& $normal $shownId) -ne (& $normal $wechatId)) 
   $bandBitmap = New-Object System.Drawing.Bitmap $bandWidth, $bandHeight
   try {
     if ([XiaoxiScreenPixels]::Copy($bandBitmap, [int]$idLine.left - 6, [int]$idLine.top - 5)) {
+      $script:lineOcrBudget.Restart(); $script:lineOcrIdErrors = 0
       $lineReading = Read-SearchLineOcr $bandBitmap 0 0 $bandWidth $bandHeight
       if ($lineReading -and [double]$lineReading.score -ge 0.8) {
         $read = [regex]::Match((Fold ([string]$lineReading.text)), '微信号[:：]?(.+)$').Groups[1].Value
@@ -302,8 +328,9 @@ if ($idLine -and $wechatId -and (& $normal $shownId) -ne (& $normal $wechatId)) 
 }
 $idCheck = @{ id_label_kind = $(if ($idLine) { "inline" } else { "none" }); id_value_kind = "ocr"; shown_length = $shownId.Length; stored_length = $wechatId.Length;
   same_ignoring_case = ((& $normal $shownId) -eq (& $normal $wechatId)) }
-$idCheck.id_check_state = if (-not $wechatId) { "no_stored_id" } elseif ($idCheck.same_ignoring_case) { "matched" } elseif ($shownId -and $uniqueName -and $nameShown) { "degraded_unread" } elseif ($shownId) { "mismatch" } elseif ($uniqueName) { "degraded_unread" } else { "unread" }
-# OCR can misread one character of a 微信号; a different reading still stops unless the name is unique and shown.
+$idCheck.id_check_state = if (-not $wechatId) { "no_stored_id" } elseif ($idCheck.same_ignoring_case) { "matched" } elseif ($shownId) { "mismatch" } elseif ($uniqueName) { "degraded_unread" } else { "unread" }
+# A 微信号 read on the card that differs is another person (or a misreading): always stop, a delete cannot be undone.
+$idCheck.line_reader = [bool]$idCheck_line
 if (-not $nameShown -and $idCheck.id_check_state -ne "matched") { Close-Opened; Out-Result $false "profile" "chat_title_mismatch" @{ id_check = $idCheck } }
 if ($idCheck.id_check_state -eq "mismatch") { Close-Opened; Out-Result $false "profile" "profile_wechat_id_mismatch" @{ id_check = $idCheck } }
 if ($idCheck.id_check_state -eq "unread") { Close-Opened; Out-Result $false "profile" "profile_wechat_id_unreadable" @{ id_check = $idCheck } }
@@ -311,7 +338,12 @@ if ($requireId -and $idCheck.id_check_state -ne "matched") { Close-Opened; Out-R
 
 # 4. The card's "…" (on the name's row, top right) → 删除联系人. A card without it is not a friend any more.
 $more = @(Find-Dots ($cr.Left + [int]($cw * 0.5)) $cr.Top ([int]($cw * 0.5)) ([int]($ch * 0.3))) | Sort-Object { $_.x } -Descending | Select-Object -First 1
-if (-not $more) { Close-Opened; Out-Result $false "menu" "contact_not_friend" @{ id_check = $idCheck } }
+# No "…": not a friend any more only when the card shows 发消息 without 语音聊天/视频聊天 (dev machine 2026-11-26);
+# otherwise the dots were just not seen (dark mode, animation) and the person may be tried again.
+if (-not $more) {
+  $notFriend = ($cardLines | Where-Object { Like $_.text '发消息' 0 }) -and -not ($cardLines | Where-Object { (Like $_.text '语音聊天' 1) -or (Like $_.text '视频聊天' 1) })
+  Close-Opened; Out-Result $false "menu" $(if ($notFriend) { "contact_not_friend" } else { "profile_more_not_found" }) @{ id_check = $idCheck }
+}
 Press $more.x $more.y "menu"
 $item = Wait-For {
   foreach ($h in @(Get-Popups)) { $r = Rect $h; $hit = @(Read-Lines $r.Left $r.Top ($r.Right - $r.Left) ($r.Bottom - $r.Top)) | Where-Object { $_.text -eq '删除联系人' } | Select-Object -First 1; if ($hit) { return $hit } }
@@ -327,7 +359,7 @@ if (-not $confirm) {
   if ($dialog.cancel) { Press $dialog.cancel.x $dialog.cancel.y "confirm" }
   Close-Opened; Out-Result $false "confirm" "dry_run_stopped_before_delete" @{ dryRun = $true; reached = "confirm"; id_check = $idCheck }
 }
-Out-Result $true "confirm" "" @{ ready = $true; id_check = $idCheck }
+Out-Result $true "confirm" "" @{ ready = $true; id_check = $idCheck; baseline = (@($script:baseline) -join ',') }
 `;
 
 module.exports = { VISUAL_DELETE_SCRIPT };

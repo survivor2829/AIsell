@@ -389,13 +389,16 @@ Out-Result $true "confirm" "" @{ ready = $true; id_check = $idCheck }
 // The same delete by looking at the screen (wechat_delete_contact_visual.cjs). The chat is opened with touch's own
 // search and its title checked first, as touch does before it sends.
 async function deleteVisually({ name, wechatId, plan, uniqueName, confirm, window, runner, opener, titleCheck, stopped }, markCommitting) {
-  const queries = plan.queryType === "wechat_id" ? [[wechatId, "wechat_id"], [plan.fallbackQuery, "name"]] : [[plan.query, "name"]];
+  // As touch does (state_machine.cjs): after an unconfirmed 微信号 the name search may not take the first row.
+  const queries = plan.queryType === "wechat_id" ? [[wechatId, "wechat_id"], [plan.fallbackQuery, "name_fallback"]] : [[plan.query, plan.queryType || "name"]];
   let opened = null;
   for (const [query, type] of queries) {
     if (!query) continue;
     if (stopped()) return { ok: false, stage: "open", reason: "stopped_by_user", visual: true };
+    const fallbackReason = type !== "name_fallback" ? String(plan.fallbackReason || "")
+      : opened?.reason === "search_result_identity_unverified" ? "wechat_id_unverified" : "wechat_id_no_result";
     opened = await Promise.resolve(opener(query, { pid: window.pid, hWnd: window.hWnd, minIdleMs: 0, searchQueryType: type,
-      searchFallbackReason: type === "name" && plan.queryType === "wechat_id" ? "wechat_id_no_result" : "", searchIdentity: { expectedName: name } }));
+      searchFallbackReason: fallbackReason, searchIdentity: { expectedName: name } }));
     if (opened?.ok) break;
     if (!["exact_search_result_not_found", "search_result_identity_unverified"].includes(String(opened?.reason || ""))) break;
   }
@@ -410,7 +413,9 @@ async function deleteVisually({ name, wechatId, plan, uniqueName, confirm, windo
   const prepared = await Promise.resolve(runner(VISUAL_DELETE_SCRIPT, { ...environment, XIAOXI_VDEL_PHASE: "prepare", XIAOXI_DELETE_CONFIRM: confirm ? "1" : "0" }, { ensure: false, timeout: 60000 }));
   if (!prepared?.ok || prepared.ready !== true) return prepared || { ok: false, stage: "script", reason: "delete_script_failed", visual: true };
   markCommitting();
-  const committed = await Promise.resolve(runner(VISUAL_DELETE_SCRIPT, { ...environment, XIAOXI_VDEL_PHASE: "commit" }, { ensure: false, timeout: 30000 }));
+  // The windows that were already open before prepare: commit never takes, closes or counts them.
+  const committed = await Promise.resolve(runner(VISUAL_DELETE_SCRIPT, { ...environment, XIAOXI_VDEL_PHASE: "commit", XIAOXI_VDEL_BASELINE: String(prepared.baseline || "") },
+    { ensure: false, timeout: 30000 }));
   // After the press: anything short of a clear "deleted" or "not pressed" is unknown, never retried.
   const known = committed?.deleted === true || committed?.notClicked === true;
   return { ...(committed || {}), ...(known ? {} : { ok: false, deleted: false, outcomeUnknown: true, stage: String(committed?.stage || "commit"),
