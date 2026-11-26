@@ -478,7 +478,7 @@ async function deleteVisuallyIn({ name, wechatId, plan, uniqueName, confirm, win
   const known = committed?.deleted === true || committed?.notClicked === true;
   return { ...(committed || {}), ...(known ? {} : { ok: false, deleted: false, outcomeUnknown: true, stage: String(committed?.stage || "commit"),
     reason: String(committed?.reason || "delete_outcome_unknown") }), ...(prepared.id_check ? { id_check: prepared.id_check } : {}), eyes: [...(prepared.eyes || []), ...(committed?.eyes || [])],
-    ...counted("input_ticks_ignored", prepared, committed), ...counted("input_noname_keys", prepared, committed) };
+    ...counted("input_ticks_ignored", prepared, committed), ...counted("input_noname_keys", prepared, committed), ...counted("windows_raised", prepared, committed), ...counted("windows_still_covered", prepared, committed) };
 }
 
 // contact: { name, remark, nickname, wechatId } from the synced contact list. confirm=false stops at the confirm
@@ -519,6 +519,8 @@ async function deleteOnce(contact, { confirm = false, uniqueName = false, runner
     ...(Number.isFinite(result?.line_count) ? { lineCount: result.line_count } : {}),
     ...(Number.isFinite(result?.input_ticks_ignored) ? { inputTicksIgnored: result.input_ticks_ignored } : {}),
     ...(Number.isFinite(result?.input_noname_keys) ? { inputNonameKeys: result.input_noname_keys } : {}),
+    ...(Number.isFinite(result?.windows_raised) ? { windowsRaised: result.windows_raised } : {}),
+    ...(Number.isFinite(result?.windows_still_covered) ? { windowsStillCovered: result.windows_still_covered } : {}),
     ...(typeof result?.input_reason === "string" && result.input_reason ? { inputReason: result.input_reason.slice(0, 40) } : {}),
     // Where the script broke (line and error type only: an error's text can quote the contact's name).
     ...(Number.isFinite(result?.script_line) ? { scriptLine: result.script_line } : {}),

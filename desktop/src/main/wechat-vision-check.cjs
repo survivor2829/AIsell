@@ -126,12 +126,12 @@ function pickDeleteStep(answer, { kind, name }) {
 
 function createWechatVisionCheck({ gatewayClient, fetchTimeoutMs = TIMEOUT_MS, model = MODEL } = {}) {
   const ready = () => Boolean(gatewayClient?.isReady?.() && typeof gatewayClient.fetch === 'function');
-  async function ask(messages) {
+  async function ask(messages, timeoutMs = fetchTimeoutMs) {
     if (!ready()) throw fail('vision_unavailable', 'gateway not ready');
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), fetchTimeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await gatewayClient.fetch(gatewayClient.url(ROUTE), { method: 'POST', redirect: 'error', signal: controller.signal, timeoutMs: fetchTimeoutMs,
+      const response = await gatewayClient.fetch(gatewayClient.url(ROUTE), { method: 'POST', redirect: 'error', signal: controller.signal, timeoutMs,
         headers: { 'content-type': 'application/json', ...gatewayClient.requestHeaders(), 'X-Xiaoxi-Billing-Feature': 'wechat' },
         body: JSON.stringify({ model, messages, temperature: 0, max_tokens: 1200 }) });
       if (!response.ok) throw fail('vision_http_' + response.status, 'vision request failed');
@@ -151,7 +151,8 @@ function createWechatVisionCheck({ gatewayClient, fetchTimeoutMs = TIMEOUT_MS, m
       return { ...pickSearchRow(answer, { query, queryType, expectedName }), usage, rows: Array.isArray(answer?.rows) ? answer.rows.length : 0 };
     },
     async readDeleteStep({ image, kind, name }) {
-      const { answer, usage } = await ask(deleteMessages({ image, kind }));
+      // 30 s: a card read on the 200% laptop was cut off at 20 s (1.3.77); the screen script waits 40 s.
+      const { answer, usage } = await ask(deleteMessages({ image, kind }), Math.max(fetchTimeoutMs, 30_000));
       return { ...pickDeleteStep(answer, { kind, name }), usage, rows: Array.isArray(answer?.items) ? answer.items.length : 0 };
     },
     async confirmTitle({ image, expectedName }) {

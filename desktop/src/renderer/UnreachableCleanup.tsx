@@ -19,6 +19,8 @@ const STOPPED: Record<string, string> = {
   wechat_account_mismatch: "不是当前登录的微信号的好友",
   wechat_account_changed: "微信已切换到其他账号",
   wechat_external_input_detected: "删除时有人动了鼠标键盘，已停下",
+  wechat_target_covered: "要点的地方被微信其他窗口挡住了，没有点，可以再删一次",
+  wechat_window_not_foreground: "微信没能切到最前面，没有点，可以再删一次",
   wechat_account_unverified: "没能确认当前登录的微信号，没有删",
   contact_name_not_unique: "名单里有同名好友，又没有微信号可核对，为免删错没有删",
   contact_not_saved: "没有保存这个人的资料，没法在微信里找他",
