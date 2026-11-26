@@ -2194,6 +2194,9 @@ $uiaCandidates = New-Object System.Collections.Generic.List[object]
 # the search_item_function_ ids above, which it no longer has: every row was missed and the search fell
 # back to reading the picture (47d2578f, 2026-11-26). The delete flow reads these rows (1.3.71).
 $cellCandidates = New-Object System.Collections.Generic.List[object]
+# The section headings between the rows (最常使用 / 联系人 / 群聊 / 聊天记录): each row carries the one above it,
+# so a group or a chat-history row named like the person is never taken for the contact.
+$cellHeaders = New-Object System.Collections.Generic.List[object]
 $visualCandidates = New-Object System.Collections.Generic.List[object]
 $webSearchCandidates = New-Object System.Collections.Generic.List[object]
 $ocrOk = $false
@@ -2208,14 +2211,18 @@ if ($observeLocalResults) {
   # The rows arrive in batches (the 最常使用 row came last on the dev machine): the rows count once two
   # readings in a row agree.
   $cellSignature = ""; $cellsSettled = $false
-  for ($attempt = 0; $attempt -lt 8 -and $uiaCandidates.Count -eq 0 -and -not $cellsSettled; $attempt++) {
+  for ($attempt = 0; $attempt -lt 8 -and $uiaCandidates.Count -eq 0 -and -not $cellsSettled -and ($attempt -lt 5 -or $cellSignature); $attempt++) {
     Assert-ExactSearchForeground
-    $cellCandidates.Clear()
+    $cellCandidates.Clear(); $cellHeaders.Clear()
     if ($root -ne $null) {
       $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
       for ($i = 0; $i -lt $all.Count; $i++) {
         $item = $all.Item($i)
         $automationId = [string]$item.Current.AutomationId
+        if ([string]$item.Current.ClassName -eq "mmui::XTableCell" -and -not $item.Current.IsOffscreen) {
+          [void]$cellHeaders.Add(@{ name = [string]$item.Current.Name; top = [int]$item.Current.BoundingRectangle.Top })
+          continue
+        }
         if ([string]$item.Current.ClassName -eq "mmui::SearchContentCellView" -and -not $item.Current.IsOffscreen) {
           $cellRect = $item.Current.BoundingRectangle
           if ($cellRect.Width -gt 10 -and $cellRect.Height -gt 10) {
@@ -2230,7 +2237,11 @@ if ($observeLocalResults) {
         [void]$uiaCandidates.Add(@{ automationId = $automationId; name = [string]$item.Current.Name; x = [int]($itemRect.Left + ($itemRect.Width / 2)); y = [int]($itemRect.Top + ($itemRect.Height / 2)) })
       }
     }
-    $signature = (@($cellCandidates | ForEach-Object { [string]$_.name + "@" + [string]$_.y }) -join "|")
+    foreach ($cell in $cellCandidates) {
+      $above = @($cellHeaders | Where-Object { $_.top -le $cell.top } | Sort-Object { $_.top } -Descending | Select-Object -First 1)
+      $cell.section = $(if ($above.Count) { [string]$above[0].name } else { "" })
+    }
+    $signature = (@($cellCandidates | ForEach-Object { [string]$_.name + "@" + [string]$_.y + "@" + [string]$_.section }) -join "|")
     $cellsSettled = $cellCandidates.Count -gt 0 -and $signature -eq $cellSignature
     $cellSignature = $signature
     if ($uiaCandidates.Count -eq 0 -and -not $cellsSettled -and $attempt -lt 7) { Start-Sleep -Milliseconds 250 }
@@ -2487,7 +2498,14 @@ $cellName = [Environment]::GetEnvironmentVariable("XIAOXI_SEARCH_CELL_NAME")
 if ($cellName) {
   $cellRoot = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$expectedHWnd)
   $cellCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, "mmui::SearchContentCellView")
-  $named = @(@($cellRoot.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cellCondition)) | Where-Object { -not $_.Current.IsOffscreen -and [string]$_.Current.Name -eq $cellName })
+  $headerCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, "mmui::XTableCell")
+  $headers = @(@($cellRoot.FindAll([System.Windows.Automation.TreeScope]::Descendants, $headerCondition)) | Where-Object { -not $_.Current.IsOffscreen } |
+    ForEach-Object { @{ name = [string]$_.Current.Name; top = [int]$_.Current.BoundingRectangle.Top } })
+  $named = @(@($cellRoot.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cellCondition)) | Where-Object {
+    if ($_.Current.IsOffscreen -or -not ([string]$_.Current.Name -ceq $cellName)) { return $false }
+    $top = [int]$_.Current.BoundingRectangle.Top
+    $above = @($headers | Where-Object { $_.top -le $top } | Sort-Object { $_.top } -Descending | Select-Object -First 1)
+    $above.Count -and @("最常使用", "联系人") -contains [string]$above[0].name })
   if ($named.Count -ne 1) { @{ ok=$false; reason="search_result_identity_unverified"; rule_id="search-cell-moved"; send_attempted=$false; safety_diagnostics=@{ phase="before_search_result_click"; named_rows=$named.Count } } | ConvertTo-Json -Compress -Depth 4; exit }
   $cellRect = $named[0].Current.BoundingRectangle
   $clickX = [int]($cellRect.Left + ($cellRect.Width / 2)); $clickY = [int]($cellRect.Top + ($cellRect.Height / 2))
@@ -2699,6 +2717,27 @@ function attachClickEvidence(searchEvidence, resolution, clicked) {
       .slice(0, 6).map((window) => ({ class: identifier(window?.class), process: identifier(window?.process),
         layered: window?.layered === true, transparent: window?.transparent === true, topmost: window?.topmost === true }))
   };
+}
+
+function searchClickEnvironment(observed, context, resolution) {
+  return {
+    XIAOXI_EXPECTED_PID: String(observed.pid ?? context.pid ?? ""),
+    XIAOXI_EXPECTED_HWND: String(observed.hWnd ?? context.hWnd ?? ""),
+    XIAOXI_EXPECTED_INPUT_TICK: String(observed.inputLeaseTick ?? ""),
+    XIAOXI_SEARCH_RESULT_X: String(resolution.candidate.x),
+    XIAOXI_SEARCH_RESULT_Y: String(resolution.candidate.y),
+    XIAOXI_SEARCH_CANDIDATE_FINGERPRINT: searchCandidateFingerprint(resolution.mode, resolution.candidate),
+    XIAOXI_SEARCH_CANDIDATE_MODE: resolution.mode,
+    XIAOXI_SEARCH_CELL_NAME: /_cell$/.test(resolution.mode) ? String(resolution.candidate.name || "") : ""
+  };
+}
+
+// The rules without WeChat 4's rows, on the same popup (used when the named row moved or doubled before the press).
+function resolveWithoutCells(observed, identity, context) {
+  const observation = { ...observed.searchResultObservation, cellCandidates: [] };
+  const strict = resolveWechatSearchResultObservation(observation, identity);
+  const ruled = firstLocalRowFallback(observation, identity, strict, String(context.searchFallbackReason || "")) || strict;
+  return ruled.status === "selected" ? ruled : null;
 }
 
 function searchCandidateFingerprint(mode, candidate) {
@@ -3083,7 +3122,7 @@ function openWechatSearchResult(query, context = {}) {
     const identity = { query, expectedName: context.searchIdentity.expectedName, queryType: context.searchQueryType };
       const strict = resolveWechatSearchResultObservation(observed.searchResultObservation, identity);
       const ruled = firstLocalRowFallback(observed.searchResultObservation, identity, strict, String(context.searchFallbackReason || "")) || strict;
-      const resolution = ruled.status === "selected" ? ruled : visionResolution(observed, context.visionPoint) || ruled;
+      let resolution = ruled.status === "selected" ? ruled : visionResolution(observed, context.visionPoint) || ruled;
     const searchEvidence = buildSearchEvidence(observed, resolution, query, context);
     const capture = detachedSearchCapture(observed, resolution, context.captureSearchFailure === true);
     if (resolution.status !== "selected") {
@@ -3093,16 +3132,10 @@ function openWechatSearchResult(query, context = {}) {
       return { ...capture.observed, ok: false, reason: resolution.reason, diagnostics: capture.diagnostics, searchEvidence,
         searchQueryType: String(context.searchQueryType || 'unknown'), searchFallbackReason: String(context.searchFallbackReason || '') };
     }
-    const clicked = clickRunner(CLICK_SEARCH_RESULT_SCRIPT, {
-      XIAOXI_EXPECTED_PID: String(observed.pid ?? context.pid ?? ""),
-      XIAOXI_EXPECTED_HWND: String(observed.hWnd ?? context.hWnd ?? ""),
-      XIAOXI_EXPECTED_INPUT_TICK: String(observed.inputLeaseTick ?? ""),
-      XIAOXI_SEARCH_RESULT_X: String(resolution.candidate.x),
-      XIAOXI_SEARCH_RESULT_Y: String(resolution.candidate.y),
-      XIAOXI_SEARCH_CANDIDATE_FINGERPRINT: searchCandidateFingerprint(resolution.mode, resolution.candidate),
-      XIAOXI_SEARCH_CANDIDATE_MODE: resolution.mode,
-      XIAOXI_SEARCH_CELL_NAME: /_cell$/.test(resolution.mode) ? String(resolution.candidate.name || "") : ""
-    }, { ensure: false });
+    let clicked = clickRunner(CLICK_SEARCH_RESULT_SCRIPT, searchClickEnvironment(observed, context, resolution), { ensure: false });
+    // The named row moved or doubled before the press: the same popup is decided again by the other rules.
+    const fallback = !clicked?.ok && clicked?.rule_id === "search-cell-moved" ? resolveWithoutCells(observed, identity, context) : null;
+    if (fallback) { resolution = fallback; clicked = clickRunner(CLICK_SEARCH_RESULT_SCRIPT, searchClickEnvironment(observed, context, resolution), { ensure: false }); }
     attachClickEvidence(searchEvidence, resolution, clicked);
     return clicked?.ok
       ? { ...capture.observed, ...clicked, searchQuery: String(query), searchQueryType: String(context.searchQueryType || "unknown"), searchFallbackReason: String(context.searchFallbackReason || ""), searchResultMode: resolution.mode, searchEvidence }
@@ -3135,7 +3168,7 @@ function openWechatSearchResultAsync(query, context = {}) {
       const identity = { query, expectedName: context.searchIdentity.expectedName, queryType: context.searchQueryType };
       const strict = resolveWechatSearchResultObservation(observed.searchResultObservation, identity);
       const ruled = firstLocalRowFallback(observed.searchResultObservation, identity, strict, String(context.searchFallbackReason || "")) || strict;
-      const resolution = ruled.status === "selected" ? ruled : visionResolution(observed, context.visionPoint) || ruled;
+      let resolution = ruled.status === "selected" ? ruled : visionResolution(observed, context.visionPoint) || ruled;
       const searchEvidence = buildSearchEvidence(observed, resolution, query, context);
       const capture = detachedSearchCapture(observed, resolution, context.captureSearchFailure === true);
       if (resolution.status !== "selected") {
@@ -3145,16 +3178,10 @@ function openWechatSearchResultAsync(query, context = {}) {
         return { ...capture.observed, ok: false, reason: resolution.reason, diagnostics: capture.diagnostics, searchEvidence,
           searchQueryType: String(context.searchQueryType || 'unknown'), searchFallbackReason: String(context.searchFallbackReason || '') };
       }
-      const clicked = await clickRunner(CLICK_SEARCH_RESULT_SCRIPT, {
-        XIAOXI_EXPECTED_PID: String(observed.pid ?? context.pid ?? ""),
-        XIAOXI_EXPECTED_HWND: String(observed.hWnd ?? context.hWnd ?? ""),
-        XIAOXI_EXPECTED_INPUT_TICK: String(observed.inputLeaseTick ?? ""),
-        XIAOXI_SEARCH_RESULT_X: String(resolution.candidate.x),
-        XIAOXI_SEARCH_RESULT_Y: String(resolution.candidate.y),
-        XIAOXI_SEARCH_CANDIDATE_FINGERPRINT: searchCandidateFingerprint(resolution.mode, resolution.candidate),
-        XIAOXI_SEARCH_CANDIDATE_MODE: resolution.mode,
-        XIAOXI_SEARCH_CELL_NAME: /_cell$/.test(resolution.mode) ? String(resolution.candidate.name || "") : ""
-      }, { ensure: false });
+      let clicked = await clickRunner(CLICK_SEARCH_RESULT_SCRIPT, searchClickEnvironment(observed, context, resolution), { ensure: false });
+      // The named row moved or doubled before the press: the same popup is decided again by the other rules.
+      const fallback = !clicked?.ok && clicked?.rule_id === "search-cell-moved" ? resolveWithoutCells(observed, identity, context) : null;
+      if (fallback) { resolution = fallback; clicked = await clickRunner(CLICK_SEARCH_RESULT_SCRIPT, searchClickEnvironment(observed, context, resolution), { ensure: false }); }
       attachClickEvidence(searchEvidence, resolution, clicked);
       return clicked?.ok
         ? { ...capture.observed, ...clicked, searchQuery: String(query), searchQueryType: String(context.searchQueryType || "unknown"), searchFallbackReason: String(context.searchFallbackReason || ""), searchResultMode: resolution.mode, searchEvidence }

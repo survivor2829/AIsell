@@ -151,13 +151,28 @@ const SEARCH_FALLBACK_RULES = Object.freeze({ noResult: "search-r017", invalidPl
 // Emoji, symbols and decorations in a remark or nickname («✳💰何气生») are not found by WeChat's
 // contact search and sent the search to 搜一搜 on customer computers (2026-11-19). Search by the
 // words of the name; the opened chat is still checked against the full name.
+// WeChat's built-in emoji, stored in names as text codes ("[呲牙]", "[Facepalm]") but shown as pictures.
+// Typed into the search box a code finds nobody (dev machine, 2026-11-26), so it is left out of the query;
+// the result row still has to be named exactly as written, code included. Only these codes: a remark tag
+// such as "[重要]" or "[VIP]" is real text that WeChat does find.
+const WECHAT_EMOJI_CODES = new Set([
+  "微笑 撇嘴 色 发呆 得意 流泪 害羞 闭嘴 睡 大哭 尴尬 发怒 调皮 呲牙 惊讶 难过 酷 冷汗 抓狂 吐 偷笑 愉快 可爱 白眼 傲慢 饥饿 困 惊恐 流汗 憨笑 悠闲 大兵 奋斗 咒骂 疑问 嘘 晕 疯了 折磨",
+  "衰 骷髅 敲打 再见 擦汗 抠鼻 鼓掌 糗大了 坏笑 左哼哼 右哼哼 哈欠 鄙视 委屈 快哭了 阴险 亲亲 吓 可怜 菜刀 西瓜 啤酒 篮球 乒乓 咖啡 饭 猪头 玫瑰 凋谢 嘴唇 爱心 心碎 蛋糕 闪电 炸弹 刀",
+  "足球 瓢虫 便便 月亮 太阳 礼物 拥抱 强 弱 握手 胜利 抱拳 勾引 拳头 差劲 爱你 NO OK 爱情 飞吻 跳跳 发抖 怄火 转圈 磕头 回头 跳绳 投降 激动 乱舞 献吻 左太极 右太极 嘿哈 捂脸 奸笑",
+  "机智 皱眉 耶 吃瓜 加油 汗 天啊 Emm 社会社会 旺柴 好的 打脸 哇 翻白眼 666 让我看看 叹气 苦涩 裂开 爆竹 烟花 福 红包 發 合十 破涕为笑 笑脸 生病 脸红 恐惧 失望 无语 鬼魂 强壮 庆祝",
+  "Smile Grimace Drool Scowl CoolGuy Sob Shy Silent Sleep Cry Awkward Angry Tongue Grin Surprise Frown Ruthless",
+  "Blush Scream Puke Chuckle Joyful Slight Smug Hungry Drowsy Panic Sweat Laugh Commando Determined Scold",
+  "Shocked Shhh Dizzy Tormented Toasted Skull Hammer Wave Speechless NosePick Clap Shame Trick Bah! Yawn",
+  "Pooh-pooh Shrunken TearingUp Sly Kiss Wrath Whimper Cleaver Watermelon Beer Basketball PingPong Coffee Rice",
+  "Pig Rose Wilt Lips Heart BrokenHeart Cake Lightning Bomb Dagger Soccer Ladybug Poop Moon Sun Gift Hug",
+  "ThumbsUp ThumbsDown Shake Peace Fight Beckon Fist Pinky RockOn Nuh-uh Love Facepalm Smirk Smart Concerned",
+  "Yeah! Hey Onlooker GoForIt Sweats OMG Respect Doge NoProb MyBad Wow Boring Awesome LetMeSee Sigh Hurt Broken",
+  "Worship Party Firecracker Fireworks Blessing Packet"
+].join(" ").split(" "));
 function searchableName(value) {
   const text = String(value || "").trim();
   // Emoji and decorative symbols only; ①、™、full-width letters stay as written, since WeChat does not fold them.
-  // WeChat's own emoji are stored as text codes ("[\u5472\u7259]") but shown as pictures: typed into the search box
-  // the code finds nobody (dev machine, 2026-11-26), so it is left out of the query. The result row still
-  // has to be named exactly as written, code included.
-  const stripped = text.replace(/\[[\p{Script=Han}A-Za-z]{1,6}\]/gu, "")
+  const stripped = text.replace(/\[([^\[\]]{1,12})\]/gu, (code, inner) => WECHAT_EMOJI_CODES.has(inner) ? "" : code)
     .replace(/(?![\u00A9\u00AE\u2122])(?:[\p{Extended_Pictographic}\uFE0F\u200D\u20E3]|[\u2600-\u27BF\u2B00-\u2BFF])/gu, "").replace(/\s+/gu, " ").trim();
   return stripped !== text && [...stripped.replace(/\s/gu, "")].length >= 2 ? stripped : text;
 }
