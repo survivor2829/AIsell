@@ -190,7 +190,10 @@ def main(path, import_line, spec_path):
     new_text = data.decode("utf-8")
     if import_line not in new_text:
         lines = new_text.split("\n")
-        import_lines = [i for i, line in enumerate(lines) if re.match(r"(from \S+ import |import )", line)]
+        uses = [n.lineno - 1 for n in ast.walk(ast.parse(new_text)) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "prompt_ref"]
+        first_use = min(uses) if uses else len(lines)
+        # Module-level imports that come before the first use (a file may import again further down).
+        import_lines = [i for i, line in enumerate(lines) if i < first_use and re.match(r"(from \S+ import |import )", line)]
         if import_lines:
             index = max(import_lines) + 1  # After the last top-level import, before the prompt constants.
         else:

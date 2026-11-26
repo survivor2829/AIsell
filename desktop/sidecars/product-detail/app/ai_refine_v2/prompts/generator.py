@@ -15,6 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, TemplateNotFound
+from prompt_ref import prompt_ref
 
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -27,6 +28,8 @@ _env = Environment(
     lstrip_blocks=True,
     autoescape=False,  # prompt 不是 HTML, 不需要转义
 )
+# Fixed template wording is stored on the server; templates name it with prompt_ref (prompt_migrate_j2.py).
+_env.globals["prompt_ref"] = prompt_ref
 
 # 3 类 visual_type 对应文件
 TEMPLATES = {
@@ -37,9 +40,7 @@ TEMPLATES = {
 
 # 所有模板共享的 STYLE_BASE (渲染后自动追加到末尾)
 STYLE_BASE = (
-    "Taobao/Tmall e-commerce detail page quality,\n"
-    "professional 8K, sharp focus,\n"
-    "commercial photography standard."
+    prompt_ref("detail.template.style_base")
 )
 
 

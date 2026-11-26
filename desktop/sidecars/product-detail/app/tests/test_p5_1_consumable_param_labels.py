@@ -12,6 +12,7 @@
 - 耗材 DeepSeek prompt 补 compat_models 字段引导 (P5.0 §C 缺口)
 """
 from __future__ import annotations
+from tests._prompt_source import prompt_source  # wording stored on the server since 2026-11-25
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -22,7 +23,7 @@ class TestParamLabelsByCategoryConstant:
     """守护: app.py 必须定义 _PARAM_LABELS_BY_CATEGORY 字典."""
 
     def test_constant_exists(self):
-        content = APP_PY.read_text(encoding="utf-8")
+        content = prompt_source(APP_PY)
         assert "_PARAM_LABELS_BY_CATEGORY" in content, (
             "app.py 必须定义 _PARAM_LABELS_BY_CATEGORY 字典 (4 品类 x 4 label). "
             "P5.0 §F.1 §1: 替代 line 754-757 硬编码."
@@ -77,7 +78,7 @@ class TestCategoryFallbackConstant:
     """守护: app.py 必须定义 _CAT_FALLBACK 字典 (替代 line 739 硬编码兜底)."""
 
     def test_constant_exists(self):
-        content = APP_PY.read_text(encoding="utf-8")
+        content = prompt_source(APP_PY)
         assert "_CAT_FALLBACK" in content, (
             "app.py 必须定义 _CAT_FALLBACK 字典. "
             "P5.0 §F.1 §2: 替代 line 739 硬编码 '商用清洁设备'."
@@ -175,7 +176,7 @@ class TestParseTextEndpointWiresCategory:
 
     def test_endpoint_passes_product_category(self):
         import re
-        content = APP_PY.read_text(encoding="utf-8")
+        content = prompt_source(APP_PY)
         # 找 parse_text_for_build 函数体
         match = re.search(
             r'def parse_text_for_build\([^)]*\):.*?(?=\n@app\.route|\nclass\s|\Z)',
@@ -199,7 +200,7 @@ class TestConsumablePromptHasCompatModels:
     """守护: 耗材类 DeepSeek prompt 必须含 compat_models 字段引导 (P5.0 §C 缺口)."""
 
     def test_consumable_prompt_includes_compat_models(self):
-        content = APP_PY.read_text(encoding="utf-8")
+        content = prompt_source(APP_PY)
         # 找 elif product_type == "耗材类": 后的 prompt 文本块
         import re
         match = re.search(

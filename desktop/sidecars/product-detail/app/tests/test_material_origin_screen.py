@@ -13,6 +13,7 @@
 6. prompt_templates.py: SCREEN_VARIANTS 加 material_origin 4 个 variant (per source_type)
 """
 from __future__ import annotations
+from tests._prompt_source import prompt_source  # wording stored on the server since 2026-11-25
 from copy import deepcopy
 from pathlib import Path
 
@@ -160,7 +161,7 @@ class TestPromptHasMaterialsField:
     """守护: 耗材类 + 配件类 DeepSeek prompt 必须有 materials 字段引导."""
 
     def test_consumable_prompt_has_materials(self):
-        content = APP_PY.read_text(encoding="utf-8")
+        content = prompt_source(APP_PY)
         # 找耗材类 prompt 块
         import re
         match = re.search(
@@ -180,7 +181,7 @@ class TestPromptHasMaterialsField:
         )
 
     def test_part_prompt_has_materials(self):
-        content = APP_PY.read_text(encoding="utf-8")
+        content = prompt_source(APP_PY)
         import re
         # 找配件类 prompt (it's first branch with `if`, not `elif`)
         match = re.search(

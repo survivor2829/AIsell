@@ -31,6 +31,7 @@ follow text instruction → 把产品本身已有的标签也刷掉.
 - 准则 7 末尾视觉指令规约 (line 713-715)
 """
 from __future__ import annotations
+from tests._prompt_source import prompt_source  # wording stored on the server since 2026-11-25
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -42,7 +43,7 @@ class TestNoBlanketLabelBan:
 
     def test_no_blanket_no_printed_labels(self):
         """删除"NO printed labels" 这种粗暴禁令."""
-        content = PLANNER_PROMPTS.read_text(encoding="utf-8")
+        content = prompt_source(PLANNER_PROMPTS)
         assert "NO printed labels" not in content, (
             "PLANNER_PROMPTS 不能含 'NO printed labels' 全禁文案. "
             "PR D: 改成 'DO NOT INVENT ... PRESERVE existing' 区分."
@@ -50,7 +51,7 @@ class TestNoBlanketLabelBan:
 
     def test_no_blanket_unmarked_plain(self):
         """删除"unmarked plain product surfaces" 这种粗暴禁令."""
-        content = PLANNER_PROMPTS.read_text(encoding="utf-8")
+        content = prompt_source(PLANNER_PROMPTS)
         assert "unmarked plain product surfaces" not in content, (
             "PLANNER_PROMPTS 不能含 'unmarked plain product surfaces'. "
             "用户产品本身有标签时这条会刷掉它. 改成 'PRESERVE existing labels'."
@@ -58,7 +59,7 @@ class TestNoBlanketLabelBan:
 
     def test_no_blanket_no_model_badge(self):
         """删除"NO model badge text" 这种粗暴禁令."""
-        content = PLANNER_PROMPTS.read_text(encoding="utf-8")
+        content = prompt_source(PLANNER_PROMPTS)
         assert "NO model badge text" not in content, (
             "PLANNER_PROMPTS 不能含 'NO model badge text' 全禁文案. "
             "产品本身可能就有型号 badge."
@@ -70,7 +71,7 @@ class TestPreservePhraseAdded:
 
     def test_has_preserve_existing_phrase(self):
         """修复后 prompt 必须告诉 AI 保留 Image 1 已有的标签."""
-        content = PLANNER_PROMPTS.read_text(encoding="utf-8")
+        content = prompt_source(PLANNER_PROMPTS)
         # 接受 PRESERVE / preserve / Keep faithful 等等价表达
         has_preserve = (
             "PRESERVE" in content or
@@ -85,7 +86,7 @@ class TestPreservePhraseAdded:
 
     def test_has_do_not_invent_phrase(self):
         """修复后 prompt 必须含'不要编造'的 explicit instruction (替代旧的 NO 全禁)."""
-        content = PLANNER_PROMPTS.read_text(encoding="utf-8")
+        content = prompt_source(PLANNER_PROMPTS)
         # 接受 DO NOT INVENT / do not fabricate / never invent 等
         has_no_invent = (
             "DO NOT INVENT" in content or
@@ -105,7 +106,7 @@ class TestNoFalseRegression:
 
     def test_still_warns_against_invented_brand(self):
         """修复后仍必须有'防止编造文案没提的品牌信息'语义."""
-        content = PLANNER_PROMPTS.read_text(encoding="utf-8")
+        content = prompt_source(PLANNER_PROMPTS)
         # 必须 mention "Image 1" 让 vision-first 设计仍生效
         assert "Image 1" in content, (
             "PLANNER_PROMPTS 必须保留 vision-first 设计 (引用 Image 1 主导), "
@@ -114,7 +115,7 @@ class TestNoFalseRegression:
 
     def test_still_uses_chinese_quote_brackets(self):
         """修复后仍必须用「」标记 explicit 应画的中文文字."""
-        content = PLANNER_PROMPTS.read_text(encoding="utf-8")
+        content = prompt_source(PLANNER_PROMPTS)
         assert "「」" in content or "「" in content, (
             "PLANNER_PROMPTS 必须保留「」-quoted 标记规则 (准则 4)"
         )

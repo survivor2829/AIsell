@@ -35,6 +35,14 @@ def builders():
     out["strategy.system"] = lambda: buyer_strategy.SYSTEM_PROMPT
     out["strategy.demand_first"] = buyer_strategy.demand_first_prompt  # used to slice SYSTEM_PROMPT at "JSON格式"
     out["demand.review"] = lambda: demand_first.REVIEW_PROMPT
+    from ai_refine_v2.prompts import generator
+    product = {"name": "N", "primary_color": "C", "key_visual_parts": ["a", "b"], "proportions": "P"}
+    for visual_type, extra in (("product_in_scene", {"scene": "S", "hero": False, "selling_point": {"text": "T"}, "human_hint": "H"}),
+                               ("product_closeup", {"focus_part": "F"}),
+                               ("concept_visual", {"selling_point": {"text": "T"}})):
+        out[f"template.{visual_type}"] = lambda visual_type=visual_type, extra=extra: generator.render(visual_type, product=product, **extra)
+    from ai_refine_v2 import refine_generator
+    out["generator.color_anchor"] = lambda: refine_generator._INJECTION_PREFIX_V3_TEMPLATE.format(primary_hex="#123456", palette_str="#123456, #abcdef")
     return out
 
 
