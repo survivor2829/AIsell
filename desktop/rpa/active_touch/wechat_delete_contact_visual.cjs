@@ -41,6 +41,11 @@ public static class XiaoxiVisualDelete {
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
+  [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vk);
+  public static int[] Cursor() { POINT p; return GetCursorPos(out p) ? new[] { p.X, p.Y } : new[] { int.MinValue, int.MinValue }; }
+  // A key or mouse button held right now.
+  public static bool AnyKeyDown() { for (int vk = 1; vk < 255; vk++) { if ((GetAsyncKeyState(vk) & 0x8000) != 0) return true; } return false; }
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, UIntPtr e);
   [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
@@ -147,23 +152,27 @@ public static class XiaoxiDeleteInputGuard {
     if (!started) return;
     Msg msg; while (GetMessage(out msg, IntPtr.Zero, 0, 0) > 0) { }
   }
+  // Never throws: an exception on this thread would end the whole delete without a result.
   static IntPtr OnMouse(int code, IntPtr message, IntPtr data) {
-    if (code >= 0 && !Unattended) {
-      var e = (MouseData)Marshal.PtrToStructure(data, typeof(MouseData));
-      if (!((e.Flags & 1u) != 0 && e.Extra == Marker)) {
-        if (System.Threading.Interlocked.Increment(ref external) == 1) First = (message.ToInt32() == 0x200 ? "mouse_move" : "mouse_0x" + message.ToInt32().ToString("x")) + ((e.Flags & 1u) != 0 ? "_injected" : "");
+    try {
+      if (code >= 0 && !Unattended) {
+        var e = (MouseData)Marshal.PtrToStructure(data, typeof(MouseData)); uint flags = e.Flags; UIntPtr extra = e.Extra;
+        if (!((flags & 1u) != 0 && extra == Marker)) {
+          if (System.Threading.Interlocked.Increment(ref external) == 1) First = (message.ToInt32() == 0x200 ? "mouse_move" : "mouse_0x" + message.ToInt32().ToString("x")) + ((flags & 1u) != 0 ? "_injected" : "");
+        }
       }
-    }
+    } catch { System.Threading.Interlocked.Increment(ref external); }
     return CallNextHookEx(IntPtr.Zero, code, message, data);
   }
   static IntPtr OnKeyboard(int code, IntPtr message, IntPtr data) {
-    if (code >= 0 && !Unattended) {
+    try { if (code >= 0 && !Unattended) {
       int vk = Marshal.ReadInt32(data, 0); bool injected = (Marshal.ReadInt32(data, 8) & 0x10) != 0;
+      bool down = message.ToInt32() == 0x100 || message.ToInt32() == 0x104;
       // VK_NONAME (0xFC) sent by software is no key at all: 微信输入法 (WeType) sends it when a card or menu takes the
       // focus (dev machine, 2026-11-26, every run at the same step). It types nothing, so it is only counted.
-      if (injected && vk == 0xFC) System.Threading.Interlocked.Increment(ref ignored);
+      if (injected && vk == 0xFC) { if (down) System.Threading.Interlocked.Increment(ref ignored); }
       else if (System.Threading.Interlocked.Increment(ref external) == 1) First = "key" + (injected ? "_injected_0x" + vk.ToString("x") : "");
-    }
+    } } catch { System.Threading.Interlocked.Increment(ref external); }
     return CallNextHookEx(IntPtr.Zero, code, message, data);
   }
 }
@@ -317,13 +326,22 @@ function Ask-Eyes([string]$kind, [int]$left, [int]$top, [int]$width, [int]$heigh
 $script:guard = $false
 try { $script:guard = [XiaoxiDeleteInputGuard]::Start() } catch { $script:guard = $false }
 $script:lease = [XiaoxiVisualDelete]::LastInput()
+$script:cursor = [XiaoxiVisualDelete]::Cursor()
 $script:quietTicks = 0
 function Lease-Broken {
   if ($script:guard) {
     if ([XiaoxiDeleteInputGuard]::External -gt 0) { $script:inputReason = "input_event_" + [XiaoxiDeleteInputGuard]::First; return $true }
     if (-not [XiaoxiDeleteInputGuard]::Available) { $script:inputReason = "input_guard_lost"; return $true }
-    # The time moved with no event: counted for the report, never a reason to stop.
-    $now = [XiaoxiVisualDelete]::LastInput(); if ($now -ne $script:lease) { $script:quietTicks++; $script:lease = $now }
+    $now = [XiaoxiVisualDelete]::LastInput()
+    if ($now -ne $script:lease) {
+      # A second check in case Windows dropped the hook without a word (a callback past its time limit): with the time
+      # moved, the cursor away from where we left it or a key or button held is a person all the same.
+      $c = [XiaoxiVisualDelete]::Cursor()
+      if ($c[0] -ne [int]::MinValue -and $script:cursor[0] -ne [int]::MinValue -and ([Math]::Abs($c[0] - $script:cursor[0]) -gt 2 -or [Math]::Abs($c[1] - $script:cursor[1]) -gt 2)) { $script:inputReason = "input_time_cursor_moved"; return $true }
+      if ([XiaoxiVisualDelete]::AnyKeyDown()) { $script:inputReason = "input_time_key_held"; return $true }
+      # Otherwise the time moved with no event: counted for the report, never a reason to stop.
+      $script:quietTicks++; $script:lease = $now
+    }
     return $false
   }
   if ([XiaoxiVisualDelete]::LastInput() -ne $script:lease) { $script:inputReason = "input_time"; return $true }
@@ -336,7 +354,7 @@ function Press($x, $y, [string]$stage) {
   foreach ($h in @($mainHwnd) + @(Get-Popups)) { $r = Rect $h; if ($x -gt $r.Left + 2 -and $x -lt $r.Right - 2 -and $y -gt $r.Top + 2 -and $y -lt $r.Bottom - 2) { $inside = $true } }
   if (-not $inside) { Close-Opened; Out-Result $false $stage "visual_point_invalid" }
   $x = [double]$x; $y = [double]$y
-  if (Lease-Broken) { Close-Opened; Out-Result $false $stage "wechat_external_input_detected" }
+  if (Lease-Broken) { Close-Opened; Out-Result $false $stage $(if ($script:inputReason -eq "input_guard_lost") { "wechat_input_lease_unavailable" } else { "wechat_external_input_detected" }) }
   $ours = { $front = [XiaoxiVisualDelete]::GetForegroundWindow().ToInt64(); $front -eq $mainHwnd -or @(Get-Popups) -contains $front }
   # On commit nothing is brought to the front: a switch can close the confirm and the press would land in the chat.
   if (-not (& $ours) -and $stage -ne "commit") { [void][XiaoxiVisualDelete]::SetForegroundWindow([IntPtr]$mainHwnd); Start-Sleep -Milliseconds 250 }
@@ -344,7 +362,7 @@ function Press($x, $y, [string]$stage) {
   if (-not (& $ours)) { Close-Opened; Out-Result $false $stage "wechat_window_not_foreground" }
   # The point itself must be on a WeChat window, not on something drawn over it.
   if ([XiaoxiVisualDelete]::OwnerAt([int]$x, [int]$y) -ne $pid0) { Close-Opened; Out-Result $false $stage "wechat_target_changed" }
-  if (Lease-Broken) { Close-Opened; Out-Result $false $stage "wechat_external_input_detected" }
+  if (Lease-Broken) { Close-Opened; Out-Result $false $stage $(if ($script:inputReason -eq "input_guard_lost") { "wechat_input_lease_unavailable" } else { "wechat_external_input_detected" }) }
   [void][XiaoxiVisualDelete]::SetCursorPos([int]$x, [int]$y); Start-Sleep -Milliseconds 90
   # Development only: every check of the commit press ran; stop just before it and close what was opened.
   if ($stage -eq "commit" -and $env:XIAOXI_VDEL_NO_PRESS -eq "1") { Close-Opened; Out-Result $false "commit" "dry_commit_reached" }
@@ -353,6 +371,7 @@ function Press($x, $y, [string]$stage) {
   [XiaoxiVisualDelete]::mouse_event(2, 0, 0, 0, [XiaoxiDeleteInputGuard]::Marker); Start-Sleep -Milliseconds 50; [XiaoxiVisualDelete]::mouse_event(4, 0, 0, 0, [XiaoxiDeleteInputGuard]::Marker)
   Start-Sleep -Milliseconds 120
   $script:lease = [XiaoxiVisualDelete]::LastInput()
+  $script:cursor = [XiaoxiVisualDelete]::Cursor()
 }
 # WeChat's windows other than the chat window (card, menu, confirm).
 # Only windows that appeared after this delete began: the user's own detached chats or image viewers are never taken

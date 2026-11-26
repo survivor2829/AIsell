@@ -438,6 +438,9 @@ async function deleteVisually(options, markCommitting) {
   finally { stop(); if (folder) fs.rmSync(folder, { recursive: true, force: true }); }
 }
 
+// A count from both runs, only when there is one.
+const counted = (key, ...runs) => { const sum = runs.reduce((total, run) => total + (Number(run?.[key]) || 0), 0); return sum > 0 ? { [key]: sum } : {}; };
+
 async function deleteVisuallyIn({ name, wechatId, plan, uniqueName, confirm, window, runner, opener, titleCheck, stopped }, markCommitting, folder) {
   // As touch does (state_machine.cjs): after an unconfirmed 微信号 the name search may not take the first row.
   const queries = plan.queryType === "wechat_id" ? [[wechatId, "wechat_id"], [plan.fallbackQuery, "name_fallback"]] : [[plan.query, plan.queryType || "name"]];
@@ -475,8 +478,7 @@ async function deleteVisuallyIn({ name, wechatId, plan, uniqueName, confirm, win
   const known = committed?.deleted === true || committed?.notClicked === true;
   return { ...(committed || {}), ...(known ? {} : { ok: false, deleted: false, outcomeUnknown: true, stage: String(committed?.stage || "commit"),
     reason: String(committed?.reason || "delete_outcome_unknown") }), ...(prepared.id_check ? { id_check: prepared.id_check } : {}), eyes: [...(prepared.eyes || []), ...(committed?.eyes || [])],
-    input_ticks_ignored: (Number(prepared.input_ticks_ignored) || 0) + (Number(committed?.input_ticks_ignored) || 0),
-    input_noname_keys: (Number(prepared.input_noname_keys) || 0) + (Number(committed?.input_noname_keys) || 0) };
+    ...counted("input_ticks_ignored", prepared, committed), ...counted("input_noname_keys", prepared, committed) };
 }
 
 // contact: { name, remark, nickname, wechatId } from the synced contact list. confirm=false stops at the confirm
