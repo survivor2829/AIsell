@@ -34,4 +34,21 @@ function promptRef(id, version = 1) {
   return `${OPEN}${id}@${version}${CLOSE}`;
 }
 
-module.exports = { promptRef, PROMPT_TOKEN_OPEN: OPEN, PROMPT_TOKEN_CLOSE: CLOSE };
+const TOKEN = /⟦xiaoxi-prompt:([a-z0-9][a-z0-9_.-]{0,99})@([1-9][0-9]{0,3})⟧/gu;
+
+// Characters of `text` once the gateway has put every prompt back. Length limits (a provider's prompt maximum) must
+// count the stored wording, not the short tokens a customer computer holds.
+function promptLength(text) {
+  const value = String(text ?? "");
+  const entries = stored();
+  const chars = entries ? null : require("./prompt-sizes.cjs").chars;
+  let total = 0, last = 0;
+  for (const match of value.matchAll(TOKEN)) {
+    const key = `${match[1]}@${match[2]}`;
+    total += [...value.slice(last, match.index)].length + (entries ? [...entries[key]].length : chars[key]);
+    last = match.index + match[0].length;
+  }
+  return total + [...value.slice(last)].length;
+}
+
+module.exports = { promptRef, promptLength, PROMPT_TOKEN_OPEN: OPEN, PROMPT_TOKEN_CLOSE: CLOSE };

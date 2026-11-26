@@ -4,6 +4,8 @@
 // Realism rules come from 场景效果视频试验/27–28: plain venue light, documentary camera, the camera
 // does one thing per shot (two camera moves made the model cut at 8.3 s), and cleaning only happens
 // where the working parts have passed and stays clean to the last frame.
+// Prompt wording is stored on the server; limits count the stored wording (promptLength), not the tokens.
+const { promptRef, promptLength } = require("../shared/prompt-ref.cjs");
 const { DIRECT_MODEL } = require('./bailian-video-provider.cjs');
 const { SCENES, FACT_LIMIT } = require('./video-directors.cjs');
 const catalog = require('./scene-video-catalog.cjs');
@@ -15,12 +17,12 @@ const MAX_PRODUCT_IMAGES = 3;
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const clean = (value, limit) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, limit);
 
-const STYLE = '成像：真实现场实拍，像专业摄影师用全画幅摄影机加35毫米定焦镜头在现场拍的设备演示素材。只用场地本来的照明，光线平淡自然，不额外打光。颜色中性克制、不鲜艳，画质细腻，只有极轻微的噪点。画面稳，但有很轻的手持呼吸感。不是广告片，不是三维渲染，不是动画。';
-const NEG = '不要广告感，不要夸张调色，不要青橙色调，不要柔光滤镜，不要夕阳、光柱和光晕，不要雾气，不要慢动作，不要静帧，不要镜面地板和清晰倒影，不要塑料感和渲染感，不要成堆垃圾，不要字幕、文字、水印和商标，不要第二台机器。机器不悬浮、不平移滑行、不倒车、不原地打转、不变形、不多出零件；地面不提前变干净，干净的地面不重新变脏。';
+const STYLE = promptRef("video.realshoot_plan.style");
+const NEG = promptRef("video.realshoot_plan.negative");
 const PEOPLE = {
-  none: { rule: '这是无人驾驶的清洁机器人：没有人坐上去、驾驶、推它或用手操作它，它自己移动、自己工作；机身上的部件完全照产品照片，照片里没有的座椅、方向盘、把手不要加上去。画面里没有任何人。', neg: '不要出现任何人、人影或人手，不要给机器新增产品照片里没有的部件。' },
-  walk: { rule: '机器由一位操作员推着或手持操作，镜头只拍到操作员的手、手臂和下半身（深色工装裤、劳保鞋），始终不露脸，不说话；操作员只用手握住把手，身体始终在机器后方，和机身保持距离、不重叠；画面里没有其他人。', neg: '不要露出操作员的脸，不要出现其他人，人和机器不重叠、不融在一起。' },
-  ride: { rule: '操作员坐在驾驶位开着机器，镜头从侧后方拍，画面上沿只到操作员的肩部，始终不露脸，不说话；驾驶员从头到尾一直坐在驾驶位上，不上车也不下车，身体不和机身重叠；画面里没有其他人。', neg: '不要露出驾驶员的脸，不要出现其他人，不要上下车，人和机器不融在一起。' }
+  none: { rule: promptRef("video.realshoot_plan.operator_none"), neg: '不要出现任何人、人影或人手，不要给机器新增产品照片里没有的部件。' },
+  walk: { rule: promptRef("video.realshoot_plan.operator_walk"), neg: '不要露出操作员的脸，不要出现其他人，人和机器不重叠、不融在一起。' },
+  ride: { rule: promptRef("video.realshoot_plan.operator_ride"), neg: promptRef("video.realshoot_plan.operator_ride_negative") }
 };
 
 function pick(rows, id, label) {
@@ -31,11 +33,11 @@ function pick(rows, id, label) {
 const spread = (total, count) => Array.from({ length: count }, (_, i) => Math.floor(total / count) + (i < total % count ? 1 : 0));
 // Extra cleaning shots when few points were picked: different cameras, still one move each.
 const FILLERS = [
-  { camera: '贴近地面的低机位，镜头离地约三十厘米，在机器斜后方同速跟随，看清工作部件和身后的干净带', caption: '一趟过去 地面见本色' },
-  { camera: '摄影机在机器正后方成人胸口高度稳定跟随，身后的干净带从画面底部一直延伸到机尾', caption: '边走边清 身后就干净' },
-  { camera: '机器斜前方的固定机位，成人腰部高度，机器从远处迎面驶来，从镜头一侧经过', caption: '日常保洁 交给它' },
+  { camera: promptRef("video.realshoot_plan.camera_low"), caption: '一趟过去 地面见本色' },
+  { camera: promptRef("video.realshoot_plan.camera_behind"), caption: '边走边清 身后就干净' },
+  { camera: promptRef("video.realshoot_plan.camera_front"), caption: '日常保洁 交给它' },
   { camera: '场地边上略高的固定远景机位，看到机器在整片场地里沿直线作业', caption: '整片场地 一遍搞定' },
-  { camera: '机器正侧面的近景，成人膝盖高度，同速横向平移，看清工作部件贴着地面工作', caption: '贴地清洁 细节看得见' }
+  { camera: promptRef("video.realshoot_plan.camera_side"), caption: '贴地清洁 细节看得见' }
 ];
 
 function planRealShoot(input) {
@@ -74,7 +76,7 @@ function planRealShoot(input) {
     const shot = { index, seconds: lengths[index], startSecond: cursor, endSecond: cursor + lengths[index], pointId: point.id, title: filler ? '清洁效果' : point.name,
       caption: caption || point.caption, narration: '', place: point.place, cleaning: Boolean(point.cleaning), dirt: point.cleaning ? soil.name : '' };
     shot.prompt = shotPrompt({ device, scene, detail, floor, soil, point, camera, seconds: shot.seconds, productImages });
-    if ([...shot.prompt].length > PROMPT_LIMIT) throw fail('product_video_invalid_input', '这一镜的拍摄要求太长，请减少勾选后重试。');
+    if (promptLength(shot.prompt) > PROMPT_LIMIT) throw fail('product_video_invalid_input', '这一镜的拍摄要求太长，请减少勾选后重试。');
     cursor += shot.seconds; return shot;
   });
   return {
@@ -94,33 +96,27 @@ function planRealShoot(input) {
 
 // One empty picture of the venue with the chosen floor and dirt: the place every venue shot happens in.
 function platePrompt({ scene, detail, floor, dirt }) {
-  return `一张真实现场照片，竖版9:16。地点：${detail.place}（${scene.description}）。地面是用了几年的${floor.name}，${floor.look}，有正常使用留下的细微划痕、旧色差和接缝。没清洁的地面：${dirt.map((row) => row.dirty).join('；')}，量是日常的量，不是成堆的垃圾。
-空无一人，没有任何机器设备。平视略低的机位，镜头朝场地深处，全画面清晰。光线：${detail.light}。
-${STYLE}
-不要电影感，不要广告感，不要镜面地板，不要清晰倒影，不要过饱和，不要渲染感，无人物，无文字，无商标招牌，无水印。`;
+  return `${promptRef("video.realshoot_plan.scene_plate.p1")}${detail.place}（${scene.description}${promptRef("video.realshoot_plan.scene_plate.p2")}${floor.name}，${floor.look}${promptRef("video.realshoot_plan.scene_plate.p3")}${dirt.map((row) => row.dirty).join('；')}${promptRef("video.realshoot_plan.scene_plate.p4")}${detail.light}。
+${STYLE}${promptRef("video.realshoot_plan.scene_plate.p5")}`;
 }
 
 function shotPrompt({ device, scene, detail, floor, soil, point, camera, seconds, productImages = 1 }) {
   // Real photos first, then the confirmed 定妆照 (third paid round, 2026-11-19: it kept the back and sides true), then the scene.
   const photos = productImages > 1 ? `${Array.from({ length: productImages }, (_, i) => `图${i + 1}`).join('、')}是这台机器不同角度的真实产品照片` : '图1是这台机器的真实产品照片';
   const sheet = `图${productImages + 1}`, plate = `图${productImages + 2}`;
-  const products = `${photos}，${sheet}是同一台机器的四视角定妆图（前侧、正侧面、背后、工作部件近景），照片里看不到的面以${sheet}为准`;
+  const products = `${photos}，${sheet}${promptRef("video.realshoot_plan.products.p1")}${sheet}为准`;
   const people = PEOPLE[device.operator];
-  const light = point.night ? '夜里营业结束后，场地只开着一部分顶灯，光线偏暗但看得清，没有任何人。' : `${detail.light}。`;
+  const light = point.night ? promptRef("video.realshoot_plan.night_light") : `${detail.light}。`;
   const place = point.place === 'venue' ? `${detail.place}（${scene.description}）。${plate}是这个场地：陈设、地面和光线以${plate}为准，${plate}里的地面就是没清洁过的样子。`
     : `${scene.name}这类场所里的${point.id === 'lift' ? '电梯厅' : point.id === 'gate' ? '自动玻璃门入口' : '设备间一角'}，装修朴素真实，和平时用的地方一样。`;
   const action = point.action.replace('{work}', device.work);
-  const cleaning = point.cleaning ? `【清洁规则】机器只朝机头方向前进。只有工作部件实际经过之后，那里的地面才变干净，露出同一块旧地面的干净本色；机头前方和两侧没经过的地方保持原样作对照。${device.wet ? '冲过的地面被清水冲湿，是干净的本色，污渍随水冲走，不留脏水；' : '清洁过的地面干燥、干净；污渍是被机器收走了，不会被推开、抹开或变成液体流到别处；'}直到最后一帧都保持干净，不重新变脏；是同一块旧地面清洁干净了，不是翻新，接缝、磨损和颜色不变。没清洁的地面：${soil.dirty}。\n` : '';
+  const cleaning = point.cleaning ? `${promptRef("video.realshoot_plan.cleaning_rule.p1")}${device.wet ? '冲过的地面被清水冲湿，是干净的本色，污渍随水冲走，不留脏水；' : promptRef("video.realshoot_plan.clean_dry")}${promptRef("video.realshoot_plan.cleaning_rule.p2")}${soil.dirty}。
+` : '';
   const sound = point.quiet ? '机器运转声很轻，几乎被环境声盖过' : '机器运转声平稳真实（电机、刷盘或吸风的声音），与画面动作对得上';
-  return `【一、片头一句话】
-${seconds}秒竖屏9:16，单个连续镜头，一镜到底：真实现场拍摄的${device.body}作业画面，展示「${point.name}」。全程无剪辑、无切镜、无转场，中途不换机位。
-【二、素材】${products}：全片任何时刻都只有这一台机器，不复制、不分身、不突然冒出第二台；造型、比例、配色、零件和机身字样严格以产品照片为准，不新增零件，不变成其他型号，照片里看不到的面保持简洁合理。机器体量与真实设备一致，实实在在压在地面上，下方有接地阴影；轮子随前进滚动，机身有轻微颤动，相对背景有真实位移。
-【三、地点与光线】${place}地面是用了几年的${floor.name}，${floor.look}。${light}
+  return `${promptRef("video.realshoot_plan.shot.p1")}${seconds}${promptRef("video.realshoot_plan.shot.p2")}${device.body}${promptRef("video.realshoot_plan.shot.p3")}${point.name}${promptRef("video.realshoot_plan.shot.p4")}${products}${promptRef("video.realshoot_plan.shot.p5")}${place}${promptRef("video.realshoot_plan.shot.p6")}${floor.name}，${floor.look}。${light}
 【四、人物】${people.rule}
-【五、动作】${action}${point.cleaning ? `${device.parts}。` : ''}
-【六、摄影机】${camera}。${/固定/u.test(camera) ? '摄影机全程固定在这个位置，只有很轻的手持呼吸感，不推拉、不摇镜。' : '摄影机全程只做这一件事，起步和停下有一点惯性，跟拍略微滞后于机器。'}
-${cleaning}【七、声音】只有两样声音：${sound}；现场环境声（${detail.ambient}）。无人声、无对白、无旁白、无音乐。
-【八、风格】${STYLE}
+【五、动作】${action}${point.cleaning ? `${device.parts}。` : ''}${promptRef("video.realshoot_plan.shot.p7")}${camera}。${/固定/u.test(camera) ? '摄影机全程固定在这个位置，只有很轻的手持呼吸感，不推拉、不摇镜。' : promptRef("video.realshoot_plan.camera_once")}
+${cleaning}${promptRef("video.realshoot_plan.shot.p8")}${sound}${promptRef("video.realshoot_plan.shot.p9")}${detail.ambient}${promptRef("video.realshoot_plan.shot.p10")}${STYLE}
 【九、负向】${NEG}${point.cleaning && !device.wet ? '地面上不凭空出现任何液体或水痕。' : ''}${people.neg}`;
 }
 
