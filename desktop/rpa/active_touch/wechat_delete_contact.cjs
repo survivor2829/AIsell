@@ -395,7 +395,7 @@ async function deleteVisually({ name, wechatId, plan, uniqueName, confirm, windo
   for (const [query, type] of queries) {
     if (!query) continue;
     if (stopped()) return { ok: false, stage: "open", reason: "stopped_by_user", visual: true };
-    const fallbackReason = type !== "name_fallback" ? String(plan.fallbackReason || "")
+    const fallbackReason = plan.queryType !== "wechat_id" ? String(plan.fallbackReason || "") : type === "wechat_id" ? ""
       : opened?.reason === "search_result_identity_unverified" ? "wechat_id_unverified" : "wechat_id_no_result";
     opened = await Promise.resolve(opener(query, { pid: window.pid, hWnd: window.hWnd, minIdleMs: 0, searchQueryType: type,
       searchFallbackReason: fallbackReason, searchIdentity: { expectedName: name } }));
@@ -414,7 +414,8 @@ async function deleteVisually({ name, wechatId, plan, uniqueName, confirm, windo
   if (!prepared?.ok || prepared.ready !== true) return prepared || { ok: false, stage: "script", reason: "delete_script_failed", visual: true };
   markCommitting();
   // The windows that were already open before prepare: commit never takes, closes or counts them.
-  const committed = await Promise.resolve(runner(VISUAL_DELETE_SCRIPT, { ...environment, XIAOXI_VDEL_PHASE: "commit", XIAOXI_VDEL_BASELINE: String(prepared.baseline || "") },
+  const committed = await Promise.resolve(runner(VISUAL_DELETE_SCRIPT, { ...environment, XIAOXI_VDEL_PHASE: "commit",
+    XIAOXI_VDEL_HAS_BASELINE: "1", XIAOXI_VDEL_BASELINE: String(prepared.baseline || "") },
     { ensure: false, timeout: 30000 }));
   // After the press: anything short of a clear "deleted" or "not pressed" is unknown, never retried.
   const known = committed?.deleted === true || committed?.notClicked === true;

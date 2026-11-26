@@ -264,6 +264,13 @@ async function checkDeleteModule() {
   await deleteWechatContact(person, { confirm: true, uniqueName: true, focus, visualOnly: true, opener: async () => ({ ok: true }), titleCheck: async () => ({ ok: true }),
     runner: async (_s, env) => { if (env.XIAOXI_VDEL_PHASE === "commit") baselineSeen = env.XIAOXI_VDEL_BASELINE; return env.XIAOXI_VDEL_PHASE === "prepare" ? { ok: true, ready: true, baseline: "101,202" } : { ok: true, deleted: true }; } });
   assert.equal(baselineSeen, "101,202");
+  // No other window open before prepare: the empty list is still handed in (else commit would take the confirm as old).
+  let flag = null;
+  await deleteWechatContact(person, { confirm: true, uniqueName: true, focus, visualOnly: true, opener: async () => ({ ok: true }), titleCheck: async () => ({ ok: true }),
+    runner: async (_s, env) => { if (env.XIAOXI_VDEL_PHASE === "commit") flag = [env.XIAOXI_VDEL_HAS_BASELINE, env.XIAOXI_VDEL_BASELINE]; return env.XIAOXI_VDEL_PHASE === "prepare" ? { ok: true, ready: true, baseline: "" } : { ok: true, deleted: true }; } });
+  assert.deepEqual(flag, ["1", ""]);
+  const { VISUAL_DELETE_SCRIPT: script } = require("../../rpa/active_touch/wechat_delete_contact_visual.cjs");
+  assert.match(script, /XIAOXI_VDEL_HAS_BASELINE -eq "1"/u, "commit tells an empty list from none");
   // An unconfirmed 微信号 then the name: the same rule as touch (no first-row guess).
   const searches = [];
   await deleteWechatContact(person, { confirm: false, uniqueName: true, focus, visualOnly: true, titleCheck: async () => ({ ok: false }), runner: async () => ({ ok: false, reason: "x" }),

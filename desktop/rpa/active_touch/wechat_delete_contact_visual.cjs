@@ -118,7 +118,7 @@ $engine = Initialize-XiaoxiOcr
 function Out-Result($ok, $stage, $reason, $extra = @{}) {
   $result = @{ ok = [bool]$ok; stage = [string]$stage; reason = [string]$reason; visual = $true }
   # Every stop on commit before the press: 删除 was certainly not pressed, so it may be tried again.
-  if (-not $ok -and $stage -eq "commit" -and -not $script:pressedCommit) { $result.notClicked = $true }
+  if (-not $ok -and $phase -eq "commit" -and -not $script:pressedCommit -and -not $result.outcomeUnknown) { $result.notClicked = $true }
   foreach ($key in $extra.Keys) { $result[$key] = $extra[$key] }
   $result | ConvertTo-Json -Compress -Depth 5
   exit 0
@@ -186,6 +186,8 @@ function Press($x, $y, [string]$stage) {
   if ([XiaoxiVisualDelete]::OwnerAt([int]$x, [int]$y) -ne $pid0) { Close-Opened; Out-Result $false $stage "wechat_target_changed" }
   if ([XiaoxiVisualDelete]::LastInput() -ne $script:lease) { Close-Opened; Out-Result $false $stage "wechat_external_input_detected" }
   [void][XiaoxiVisualDelete]::SetCursorPos([int]$x, [int]$y); Start-Sleep -Milliseconds 90
+  # Development only: every check of the commit press ran; stop just before it and close what was opened.
+  if ($stage -eq "commit" -and $env:XIAOXI_VDEL_NO_PRESS -eq "1") { Close-Opened; Out-Result $false "commit" "dry_commit_reached" }
   if ($stage -eq "commit") { $script:pressedCommit = $true }
   [XiaoxiVisualDelete]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 50; [XiaoxiVisualDelete]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 120
@@ -195,12 +197,15 @@ function Press($x, $y, [string]$stage) {
 # Only windows that appeared after this delete began: the user's own detached chats or image viewers are never taken
 # for the card, closed, or counted (the prepare run's baseline is handed to commit).
 function Get-WechatWindows { @([XiaoxiVisualDelete]::Windows($pid0) | Where-Object { $_ -ne $mainHwnd } | Where-Object { $r = Rect $_; ($r.Right - $r.Left) -gt 60 -and ($r.Bottom - $r.Top) -gt 40 }) }
-$script:baseline = if ($env:XIAOXI_VDEL_BASELINE) { @($env:XIAOXI_VDEL_BASELINE -split ',' | Where-Object { $_ } | ForEach-Object { [int64]$_ }) } else { @(Get-WechatWindows) }
+# An empty list handed in is still a list (no other window was open): only prepare takes its own.
+$script:baseline = if ($env:XIAOXI_VDEL_HAS_BASELINE -eq "1") { @([string]$env:XIAOXI_VDEL_BASELINE -split ',' | Where-Object { $_ -match '^[0-9]+$' } | ForEach-Object { [int64]$_ }) } else { @(Get-WechatWindows) }
 function Get-Popups { @(Get-WechatWindows | Where-Object { $script:baseline -notcontains $_ }) }
 # Anything that breaks midway: close what this run opened and say so. After the press on commit the result is
 # unknown (never retried); before it, nothing was deleted.
 trap {
-  foreach ($h in @(Get-Popups)) { try { [void][XiaoxiVisualDelete]::SendMessage([IntPtr]$h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) } catch { } }
+  if ($null -ne $script:baseline -and (Get-Command Get-Popups -ErrorAction SilentlyContinue)) {
+    foreach ($h in @(Get-Popups)) { try { [void][XiaoxiVisualDelete]::SendMessage([IntPtr]$h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) } catch { } }
+  }
   if ($script:pressedCommit) { @{ ok = $false; stage = "commit"; reason = "delete_outcome_unknown"; outcomeUnknown = $true; visual = $true } | ConvertTo-Json -Compress; exit 0 }
   @{ ok = $false; stage = $(if ($phase -eq "commit") { "commit" } else { "script" }); reason = "visual_script_failed"; notClicked = ($phase -eq "commit"); visual = $true } | ConvertTo-Json -Compress
   exit 0
@@ -236,7 +241,8 @@ if ($phase -eq "commit") {
   $gone = Wait-For { if (-not (Read-Confirm) -and -not @(Get-Popups).Count) { $true } } 4000
   if ($gone) {
     $head = @(Read-Lines ($main.Left + [int]($mw * 0.25)) $main.Top ([int]($mw * 0.75)) ([Math]::Max(40, [int]($mh * 0.1))))
-    $stillOpen = $head | Where-Object { $_.text -eq (Fold $name) -or ($plainName.Length -ge 2 -and $_.text -eq $plainName) }
+    # Tolerant on purpose (a title can lose a character): a doubtful title makes it unknown, never "deleted".
+    $stillOpen = $head | Where-Object { $t = $_.text; @((Fold $name), $plainName) | Where-Object { $_.Length -ge 1 -and ($t -eq $_ -or ($_.Length -ge 3 -and (Like $t $_ 1))) } }
     if (-not $stillOpen) { Out-Result $true "commit" "" @{ deleted = $true } }
   }
   Out-Result $false "verify" "delete_outcome_unknown" @{ outcomeUnknown = $true }
@@ -246,13 +252,13 @@ if ($phase -eq "commit") {
 if ($phase -eq "probe") {
   $band = [Math]::Max(40, [int]($mh * 0.1))
   $dots = @(Find-Dots ($main.Left + [int]($mw * 0.6)) $main.Top ([int]($mw * 0.4)) $band)
-  $right = @(Read-Lines ($main.Left + [int]($mw * 0.55)) $main.Top ([int]($mw * 0.45)) $mh)
+  $right = @(Read-Lines ($main.Left + [int]($mw * 0.55)) $main.Top ([int]($mw * 0.45)) $mh)  # same crop as $panelProbe
   Out-Result $true "probe" "" @{ window = @($main.Left, $main.Top, $mw, $mh); band = $band; dots = @($dots | ForEach-Object { "$($_.x),$($_.y)" });
     lines = @($right | Select-Object -First 25 | ForEach-Object { "$([int]$_.left),$([int]$_.top) $($_.text) like:$((Like $_.text '查找聊天内容'))" }) }
 }
 # 1. The chat's "…" (聊天信息): the rightmost three dots in the band of the chat title, unless the panel is open.
 $script:panelReads = 0; $script:panelLines = 0
-$panelProbe = { $lines = @(Read-Lines ($main.Left + [int]($mw * 0.7)) $main.Top ([int]($mw * 0.3)) $mh); $script:panelReads++; $script:panelLines = $lines.Count
+$panelProbe = { $lines = @(Read-Lines ($main.Left + [int]($mw * 0.55)) $main.Top ([int]($mw * 0.45)) $mh); $script:panelReads++; $script:panelLines = $lines.Count
   $lines | Where-Object { (Like $_.text '查找聊天内容' 2) -or (Like $_.text '消息免打扰' 1) } | Sort-Object { $_.top } | Select-Object -First 1 }
 $script:panelPresses = @()
 $panel = & $panelProbe
@@ -276,7 +282,7 @@ if (-not $panel) { Close-Opened; Out-Result $false "member" "chat_info_panel_not
 # 2. The one member: the avatar left of 添加 on its row (its label is too small to read reliably; who it is is
 # checked on the card). A group's panel lists group settings and is refused.
 $lines = @(Read-Lines ([int]$panel.left - 30) $main.Top ($main.Right - [int]$panel.left + 30) ($main.Bottom - $main.Top))
-if ($lines | Where-Object { (Like $_.text '群聊名称' 1) -or (Like $_.text '群公告' 0) -or (Like $_.text '我在本群的昵称' 1) }) { Close-Opened; Out-Result $false "member" "chat_member_mismatch" @{ group = $true } }
+if ($lines | Where-Object { (Like $_.text '群聊名称' 2) -or (Like $_.text '群公告' 1) -or (Like $_.text '我在本群的昵称' 2) }) { Close-Opened; Out-Result $false "member" "chat_member_mismatch" @{ group = $true } }
 $add = $lines | Where-Object { $_.text -eq '添加' -or $_.text -eq '添 加' } | Select-Object -First 1
 if (-not $add) { Close-Opened; Out-Result $false "member" "chat_member_not_found" }
 $addHeight = $add.bottom - $add.top
@@ -300,7 +306,7 @@ Start-Sleep -Milliseconds 400
 $cr = Rect $card; $cw = $cr.Right - $cr.Left; $ch = $cr.Bottom - $cr.Top
 $cardLines = @(Read-Lines $cr.Left $cr.Top $cw $ch)
 # The whole line, or the line with one extra character (the card's small person icon read as a character).
-$nameShown = [bool]($cardLines | Where-Object { $t = $_.text; @((Fold $name), $plainName) | Where-Object { $_.Length -ge 2 -and ($t -eq $_ -or ($t.StartsWith($_) -and $t.Length -eq $_.Length + 1)) } })
+$nameShown = [bool]($cardLines | Where-Object { $t = $_.text; @((Fold $name), $plainName) | Where-Object { $_.Length -ge 1 -and ($t -eq $_ -or ($_.Length -ge 2 -and $t.StartsWith($_) -and $t.Length -eq $_.Length + 1)) } })
 $idLine = $cardLines | Where-Object { $_.text -match '^微信号[:：]?(.+)$' } | Select-Object -First 1
 $shownId = if ($idLine) { [regex]::Match($idLine.text, '^微信号[:：]?(.+)$').Groups[1].Value } else { "" }
 $normal = { param($text) ([string]$text -replace '[\s​-‏﻿]', '').ToLowerInvariant() }
