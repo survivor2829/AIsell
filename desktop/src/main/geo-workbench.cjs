@@ -21,7 +21,7 @@ const dayOf = (iso) => { const date = new Date(iso); return `${date.getFullYear(
 const DAY = 86_400_000;
 const AI_DAILY_LIMIT = 12, PUBLISH_DAILY_LIMIT = 3, MAX_QUESTIONS = 50, WEEK_SIZE = 7, MAX_ASKS = 40, KEEP_RUNS = 1500;
 // Scheduled articles go out only in daytime, on their day or later, and expire after a week unsent.
-const PUBLISH_HOURS = [8, 22], SCHEDULE_SLOTS = [[9, 30], [11, 20], [14, 40]], STALE_AFTER = 7 * DAY;
+const PUBLISH_HOURS = [8, 22], SCHEDULE_SLOTS = [[9, 30], [11, 20], [14, 40]], STALE_AFTER = 7 * DAY, PUBLISH_GAP = 20 * 60_000;
 const REPORT_STATUSES = ["public", "reviewing", "failed", "unknown"];
 const ENGINES = [{ id: "doubao", name: "豆包" }, { id: "qianwen", name: "千问" }, { id: "deepseek", name: "DeepSeek" }, { id: "yuanbao", name: "元宝" }];
 const PLATFORM_ORDER = ["toutiao", "zhihu", "baijiahao", "sohu"];
@@ -305,7 +305,7 @@ function createGeoWorkbench({ dataDir, adapter, accounts, generateText, channels
   }
   function assignPlan() {
     const plan = state.plan, pool = publishingAccounts();
-    const slots = slotsFrom(Date.parse(plan.createdAt), plan.items.length);
+    const slots = slotsFrom(Date.parse(plan.createdAt) || clock(), plan.items.length);
     plan.items.forEach((item, index) => {
       const article = state.articles.find((row) => row.id === item.articleId);
       const fits = pool.filter((account) => { const limit = channels.find((channel) => channel.id === account.platform)?.titleLimit; return !limit || !article || article.title.length <= limit; });
@@ -356,6 +356,7 @@ function createGeoWorkbench({ dataDir, adapter, accounts, generateText, channels
     const checked = plan.items.map((item) => {
       const article = need(state.articles, item.articleId, "有一篇文章已经删了，请重新排一次。");
       const channel = channels.find((row) => row.id === item.platform);
+      if (!Number.isFinite(Date.parse(item.due))) throw fail("GEO_PLAN_DAY_MISSING", `《${article.title}》还没排上哪天发，请重新排一次。`);
       if (!channel?.available) throw fail("GEO_CHANNEL_UNAVAILABLE", `《${article.title}》要发的平台还没开放，请换一个账号。`);
       if (channel.titleLimit && article.title.length > channel.titleLimit) throw fail("GEO_TITLE_TOO_LONG", `《${article.title}》在${channel.name}标题最多 ${channel.titleLimit} 个字，请先改短。`);
       return { item, article, account: activeAccount(item.accountId, item.platform) };
@@ -384,7 +385,9 @@ function createGeoWorkbench({ dataDir, adapter, accounts, generateText, channels
     }
     if (hour >= publishHours[0] && hour < publishHours[1] && state.pausedDay !== dayOf(stamp())) {
       const active = new Set(accountList().filter((account) => account.status === "active").map((account) => account.id));
-      const due = state.publications.filter((item) => item.status === "scheduled" && Date.parse(item.dueAt) <= now && active.has(item.accountId) && publishedToday(item.accountId) < PUBLISH_DAILY_LIMIT)
+      // After days with the software closed, overdue articles go out one by one with a gap per account, not in a burst.
+      const recent = (accountId) => state.publications.some((row) => row.accountId === accountId && row.finishedAt && now - Date.parse(row.finishedAt) < PUBLISH_GAP);
+      const due = state.publications.filter((item) => item.status === "scheduled" && Date.parse(item.dueAt) <= now && active.has(item.accountId) && publishedToday(item.accountId) < PUBLISH_DAILY_LIMIT && !recent(item.accountId))
         .sort((a, b) => Date.parse(a.dueAt) - Date.parse(b.dueAt))[0];
       if (due) { due.status = "queued"; changed = true; }
     }
@@ -431,12 +434,15 @@ function createGeoWorkbench({ dataDir, adapter, accounts, generateText, channels
       if (status === "unknown" && result?.evidence) report(item, "GEO_RESULT_UNCONFIRMED", result.evidence);
       Object.assign(item, { status, url: /^https?:\/\//.test(result?.url || "") ? str(result.url, 3000) : "", reason: str(result?.reason, 500), finishedAt: stamp() });
     } catch (error) {
-      if (error.code !== "GEO_STOPPED") report(item, /^GEO_/.test(String(error.code || "")) ? error.code : "GEO_UNEXPECTED", error.evidence);
+      // The account's window is in use (signing in again, refreshing): nothing was clicked, so a scheduled article just waits.
+      const waitable = !item.clickedAt && item.dueAt && error.code === "SOCIAL_ACCOUNT_BUSY";
+      if (error.code !== "GEO_STOPPED" && !waitable) report(item, /^GEO_/.test(String(error.code || "")) ? error.code : "GEO_UNEXPECTED", error.evidence);
       if (error.code === "GEO_LOGIN_REQUIRED") accounts.markSignedOut?.(item.accountId);
       if (item.clickedAt) Object.assign(item, { status: "unknown", reason: "已经点了发布，但之后出了问题。请到平台上看一下是否发出，不会自动重发。", finishedAt: stamp() });
       // A scheduled article that never reached the button keeps its confirmation: after the user signs in again,
       // or the next day when the user stopped it.
       else if (item.dueAt && error.code === "GEO_LOGIN_REQUIRED") Object.assign(item, { status: "scheduled", reason: "账号要重新扫码登录，登录后接着发。" });
+      else if (waitable) Object.assign(item, { status: "scheduled", reason: "这个账号正在用（比如在重新登录），稍后接着发。" });
       else if (item.dueAt && error.code === "GEO_STOPPED") Object.assign(item, { status: "scheduled", reason: "你点了停下，明天接着发。" });
       else Object.assign(item, { status: "failed", reason: /^(GEO|SOCIAL)_/.test(String(error.code || "")) ? error.message : "这次没发出去，可以再试一次。", finishedAt: stamp() });
     } finally { release?.(); delete item.detail; commit(); }
@@ -546,6 +552,8 @@ function createGeoWorkbench({ dataDir, adapter, accounts, generateText, channels
     finally { busy = ""; commit(); setImmediate(() => { void pump(); tick(); }); }
     return snapshot();
   }
+  // A week cut off mid-way never got its accounts and days: hand them out now, the same way a finished week does.
+  if (state.plan?.status === "ready" && state.plan.items.some((item) => !item.due)) { assignPlan(); save(); }
   const timer = scheduleEveryMs > 0 ? setInterval(tick, scheduleEveryMs) : null;
   timer?.unref?.();
   const first = scheduleEveryMs > 0 ? setTimeout(tick, Math.min(15_000, scheduleEveryMs)) : null;

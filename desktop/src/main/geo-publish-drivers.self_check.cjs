@@ -224,7 +224,7 @@ global.setTimeout = (fn, ms, ...rest) => realTimeout(fn, Math.min(ms, 1), ...res
   DRIVERS.zhihu.fill = realZhihuFill;
   {
     // 豆包发问题（2026-11-26 真实页面）：回车能发，但页面有时三秒多才显示发出；要等，不能 2.5 秒就判没发出、关掉浏览器把发送掐断。
-    const doubaoPage = ({ clearAfter = Infinity, button = true, clearOnClick = false, movesTo = "" } = {}) => {
+    const doubaoPage = ({ clearAfter = Infinity, button = true, clearOnClick = false, movesTo = "", startAt = "https://www.doubao.com/chat/" } = {}) => {
       let checks = 0;
       const log = { keys: [], clicks: 0 };
       const page = {
@@ -235,7 +235,7 @@ global.setTimeout = (fn, ms, ...rest) => realTimeout(fn, Math.min(ms, 1), ...res
           if (expression.includes("innerText")) { checks++; return checks > clearAfter || (clearOnClick && log.clicks) ? "" : "清洁设备渠道商怎么判断"; }
           return null;
         },
-        url: async () => (movesTo && checks > 2 ? movesTo : "https://www.doubao.com/chat/")
+        url: async () => (movesTo && checks > 2 ? movesTo : startAt)
       };
       return { page, log };
     };
@@ -252,6 +252,8 @@ global.setTimeout = (fn, ms, ...rest) => realTimeout(fn, Math.min(ms, 1), ...res
     const busy = doubaoPage({ button: false });
     assert.equal(await sendDoubao(busy.page, fast), false, "发送键是灰的（正在发）就不点，避免发两遍");
     assert.equal(busy.log.clicks, 0);
+    const old = doubaoPage({ button: false, startAt: "https://www.doubao.com/chat/7340012" });
+    assert.equal(await sendDoubao(old.page, fast), false, "一打开就停在旧对话里，不能当成已经发出");
     // 繁体页面的登录提示也认得出来。
     assert.equal(DOUBAO.loginRequired("https://www.doubao.com/chat/", "掃碼登入 手機號登入"), true);
     assert.equal(DOUBAO.loginRequired("https://www.doubao.com/chat/", "新對話 用户123297"), false);

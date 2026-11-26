@@ -363,7 +363,10 @@ const GEO_ACCOUNT_PLATFORMS = {
 // the page's send button clicked, once, and only while it is enabled: greyed means a send is under way.
 async function sendDoubao(page, { waitMs = 15_000, step = 500 } = {}) {
   const before = Number(await page.evaluate(DOUBAO.answers)) || 0;
-  const conversation = async () => { try { return /^\/chat\/[^/]+/.test(new URL(String(await page.url())).pathname); } catch { return false; } };
+  // Only a move to a conversation address counts: a page that opened on an old conversation proves nothing.
+  const where = async () => { try { return new URL(String(await page.url())).pathname; } catch { return ""; } };
+  const start = await where();
+  const conversation = async () => { const now = await where(); return now !== start && /^\/chat\/[^/]+/.test(now); };
   const sent = async () => !squash(await page.evaluate(`(${DOUBAO.input})?.innerText || ""`)) || await conversation() || (Number(await page.evaluate(DOUBAO.answers)) || 0) > before;
   const settle = async () => { for (let waited = 0; waited < waitMs; waited += step) { await sleep(step); if (await sent()) return true; } return false; };
   // No text on the key event: with "\r" the editor types a line break instead of sending.

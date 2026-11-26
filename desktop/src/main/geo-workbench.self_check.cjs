@@ -22,7 +22,7 @@ function world({ publish, ask, generate, options = {} } = {}) {
   const dataDir = path.join(root, "data");
   const make = () => createGeoWorkbench({ dataDir, adapter, accounts, generateText, channels: CHANNELS, onFailure: (failure) => log.failures.push(failure), ...options });
   const idle = async (geo) => { for (let i = 0; i < 400; i++) { await sleep(5); if (!geo.isBusy() && !geo.snapshot().publications.some((item) => item.status === "queued")) return geo.snapshot(); } throw new Error("still busy"); };
-  return { root, log, make, idle, dataDir, list };
+  return { root, log, make, idle, dataDir, list, accounts };
 }
 const local = (day, hour, minute = 0) => new Date(2026, 10, day, hour, minute).getTime();
 const brand = { name: "示例清洁", aliases: "示例", regions: "成都", services: "商用洗地机销售", cases: "", restrictions: "" };
@@ -323,6 +323,7 @@ const code = (expected) => (error) => { assert.equal(error.code, expected, error
     const state = w.make().snapshot();
     assert.deepEqual(state.publications.map((item) => item.status), ["unknown", "failed", "cancelled", "scheduled", "scheduled"], "重启后临时排队的取消；按周确认过的回到计划里，按天再发");
     assert.equal(state.plan.status, "ready", "写到一半中断：写好的留着等确认，不自动接着写");
+    assert.ok(state.plan.items[0].due && state.plan.items[0].accountId === "tt1", "中断时没排的账号和日子，重新打开后补上");
     assert.equal(state.aiPending.length, 1); assert.equal(state.visibilityRuns[0].status, "failed");
     fs.writeFileSync(file, "{broken");
     assert.throws(() => w.make(), code("GEO_STATE_INVALID"));
@@ -389,8 +390,12 @@ const code = (expected) => (error) => { assert.equal(error.code, expected, error
     now = local(27, 23); geo.tick(); await sleep(5);
     assert.equal(w.log.published.length, 1, "晚上不发");
     now = local(28, 10);
-    for (let i = 0; i < 3; i++) { geo.tick(); await w.idle(geo); }
-    assert.equal(w.log.published.length, 3, "前一天软件没开：第二天补上，按天的顺序一篇一篇来");
+    geo.tick(); await w.idle(geo); geo.tick(); await w.idle(geo);
+    assert.equal(w.log.published.length, 2, "前一天软件没开：第二天补上");
+    geo.tick(); await w.idle(geo);
+    assert.equal(w.log.published.length, 2, "同一个账号补发要隔一会儿，不一口气连发");
+    now = local(28, 10, 25); geo.tick(); await w.idle(geo);
+    assert.equal(w.log.published.length, 3, "隔开以后按天的顺序接着发");
     // 账号掉线：轮到它的那篇等着，扫码回来接着发。
     now = local(29, 10); w.list[0].status = "login_required"; geo.tick(); await sleep(5);
     assert.equal(w.log.published.length, 3);
@@ -429,6 +434,21 @@ const code = (expected) => (error) => { assert.equal(error.code, expected, error
     assert.equal(w.log.published.length, 0, "停下以后今天不再发");
     await geo.dispatch("resume-schedule"); await sleep(5); await w.idle(geo);
     assert.equal(w.log.published.length, 1, "点继续接着发");
+    geo.dispose();
+  }
+  {
+    // 账号窗口正被占用（比如在重新扫码）：还没点发布，这篇留在计划里，不算失败，也不报故障。
+    let now = local(26, 9);
+    const w = world({ options: { clock: () => now, scheduleEveryMs: 0 } }), geo = w.make();
+    await geo.dispatch("save-brand", brand); await geo.dispatch("add-questions", { text: "成都洗地机哪家好" });
+    await geo.dispatch("plan-week"); await w.idle(geo); await geo.dispatch("confirm-plan");
+    const lease = w.accounts.lease;
+    w.accounts.lease = () => { throw Object.assign(new Error("这个账号正在使用"), { code: "SOCIAL_ACCOUNT_BUSY" }); };
+    now = local(26, 10); geo.tick(); let state = await w.idle(geo);
+    const first = state.publications.find((item) => item.planItemId === state.plan.items[0].id);
+    assert.equal(first.status, "scheduled"); assert.equal(w.log.failures.length, 0);
+    w.accounts.lease = lease; geo.tick(); await w.idle(geo);
+    assert.equal(w.log.published.length, 1, "账号空出来接着发");
     geo.dispose();
   }
   {
