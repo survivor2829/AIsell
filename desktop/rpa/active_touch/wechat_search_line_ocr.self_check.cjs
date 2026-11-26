@@ -30,7 +30,8 @@ function replay(script, env, captions = null) {
     line.startsWith("$compactQuery =") || line.startsWith("$networkSearchPattern =") || line.startsWith("$ocrScale =")).join("\n");
   const start = script.indexOf("      foreach ($reading in $ocrReadings)");
   const end = script.indexOf("      $ocrOk = $true", start);
-  const functions = script.slice(script.indexOf("function Test-LocalContactSection"), script.indexOf('$expectedPid = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID")'));
+  // From the shared OCR helpers (wechat_screen_ocr.cjs, placed earlier in the script) through the search functions.
+  const functions = script.slice(script.indexOf("function Initialize-XiaoxiOcr"), script.indexOf('$expectedPid = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID")'));
   assert.ok(start >= 0 && end > start && functions.includes("function Read-SearchLineOcr"));
   // What Windows read on the development machine: a dot inside 微信号 and the first letter as ×.
   // A second contact's caption below it, read right, as in the development-machine dropdowns.

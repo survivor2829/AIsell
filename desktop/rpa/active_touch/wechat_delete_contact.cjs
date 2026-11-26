@@ -8,8 +8,11 @@
 // Identity is checked four times — chat title, member cell, profile card name (and 微信号 when known), and the
 // confirm text — and any mismatch stops before 删除. After 删除 the result is read back; if it cannot be, the
 // outcome is unknown and nothing is retried.
-const { focusWechatWindowAsync, runPowerShellAsync } = require("./wechat_window_driver.cjs");
+const { focusWechatWindowAsync, runPowerShellAsync, openWechatSearchResultAsync } = require("./wechat_window_driver.cjs");
 const { customerSearchPlan } = require("./state_machine.cjs");
+const { VISUAL_DELETE_SCRIPT } = require("./wechat_delete_contact_visual.cjs");
+// The UI Automation steps cannot start: this WeChat gives no tree (b070e34b, 2026-11-26). Read the screen instead.
+const NO_UIA_TREE = new Set(["wechat_main_window_not_found", "search_box_not_found"]);
 
 const DELETE_SCRIPT = String.raw`
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -383,6 +386,46 @@ if (-not $confirm) { Stop-Before "confirm" "dry_run_stopped_before_delete" @{ dr
 Out-Result $true "confirm" "" @{ ready = $true; id_check = $idCheck }
 `;
 
+// The same delete by looking at the screen (wechat_delete_contact_visual.cjs). The chat is opened with touch's own
+// search and its title checked first, as touch does before it sends.
+async function deleteVisually({ name, wechatId, plan, uniqueName, confirm, window, runner, opener, titleCheck, stopped }, markCommitting) {
+  // As touch does (state_machine.cjs): after an unconfirmed 微信号 the name search may not take the first row.
+  const queries = plan.queryType === "wechat_id" ? [[wechatId, "wechat_id"], [plan.fallbackQuery, "name_fallback"]] : [[plan.query, plan.queryType || "name"]];
+  let opened = null;
+  for (const [query, type] of queries) {
+    if (!query) continue;
+    if (stopped()) return { ok: false, stage: "open", reason: "stopped_by_user", visual: true };
+    const fallbackReason = plan.queryType !== "wechat_id" ? String(plan.fallbackReason || "") : type === "wechat_id" ? ""
+      : opened?.reason === "search_result_identity_unverified" ? "wechat_id_unverified" : "wechat_id_no_result";
+    opened = await Promise.resolve(opener(query, { pid: window.pid, hWnd: window.hWnd, minIdleMs: 0, searchQueryType: type,
+      searchFallbackReason: fallbackReason, searchIdentity: { expectedName: name } }));
+    if (opened?.ok) break;
+    if (!["exact_search_result_not_found", "search_result_identity_unverified"].includes(String(opened?.reason || ""))) break;
+  }
+  if (!opened?.ok) return { ok: false, stage: "open", reason: String(opened?.reason || "chat_not_opened"), visual: true };
+  const title = await Promise.resolve(titleCheck(name, { pid: window.pid, hWnd: window.hWnd, verificationMode: "conversation_title" }));
+  // The title is read from the screen too and can lose a character (a 1 read as l, dev machine 2026-11-26). The
+  // card's 微信号 then decides alone: it must match exactly; without one to compare, stop.
+  if (!title?.ok && !wechatId) return { ok: false, stage: "open", reason: "chat_title_mismatch", visual: true };
+  // A row opened from a 微信号 one or two characters off (touch re-checks it strictly): the card must match exactly.
+  const near = String(opened?.searchResultMode || "") === "sectioned_wechat_id_near";
+  if (near && !wechatId) return { ok: false, stage: "open", reason: "chat_title_mismatch", visual: true };
+  const environment = { XIAOXI_DELETE_NAME: name, XIAOXI_DELETE_WECHAT_ID: wechatId, XIAOXI_EXPECTED_PID: String(window.pid || ""),
+    XIAOXI_EXPECTED_HWND: String(window.hWnd || ""), XIAOXI_DELETE_UNIQUE_NAME: uniqueName === true ? "1" : "0",
+    XIAOXI_DELETE_REQUIRE_ID: title?.ok && !near ? "0" : "1" };
+  const prepared = await Promise.resolve(runner(VISUAL_DELETE_SCRIPT, { ...environment, XIAOXI_VDEL_PHASE: "prepare", XIAOXI_DELETE_CONFIRM: confirm ? "1" : "0" }, { ensure: false, timeout: 60000 }));
+  if (!prepared?.ok || prepared.ready !== true) return prepared || { ok: false, stage: "script", reason: "delete_script_failed", visual: true };
+  markCommitting();
+  // The windows that were already open before prepare: commit never takes, closes or counts them.
+  const committed = await Promise.resolve(runner(VISUAL_DELETE_SCRIPT, { ...environment, XIAOXI_VDEL_PHASE: "commit",
+    XIAOXI_VDEL_HAS_BASELINE: "1", XIAOXI_VDEL_BASELINE: String(prepared.baseline || "") },
+    { ensure: false, timeout: 30000 }));
+  // After the press: anything short of a clear "deleted" or "not pressed" is unknown, never retried.
+  const known = committed?.deleted === true || committed?.notClicked === true;
+  return { ...(committed || {}), ...(known ? {} : { ok: false, deleted: false, outcomeUnknown: true, stage: String(committed?.stage || "commit"),
+    reason: String(committed?.reason || "delete_outcome_unknown") }), ...(prepared.id_check ? { id_check: prepared.id_check } : {}) };
+}
+
 // contact: { name, remark, nickname, wechatId } from the synced contact list. confirm=false stops at the confirm
 // dialog (a look-only run). uniqueName: the caller checked that no other synced friend shows the same name; without
 // a usable 微信号 to compare on the profile card that is the only thing telling two same-named friends apart, so the
@@ -396,7 +439,9 @@ async function deleteWechatContact(contact, options = {}) {
   }
 }
 
-async function deleteOnce(contact, { confirm = false, uniqueName = false, runner = runPowerShellAsync, focus = focusWechatWindowAsync, stopped = () => false } = {}, markCommitting) {
+async function deleteOnce(contact, { confirm = false, uniqueName = false, runner = runPowerShellAsync, focus = focusWechatWindowAsync, stopped = () => false,
+  opener = openWechatSearchResultAsync, titleCheck = (...args) => require("./wechat_window_driver.dev.cjs").observeWechatConversationAsync(...args),
+  visualOnly = process.env.XIAOXI_DELETE_VISUAL === "1" } = {}, markCommitting) {
   const name = String(contact?.remark || contact?.name || contact?.nickname || "").trim();
   if (!name) return { ok: false, stage: "input", reason: "delete_name_missing" };
   const plan = customerSearchPlan(contact);
@@ -410,6 +455,12 @@ async function deleteOnce(contact, { confirm = false, uniqueName = false, runner
   if (!/^weixin$/iu.test(String(window.processName || ""))) {
     return { ok: false, stage: "window", reason: "wechat_version_unsupported" };
   }
+  const shapeVisual = (result) => ({ ok: result?.ok === true && result?.deleted === true, deleted: result?.deleted === true, outcomeUnknown: result?.outcomeUnknown === true,
+    dryRun: result?.dryRun === true, stage: String(result?.stage || "script"), reason: String(result?.reason || (result?.deleted ? "" : "delete_script_failed")), visual: true,
+    ...(result?.notClicked === true ? { notClicked: true } : {}),
+    ...(result?.id_check && typeof result.id_check === "object" ? { idCheck: result.id_check } : {}) });
+  const visually = async () => shapeVisual(await deleteVisually({ name, wechatId, plan, uniqueName, confirm, window, runner, opener, titleCheck, stopped }, markCommitting));
+  if (visualOnly) return visually();
   // Open the chat: by 微信号 first, then by name, each time clicking the search result named exactly this person.
   const queries = [...new Set([wechatId, name].filter(Boolean))];
   let opened = null;
@@ -421,6 +472,7 @@ async function deleteOnce(contact, { confirm = false, uniqueName = false, runner
     // Only "WeChat shows no such row" moves on to the name; anything else (someone at the mouse, no search box) stops.
     if (!["search_result_not_found", "search_results_not_loaded"].includes(String(opened?.reason || ""))) break;
   }
+  if (NO_UIA_TREE.has(String(opened?.reason || ""))) return visually();
   if (!(opened?.ok === true && opened.opened === true)) return { ok: false, stage: "open", reason: String(opened?.reason || "conversation_open_failed"),
     ...(Number.isFinite(opened?.result_count) ? { resultCount: opened.result_count } : {}),
     ...(Array.isArray(opened?.window_kind) ? { window_kind: opened.window_kind.map(String).slice(0, 12) } : {}) };

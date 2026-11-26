@@ -20,6 +20,14 @@ const workflowPolicies = Object.freeze({
   // The customer pressed 停止 (or double space) while friends were being deleted.
   stopped_by_user: { classification: "environment", attentionScope: "task" },
   search_box_not_focused: { classification: "recoverable", attentionScope: "task" },
+  // 1.3.75: deleting by reading the screen when WeChat gives no UI Automation tree (wechat_delete_contact_visual.cjs).
+  // The open chat's title is not this person and no 微信号 confirms it on the card: never deleted.
+  chat_title_mismatch: { classification: "blocker", attentionScope: "task" },
+  // 删除 was pressed and the result could not be read back: unknown, never retried.
+  delete_outcome_unknown: { classification: "blocker", attentionScope: "task" },
+  // The script stopped before 删除 without a clearer reason (it closes what it opened): may be tried again.
+  delete_script_failed: { classification: "recoverable", attentionScope: "task" },
+  visual_script_failed: { classification: "recoverable", attentionScope: "task" },
   search_input_failed: { classification: "blocker", attentionScope: "task" },
   confirm_dialog_not_shown: { classification: "recoverable", attentionScope: "task" },
   // The card's 微信号 could not be read and another synced friend shows the same name: never guessed.

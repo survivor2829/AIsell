@@ -239,3 +239,64 @@ async function checkDeleteModule() {
   // Esc only while the profile card is open: one Esc too many hides WeChat to the tray (seen live 2026-11-25).
   assert.match(DELETE_SCRIPT, /if \(-not \(Get-WxWindow "mmui::ProfileUniquePop"\)\) \{ break \}\s*\[XiaoxiDel\]::keybd_event\(0x1B/u);
 }
+
+// A WeChat with no UI Automation tree (b070e34b, 2026-11-26) is deleted by looking at the screen: the chat opened
+// with touch's search and its title checked, then prepare and commit of the visual script. Synthetic person only.
+(async () => {
+  const { deleteWechatContact } = require("../../rpa/active_touch/wechat_delete_contact.cjs");
+  const person = { name: "测试客户甲", remark: "测试客户甲", wechatId: "test_id_01" };
+  const focus = async () => ({ ok: true, pid: 11, hWnd: 22, processName: "Weixin" });
+  const run = async ({ open = { ok: true }, title = { ok: true }, prepare = { ok: true, ready: true, id_check: { id_check_state: "matched" } }, commit = { ok: true, deleted: true }, uia = null, options = {} } = {}) => {
+    const calls = [];
+    const runner = async (script, env) => {
+      if (!env.XIAOXI_VDEL_PHASE) { calls.push("uia:" + env.XIAOXI_DELETE_PHASE); return uia; }
+      calls.push("visual:" + env.XIAOXI_VDEL_PHASE);
+      return env.XIAOXI_VDEL_PHASE === "prepare" ? prepare : commit;
+    };
+    const result = await deleteWechatContact(person, { confirm: true, uniqueName: true, focus, runner, opener: async (query, context) => { calls.push("open:" + context.searchQueryType); return open; },
+      titleCheck: async () => { calls.push("title"); return title; }, ...options });
+    return { result, calls };
+  };
+  const forced = await run({ options: { visualOnly: true } });
+  assert.deepEqual(forced.calls, ["open:wechat_id", "title", "visual:prepare", "visual:commit"]);
+  // The windows already open before prepare reach commit, which never takes, closes or counts them.
+  let baselineSeen = null;
+  await deleteWechatContact(person, { confirm: true, uniqueName: true, focus, visualOnly: true, opener: async () => ({ ok: true }), titleCheck: async () => ({ ok: true }),
+    runner: async (_s, env) => { if (env.XIAOXI_VDEL_PHASE === "commit") baselineSeen = env.XIAOXI_VDEL_BASELINE; return env.XIAOXI_VDEL_PHASE === "prepare" ? { ok: true, ready: true, baseline: "101,202" } : { ok: true, deleted: true }; } });
+  assert.equal(baselineSeen, "101,202");
+  // No other window open before prepare: the empty list is still handed in (else commit would take the confirm as old).
+  let flag = null;
+  await deleteWechatContact(person, { confirm: true, uniqueName: true, focus, visualOnly: true, opener: async () => ({ ok: true }), titleCheck: async () => ({ ok: true }),
+    runner: async (_s, env) => { if (env.XIAOXI_VDEL_PHASE === "commit") flag = [env.XIAOXI_VDEL_HAS_BASELINE, env.XIAOXI_VDEL_BASELINE]; return env.XIAOXI_VDEL_PHASE === "prepare" ? { ok: true, ready: true, baseline: "" } : { ok: true, deleted: true }; } });
+  assert.deepEqual(flag, ["1", ""]);
+  const { VISUAL_DELETE_SCRIPT: script } = require("../../rpa/active_touch/wechat_delete_contact_visual.cjs");
+  assert.match(script, /XIAOXI_VDEL_HAS_BASELINE -eq "1"/u, "commit tells an empty list from none");
+  // An unconfirmed 微信号 then the name: the same rule as touch (no first-row guess).
+  const searches = [];
+  await deleteWechatContact(person, { confirm: false, uniqueName: true, focus, visualOnly: true, titleCheck: async () => ({ ok: false }), runner: async () => ({ ok: false, reason: "x" }),
+    opener: async (query, context) => { searches.push([context.searchQueryType, context.searchFallbackReason]); return searches.length === 1 ? { ok: false, reason: "search_result_identity_unverified" } : { ok: false, reason: "y" }; } });
+  assert.deepEqual(searches, [["wechat_id", ""], ["name_fallback", "wechat_id_unverified"]]);
+  assert.equal(forced.result.deleted, true); assert.equal(forced.result.visual, true); assert.equal(forced.result.idCheck.id_check_state, "matched");
+  const fallback = await run({ uia: { ok: false, stage: "open", reason: "search_box_not_found" }, options: { visualOnly: false } });
+  assert.deepEqual(fallback.calls, ["uia:open", "open:wechat_id", "title", "visual:prepare", "visual:commit"], "no UIA tree: the screen is read instead");
+  // A title that could not be read: the card's 微信号 alone decides (the script requires an exact match).
+  const unread = await run({ title: { ok: false }, options: { visualOnly: true } });
+  assert.deepEqual(unread.calls, ["open:wechat_id", "title", "visual:prepare", "visual:commit"]);
+  let required = "";
+  await deleteWechatContact(person, { confirm: true, uniqueName: true, focus, visualOnly: true, opener: async () => ({ ok: true }), titleCheck: async () => ({ ok: false }),
+    runner: async (_s, env) => { required = env.XIAOXI_DELETE_REQUIRE_ID; return { ok: false, stage: "profile", reason: "chat_title_mismatch" }; } });
+  assert.equal(required, "1", "the card must show exactly this 微信号");
+  const noId = await deleteWechatContact({ name: "测试客户乙", remark: "测试客户乙" }, { confirm: true, uniqueName: true, focus, visualOnly: true, opener: async () => ({ ok: true }),
+    titleCheck: async () => ({ ok: false }), runner: async () => { throw new Error("must not run"); } });
+  assert.equal(noId.reason, "chat_title_mismatch", "no title and no 微信号: stop before anything");
+  const dry = await run({ prepare: { ok: false, stage: "confirm", reason: "dry_run_stopped_before_delete", dryRun: true }, options: { visualOnly: true, confirm: false } });
+  assert.deepEqual([dry.result.deleted, dry.calls.includes("visual:commit")], [false, false], "a look-only run never presses 删除");
+  const silent = await run({ commit: null, options: { visualOnly: true } });
+  assert.deepEqual([silent.result.deleted, silent.result.outcomeUnknown], [false, true], "after the press, no clear answer is unknown, never retried");
+  const gone = await run({ commit: { ok: false, stage: "commit", reason: "confirm_dialog_gone", notClicked: true }, options: { visualOnly: true } });
+  assert.deepEqual([gone.result.deleted, gone.result.outcomeUnknown], [false, false], "a confirm gone before the press: not deleted, can be tried again");
+  const { VISUAL_DELETE_SCRIPT } = require("../../rpa/active_touch/wechat_delete_contact_visual.cjs");
+  assert.ok(!/SendWait\("\{ESC\}"\)|keybd_event\(0x1B/u.test(VISUAL_DELETE_SCRIPT), "never Esc on the visual path: it hides WeChat 4");
+  assert.ok(VISUAL_DELETE_SCRIPT.includes("visual_point_invalid") && VISUAL_DELETE_SCRIPT.includes("OwnerAt"), "a press only on a real point inside WeChat");
+  console.log("visual delete routing self-check passed");
+})().catch((error) => { console.error(error); process.exit(1); });
