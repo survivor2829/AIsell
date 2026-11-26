@@ -365,7 +365,9 @@ function checkLabelReading(script) {
     "$lines = @(@{ text = '钱总一添加'; words = $words }, @{ text = '取消删除'; words = @(@{ t = '取消删除'; l = 0; r = 80; top = 90; b = 100 }) })",
     "$a = Find-Label $lines '添加' 12; $d = Find-Label $lines '删除' 6; $n = Find-Label $lines '添加' 3",
     "@{ add = $a.x; del = $d.x; short = [bool]$n; core = (Core '测试🌸客户[呲牙]') } | ConvertTo-Json -Compress"].join("\n");
-  const run = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "-"], { input: code, encoding: "utf8", windowsHide: true, timeout: 60000 });
+  // Encoded and UTF-8 out: piped through stdin, the Chinese text was garbled on the CI runner (another code page).
+  const run = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+    Buffer.from(`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n${code}`, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true, timeout: 60000 });
   const answer = JSON.parse(String(run.stdout).trim().split(/\r?\n/u).pop());
   assert.equal(answer.add, 140, "添加 at its own characters, not the line's middle");
   assert.equal(answer.del, 60, "删除 inside one word 取消删除");
