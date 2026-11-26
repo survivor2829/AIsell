@@ -125,6 +125,16 @@ async function checkWechatDelete(base) {
   await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: live, coordinator, wait: async () => {},
     deleteContact: async () => { tries += 1; return { ok: false, stage: "window", reason: "wechat_version_unsupported" }; } });
   assert.equal(tries, 1, "an unsupported WeChat is not searched again");
+  // WeChat's chat window cannot be found at all (b070e34b, 2026-11-26: 36 people skipped one by one, nothing
+  // deleted): the run stops at the first person and every later one carries the same reason.
+  tries = 0;
+  const halted = await cleanup.deleteInWechat(plan.wanted, { currentAccount: "当前号", verifyLiveAccount: live, coordinator, wait: async () => {},
+    deleteContact: async () => { tries += 1; return { ok: false, stage: "open", reason: "wechat_main_window_not_found" }; } });
+  assert.equal(tries, 2, "one person, one more try, then the run stops");
+  assert.equal(halted.halted, "wechat_main_window_not_found");
+  assert.equal(halted.failed, plan.wanted.length, "the rest are marked with the same reason, not tried");
+  const haltedStatus = cleanup.list().entries.filter((entry) => plan.wanted.some((item) => item.key === entry.key)).map((entry) => entry.wechatDelete?.reason);
+  assert.ok(haltedStatus.every((reason) => reason === "wechat_main_window_not_found"));
   tries = 0;
   await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: live, coordinator, wait: async () => { cleanup.stopWechatDelete(); },
     deleteContact: async () => { tries += 1; return { ok: false, stage: "open", reason: "search_result_identity_unverified" }; } });

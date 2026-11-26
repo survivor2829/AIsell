@@ -352,9 +352,13 @@ function registerWechatWorkflowIpc(options) {
       coordinator: options.coordinator,
       currentAccount,
       verifyLiveAccount: options.verifyLiveAccount,
-      onProgress: (progress) => setExternalActivity("contactCleanup", progress.finished ? null : {
+      onProgress: (progress) => {
+        // WeChat itself could not be read: the run stopped at once (touch-cleanup.cjs WHOLE_RUN); 小玺 says so.
+        if (progress.finished && progress.halted) say({ text: "微信里没能删好友", sub: "没读到微信聊天主界面，打开微信后再删一次", mood: "error" });
+        setExternalActivity("contactCleanup", progress.finished ? null : {
         title: "正在删除无效好友", step: progress.current ? `删除 ${progress.current}` : "准备中",
-        done: progress.done, total: progress.total, pausable: true, spacePause: Boolean(spaceHotkey.ready?.()) }),
+        done: progress.done, total: progress.total, pausable: true, spacePause: Boolean(spaceHotkey.ready?.()) });
+      },
       // Each miss is logged (step and reason, no names) so a failure report shows where deleting stops.
       onFailure: (failure) => options.logger?.event?.("wechat_workflow", failure.retrying ? "contact_cleanup.retry" : failure.degraded ? "contact_cleanup.id_check_degraded" : "contact_cleanup.person_failed", failure,
         { level: failure.retrying ? "warn" : "error", code: failure.reason || "contact_cleanup_failed" })
