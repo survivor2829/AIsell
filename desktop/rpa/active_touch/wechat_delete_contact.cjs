@@ -513,6 +513,7 @@ async function deleteOnce(contact, { confirm = false, uniqueName = false, runner
     ...(Array.isArray(result?.eyes) && result.eyes.length ? { eyes: result.eyes.map(String).slice(0, 8) } : {}),
     ...(typeof result?.add_found === "boolean" ? { addFound: result.add_found } : {}),
     ...(Number.isFinite(result?.line_count) ? { lineCount: result.line_count } : {}),
+    ...(Number.isFinite(result?.input_ticks_ignored) ? { inputTicksIgnored: result.input_ticks_ignored } : {}),
     ...(result?.id_check && typeof result.id_check === "object" ? { idCheck: result.id_check } : {}) });
   const visually = async () => shapeVisual(await deleteVisually({ name, wechatId, plan, uniqueName, confirm, window, runner, opener, titleCheck, stopped, eyes, onAi }, markCommitting));
   if (visualOnly) return visually();

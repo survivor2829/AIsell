@@ -41,6 +41,11 @@ public static class XiaoxiVisualDelete {
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
+  [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vk);
+  public static int[] Cursor() { POINT p; return GetCursorPos(out p) ? new[] { p.X, p.Y } : new[] { int.MinValue, int.MinValue }; }
+  // A key or mouse button held right now (a person in the middle of using the computer).
+  public static bool AnyKeyDown() { for (int vk = 1; vk < 255; vk++) { if ((GetAsyncKeyState(vk) & 0x8000) != 0) return true; } return false; }
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, UIntPtr e);
   [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
@@ -129,6 +134,7 @@ function Out-Result($ok, $stage, $reason, $extra = @{}) {
   if (-not $ok -and $phase -eq "commit" -and -not $script:pressedCommit -and -not $extra.outcomeUnknown) { $result.notClicked = $true }
   foreach ($key in $extra.Keys) { $result[$key] = $extra[$key] }
   if (@($script:eyes).Count) { $result.eyes = @($script:eyes) }
+  if ($script:quietTicks) { $result.input_ticks_ignored = [int]$script:quietTicks }
   $result | ConvertTo-Json -Compress -Depth 5
   exit 0
 }
@@ -214,7 +220,19 @@ function Ask-Eyes([string]$kind, [int]$left, [int]$top, [int]$width, [int]$heigh
   $id = "$phase-$kind-$($script:eyes.Count + 1)"
   $file = Join-Path $askDir "$id.png"
   $bitmap = New-Object System.Drawing.Bitmap $width, $height
-  try { if (-not [XiaoxiScreenPixels]::Copy($bitmap, $left, $top)) { return $null }; $bitmap.Save($file, [System.Drawing.Imaging.ImageFormat]::Png) } finally { $bitmap.Dispose() }
+  $big = $null
+  try {
+    if (-not [XiaoxiScreenPixels]::Copy($bitmap, $left, $top)) { return $null }
+    # Small text is enlarged first: at 100% the model read 城胜 as 戚胜 on the confirm (dev machine, 2026-11-26). The
+    # answer is in fractions of the picture, so the size does not change where anything is pressed.
+    $zoom = if ($width -lt 900) { 2 } else { 1 }
+    if ($zoom -gt 1) {
+      $big = New-Object System.Drawing.Bitmap ($width * $zoom), ($height * $zoom)
+      $g = [System.Drawing.Graphics]::FromImage($big); $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+      $g.DrawImage($bitmap, 0, 0, $width * $zoom, $height * $zoom); $g.Dispose()
+      $big.Save($file, [System.Drawing.Imaging.ImageFormat]::Png)
+    } else { $bitmap.Save($file, [System.Drawing.Imaging.ImageFormat]::Png) }
+  } finally { $bitmap.Dispose(); if ($big) { $big.Dispose() } }
   $request = @{ id = $id; kind = $kind; file = $file } | ConvertTo-Json -Compress
   [IO.File]::WriteAllText((Join-Path $askDir "$id.req.tmp"), $request, (New-Object Text.UTF8Encoding $false))
   Move-Item -LiteralPath (Join-Path $askDir "$id.req.tmp") -Destination (Join-Path $askDir "$id.req.json") -Force
@@ -238,6 +256,20 @@ function Ask-Eyes([string]$kind, [int]$left, [int]$top, [int]$width, [int]$heigh
 }
 # Our own input only: nobody else may have touched the mouse or keyboard since our last press.
 $script:lease = [XiaoxiVisualDelete]::LastInput()
+$script:cursor = [XiaoxiVisualDelete]::Cursor()
+$script:quietTicks = 0
+# Someone used the mouse or keyboard since our last press. The last-input time alone is not proof: on the dev machine
+# it moved every 30 s with no mouse or keyboard event at all (low-level hook, 2026-11-26), and each AI look waits
+# several seconds. So a changed time counts as a person only when the cursor left where we put it or a key or button is
+# held; otherwise the time is taken as the new lease and counted.
+function Lease-Broken {
+  if ([XiaoxiVisualDelete]::LastInput() -eq $script:lease) { return $false }
+  $c = [XiaoxiVisualDelete]::Cursor()
+  if ([Math]::Abs($c[0] - $script:cursor[0]) -gt 2 -or [Math]::Abs($c[1] - $script:cursor[1]) -gt 2 -or [XiaoxiVisualDelete]::AnyKeyDown()) { return $true }
+  $script:quietTicks++
+  $script:lease = [XiaoxiVisualDelete]::LastInput()
+  return $false
+}
 function Press($x, $y, [string]$stage) {
   # Only a real point inside one of WeChat's windows is ever pressed (a lost value once made it (0, 0)).
   if ($null -eq $x -or $null -eq $y -or [double]::IsNaN([double]$x) -or [double]::IsNaN([double]$y)) { Close-Opened; Out-Result $false $stage "visual_point_invalid" }
@@ -245,7 +277,7 @@ function Press($x, $y, [string]$stage) {
   foreach ($h in @($mainHwnd) + @(Get-Popups)) { $r = Rect $h; if ($x -gt $r.Left + 2 -and $x -lt $r.Right - 2 -and $y -gt $r.Top + 2 -and $y -lt $r.Bottom - 2) { $inside = $true } }
   if (-not $inside) { Close-Opened; Out-Result $false $stage "visual_point_invalid" }
   $x = [double]$x; $y = [double]$y
-  if ([XiaoxiVisualDelete]::LastInput() -ne $script:lease) { Close-Opened; Out-Result $false $stage "wechat_external_input_detected" }
+  if (Lease-Broken) { Close-Opened; Out-Result $false $stage "wechat_external_input_detected" }
   $ours = { $front = [XiaoxiVisualDelete]::GetForegroundWindow().ToInt64(); $front -eq $mainHwnd -or @(Get-Popups) -contains $front }
   # On commit nothing is brought to the front: a switch can close the confirm and the press would land in the chat.
   if (-not (& $ours) -and $stage -ne "commit") { [void][XiaoxiVisualDelete]::SetForegroundWindow([IntPtr]$mainHwnd); Start-Sleep -Milliseconds 250 }
@@ -253,7 +285,7 @@ function Press($x, $y, [string]$stage) {
   if (-not (& $ours)) { Close-Opened; Out-Result $false $stage "wechat_window_not_foreground" }
   # The point itself must be on a WeChat window, not on something drawn over it.
   if ([XiaoxiVisualDelete]::OwnerAt([int]$x, [int]$y) -ne $pid0) { Close-Opened; Out-Result $false $stage "wechat_target_changed" }
-  if ([XiaoxiVisualDelete]::LastInput() -ne $script:lease) { Close-Opened; Out-Result $false $stage "wechat_external_input_detected" }
+  if (Lease-Broken) { Close-Opened; Out-Result $false $stage "wechat_external_input_detected" }
   [void][XiaoxiVisualDelete]::SetCursorPos([int]$x, [int]$y); Start-Sleep -Milliseconds 90
   # Development only: every check of the commit press ran; stop just before it and close what was opened.
   if ($stage -eq "commit" -and $env:XIAOXI_VDEL_NO_PRESS -eq "1") { Close-Opened; Out-Result $false "commit" "dry_commit_reached" }
@@ -261,6 +293,7 @@ function Press($x, $y, [string]$stage) {
   [XiaoxiVisualDelete]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 50; [XiaoxiVisualDelete]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 120
   $script:lease = [XiaoxiVisualDelete]::LastInput()
+  $script:cursor = [XiaoxiVisualDelete]::Cursor()
 }
 # WeChat's windows other than the chat window (card, menu, confirm).
 # Only windows that appeared after this delete began: the user's own detached chats or image viewers are never taken
@@ -279,7 +312,8 @@ trap {
     foreach ($h in @(Get-Popups)) { try { [void][XiaoxiVisualDelete]::SendMessage([IntPtr]$h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) } catch { } }
   }
   if ($script:pressedCommit) { @{ ok = $false; stage = "commit"; reason = "delete_outcome_unknown"; outcomeUnknown = $true; visual = $true } | ConvertTo-Json -Compress; exit 0 }
-  @{ ok = $false; stage = $(if ($phase -eq "commit") { "commit" } else { "script" }); reason = "visual_script_failed"; notClicked = ($phase -eq "commit"); visual = $true } | ConvertTo-Json -Compress
+  @{ ok = $false; stage = $(if ($phase -eq "commit") { "commit" } else { "script" }); reason = "visual_script_failed"; notClicked = ($phase -eq "commit"); visual = $true;
+    script_line = [int]$_.InvocationInfo.ScriptLineNumber; error_type = [string]$_.Exception.GetType().Name; error_text = ([string]$_.Exception.Message).Substring(0, [Math]::Min(200, ([string]$_.Exception.Message).Length)) } | ConvertTo-Json -Compress
   exit 0
 }
 function Close-Opened { foreach ($h in @(Get-Popups)) { [void][XiaoxiVisualDelete]::SendMessage([IntPtr]$h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) } }

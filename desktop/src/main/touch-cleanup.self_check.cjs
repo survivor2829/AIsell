@@ -309,6 +309,7 @@ async function checkVisualEyes(person, focus) {
   assert.ok(script.includes("if (-not $h -or $h -eq $mainHwnd) { return $dialog }"), "the model never looks for 删除 on the chat window itself");
   assert.ok(script.includes('if ([string]$answer.reason -eq "stopped")'), "停止 while the model looks stops at once");
   checkLabelReading(script);
+  checkVisualTypeCompiles(script);
   await checkCoreUniqueName();
 }
 
@@ -331,6 +332,20 @@ async function checkCoreUniqueName() {
       deleteContact: async (contact, options) => { seen.push([contact.name, options.uniqueName]); return { ok: true, deleted: true }; } });
     assert.deepEqual(seen, [["测试🌸客户", false], ["测试客户乙", true]]);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+// The C# inside the script is compiled for real: the PowerShell parse check cannot see it (a second POINT once broke
+// every run with "visual_script_failed" while every parse check passed).
+function checkVisualTypeCompiles(script) {
+  const { spawnSync } = require("node:child_process");
+  const start = script.indexOf('if (-not ("XiaoxiVisualDelete" -as [type]))');
+  const open = script.indexOf('-TypeDefinition @"', start) + '-TypeDefinition @"'.length, close = script.indexOf('"@', open);
+  assert.ok(start >= 0 && open > start && close > open, "the XiaoxiVisualDelete type is found");
+  const code = `$code = @'${script.slice(open, close)}'@\ntry { Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition $code; "compiled" } catch { "failed: " + $_.Exception.Message }`;
+  // Encoded: a here-string piped through stdin is not run as one statement.
+  const run = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(code, "utf16le").toString("base64")],
+    { encoding: "utf8", windowsHide: true, timeout: 90000 });
+  assert.equal(String(run.stdout).trim().split(/\r?\n/u).pop(), "compiled", String(run.stdout).slice(0, 400));
 }
 
 // Find-Label and Core run in PowerShell on lines shaped as Windows' OCR gives them (no screen, no OCR).

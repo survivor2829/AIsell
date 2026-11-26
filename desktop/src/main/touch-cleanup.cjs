@@ -17,7 +17,8 @@ const evidenceOf = (result) => ({
   ...(Number.isFinite(result?.resultCount) ? { result_count: result.resultCount } : {}),
   ...(Array.isArray(result?.eyes) ? { eyes: result.eyes } : {}),
   ...(typeof result?.addFound === "boolean" ? { add_found: result.addFound } : {}),
-  ...(Number.isFinite(result?.lineCount) ? { line_count: result.lineCount } : {})
+  ...(Number.isFinite(result?.lineCount) ? { line_count: result.lineCount } : {}),
+  ...(Number.isFinite(result?.inputTicksIgnored) ? { input_ticks_ignored: result.inputTicksIgnored } : {})
 });
 // Tries per person when it stopped before 删除: one more only, for a step WeChat was not ready for (no search rows yet,
 // confirm not shown yet, a panel still sliding in); a wrong path is fixed, not retried (user 2026-11-25: "错误的方法再重试
