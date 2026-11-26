@@ -1,5 +1,5 @@
 const assert = require("node:assert/strict");
-const { coverHtml, createGeoBrowserAdapter, GEO_CHANNELS, GEO_ACCOUNT_PLATFORMS, DRIVERS, sameArticle, paragraphs } = require("./geo-publish-drivers.cjs");
+const { coverHtml, createGeoBrowserAdapter, sendDoubao, GEO_CHANNELS, GEO_ACCOUNT_PLATFORMS, DRIVERS, DOUBAO, sameArticle, paragraphs } = require("./geo-publish-drivers.cjs");
 
 // 文字比对：空白和编辑器插入的零宽字符不算差别；少一段、改一个字都算不一致。
 const job = { title: "洗地机怎么选", body: "第一段。\n\n第二段。\n" };
@@ -222,6 +222,39 @@ global.setTimeout = (fn, ms, ...rest) => realTimeout(fn, Math.min(ms, 1), ...res
   }
   Date.now = realNow;
   DRIVERS.zhihu.fill = realZhihuFill;
+  {
+    // 豆包发问题（2026-11-26 真实页面）：回车要带上 "\r"；发出后文字会在框里留几秒、发送键变灰，要等，不能 2.5 秒就判没发出。
+    const doubaoPage = ({ clearAfter = Infinity, button = true, clearOnClick = false } = {}) => {
+      let checks = 0;
+      const log = { keys: [], clicks: 0 };
+      const page = {
+        send: async (method, params) => { if (method === "Input.dispatchKeyEvent") log.keys.push(params); return {}; },
+        evaluate: async (expression) => {
+          if (expression === DOUBAO.answers) return 0;
+          if (expression === DOUBAO.sendButton) return button ? { x: 1120, y: 681 } : null;
+          if (expression.includes("innerText")) { checks++; return checks > clearAfter || (clearOnClick && log.clicks) ? "" : "清洁设备渠道商怎么判断"; }
+          return null;
+        },
+        url: async () => "https://www.doubao.com/chat/",
+        mouse: async () => { log.clicks++; }
+      };
+      return { page, log };
+    };
+    const fast = { waitMs: 60, step: 5 };
+    const slow = doubaoPage({ clearAfter: 6 });
+    assert.equal(await sendDoubao(slow.page, fast), true, "文字留了一会儿才清空，也算发出");
+    assert.equal(slow.log.keys[0].text, "\r", "回车带上换行字符，像真键盘一样");
+    assert.equal(slow.log.clicks, 0, "回车发出了就不再点发送键");
+    const stuck = doubaoPage({ clearOnClick: true });
+    assert.equal(await sendDoubao(stuck.page, fast), true, "回车没反应：点一次能点的发送键");
+    assert.equal(stuck.log.clicks, 1);
+    const busy = doubaoPage({ button: false });
+    assert.equal(await sendDoubao(busy.page, fast), false, "发送键是灰的（正在发）就不点，避免发两遍");
+    assert.equal(busy.log.clicks, 0);
+    // 繁体页面的登录提示也认得出来。
+    assert.equal(DOUBAO.loginRequired("https://www.doubao.com/chat/", "掃碼登入 手機號登入"), true);
+    assert.equal(DOUBAO.loginRequired("https://www.doubao.com/chat/", "新對話 用户123297"), false);
+  }
   console.log("geo publish drivers self-check passed");
   process.exit(0);
 })().catch((error) => { console.error(error); process.exit(1); });

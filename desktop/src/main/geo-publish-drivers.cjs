@@ -322,10 +322,14 @@ const DRIVERS = { zhihu: ZHIHU, toutiao: TOUTIAO, sohu: SOHU, baijiahao: BAIJIAH
 
 const DOUBAO = {
   name: "豆包", url: "https://www.doubao.com/chat/", hosts: ["doubao.com"], loginCookies: ["sessionid", "sessionid_ss"],
-  loginRequired: (url, text) => /\/login/.test(url) || /手机号登录|扫码登录|登录后/.test(text) && !/用户\d+/.test(text),
+  // The page follows the browser's language: a Traditional-Chinese profile shows 登入 (seen 2026-11-26).
+  loginRequired: (url, text) => /\/login/.test(url) || /手机号登录|扫码登录|登录后|手機號登入|掃碼登入|登入後|手機號登錄|掃碼登錄|登錄後/.test(text) && !/用[户戶]\d+/.test(text),
   input: `document.querySelector('[data-testid="chat_input_input"][contenteditable="true"], [data-testid="chat_input_input"] [contenteditable="true"], [contenteditable="true"]')`,
   answer: `[...document.querySelectorAll('[data-testid="receive_message"]')].at(-1)?.querySelector('[data-testid="message_text_content"]')`,
   finished: `[...document.querySelectorAll('[data-testid="receive_message"]')].at(-1)?.querySelector('[data-testid="message_action_bar"]')`,
+  answers: `document.querySelectorAll('[data-testid="receive_message"]').length`,
+  // Shows once there is text; greyed while a send is under way.
+  sendButton: `(() => { const el = document.querySelector('[data-testid="chat_input_send_button"]'); if (!el || el.disabled || el.getAttribute("aria-disabled") === "true") return null; const r = el.getBoundingClientRect(); return r.width ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null; })()`,
   referencesControl: `(() => { const all = [...document.querySelectorAll('[data-testid="receive_message"]')].at(-1)?.querySelectorAll("*") || []; const el = [...all].filter((node) => /参考|參考/.test(node.innerText || "") && (node.innerText || "").length < 30 && node.getClientRects().length).at(-1); if (!el) return null; el.scrollIntoView({ block: "center" }); const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
   // Each cited page is a numbered link inside the answer's message; the leading number is not part of its title.
   references: `[...[...document.querySelectorAll('[data-testid="receive_message"]')].at(-1).querySelectorAll('[data-testid="message_content"] a[href^="http"]')].filter((a) => /^\\s*\\d+[.、]/.test(a.innerText || "")).map((a) => ({ title: a.innerText.replace(/^\\s*\\d+[.、]\\s*/, "").replace(/\\s+/g, " ").trim().slice(0, 200), url: a.href })).slice(0, 50)`
@@ -351,6 +355,23 @@ const GEO_ACCOUNT_PLATFORMS = {
   baijiahao: { name: BAIJIAHAO.name, home: BAIJIAHAO.home, hosts: BAIJIAHAO.hosts, loginCookies: BAIJIAHAO.loginCookies },
   doubao: { name: DOUBAO.name, home: DOUBAO.url, hosts: DOUBAO.hosts, loginCookies: DOUBAO.loginCookies }
 };
+
+// Seen on the real page 2026-11-26: Enter has to carry its "\r" the way a keyboard sends it, and after sending the page
+// keeps the text in the box, with the send button greyed, for several seconds. Sent means the box emptied, the page moved
+// to a conversation address, or a new answer started. Only when Enter changed nothing and the send button is clickable
+// is it pressed, once: a greyed button means a send is already under way and must not be doubled.
+async function sendDoubao(page, { waitMs = 15_000, step = 500 } = {}) {
+  const before = Number(await page.evaluate(DOUBAO.answers)) || 0;
+  const sent = async () => !squash(await page.evaluate(`(${DOUBAO.input})?.innerText || ""`)) || /\/chat\/\d/.test(String(await page.url())) || (Number(await page.evaluate(DOUBAO.answers)) || 0) > before;
+  const settle = async () => { for (let waited = 0; waited < waitMs; waited += step) { await sleep(step); if (await sent()) return true; } return false; };
+  await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: "\r", unmodifiedText: "\r" });
+  await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  if (await settle()) return true;
+  const button = await page.evaluate(DOUBAO.sendButton);
+  if (!button) return false;
+  await page.mouse(button);
+  return settle();
+}
 
 const coverHtml = (title) => `<!doctype html><meta charset="utf-8"><body style="margin:0;width:800px;height:600px;display:flex;align-items:center;padding:0 70px;box-sizing:border-box;background:linear-gradient(135deg,#fff5f6,#ffe3e6);font-family:'Microsoft YaHei',sans-serif"><h1 style="margin:0;font-size:50px;line-height:1.4;color:#1f2937">${String(title).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`)}</h1></body>`;
 async function makeCover(page, title) {
@@ -473,11 +494,7 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
       await sleep(1200);
       const typed = String(await page.evaluate(`(${DOUBAO.input}).innerText`) || "");
       if (squash(typed) !== squash(question)) throw fail("GEO_FORM_MISMATCH", "豆包输入框里的问题和要问的不一致，没有发送。");
-      // No text on the key event: a carriage return would be typed into the box as a line break.
-      await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
-      await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
-      await sleep(2500);
-      if (squash(await page.evaluate(`(${DOUBAO.input})?.innerText || ""`))) throw fail("GEO_NOT_SENT", "问题没有发出去，可以再查一次。");
+      if (!(await sendDoubao(page))) throw fail("GEO_NOT_SENT", "问题没有发出去，可以再查一次。");
       // Finished when the answer stops growing and its action bar appears.
       let last = "", still = 0;
       const answered = await waitThroughVerify(page, async () => {
@@ -500,4 +517,4 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
   return { publish, ask, stop, dispose: stop };
 }
 
-module.exports = { makeCover, coverHtml, createGeoBrowserAdapter, GEO_CHANNELS, GEO_ENGINES, GEO_ACCOUNT_PLATFORMS, DRIVERS, DOUBAO, sameArticle, paragraphs, waitThroughVerify, findSoon, noticesOf, VERIFY };
+module.exports = { makeCover, coverHtml, createGeoBrowserAdapter, sendDoubao, GEO_CHANNELS, GEO_ENGINES, GEO_ACCOUNT_PLATFORMS, DRIVERS, DOUBAO, sameArticle, paragraphs, waitThroughVerify, findSoon, noticesOf, VERIFY };
