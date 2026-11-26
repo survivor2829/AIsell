@@ -13,14 +13,18 @@ data_dir=/var/lib/ai-provider-gateway
 [ -s "$source_dir/material_search.py" ] || { echo 'Missing deployment file: material_search.py' >&2; exit 1; }
 [ -s "$source_dir/accounts.py" ] || { echo 'Missing deployment file: accounts.py' >&2; exit 1; }
 [ -s "$source_dir/billing.py" ] || { echo 'Missing deployment file: billing.py' >&2; exit 1; }
+[ -s "$source_dir/prompt_library.py" ] || { echo 'Missing deployment file: prompt_library.py' >&2; exit 1; }
+[ -s "$source_dir/prompt-library.json" ] || { echo 'Missing deployment file: prompt-library.json' >&2; exit 1; }
 
 
-python3 - "$source_dir/service.py" "$source_dir/material_search.py" "$source_dir/accounts.py" "$source_dir/billing.py" <<'PY'
+python3 - "$source_dir/service.py" "$source_dir/material_search.py" "$source_dir/accounts.py" "$source_dir/billing.py" "$source_dir/prompt_library.py" <<'PY'
 from pathlib import Path
 import sys
 for filename in sys.argv[1:]:
     compile(Path(filename).read_text(encoding="utf-8"), filename, "exec")
 PY
+# The prompt library must load before it replaces the live one (a broken file never reaches the gateway).
+(cd "$source_dir" && python3 -c 'import sys; from prompt_library import PromptLibrary; library = PromptLibrary(sys.argv[1]); assert len(library) > 0' "$source_dir/prompt-library.json")
 
 backup="$data_dir/backups/$(date -u +%Y%m%dT%H%M%SZ)-$$"
 install -d -m 700 "$backup"
@@ -28,7 +32,7 @@ cp -p "$app_dir/service.py" "$backup/service.py"
 if [ -f "$app_dir/material_search.py" ]; then cp -p "$app_dir/material_search.py" "$backup/material_search.py"; fi
 if [ -f "$app_dir/accounts.py" ]; then cp -p "$app_dir/accounts.py" "$backup/accounts.py"; fi
 if [ -f "$app_dir/billing.py" ]; then cp -p "$app_dir/billing.py" "$backup/billing.py"; fi
-for file in local_acquisition.py acquisition_sync.py precise-public-sources.json; do
+for file in local_acquisition.py acquisition_sync.py precise-public-sources.json prompt_library.py prompt-library.json; do
   if [ -f "$app_dir/$file" ]; then cp -p "$app_dir/$file" "$backup/$file"; fi
 done
 override_dir=/etc/systemd/system/ai-provider-gateway.service.d
@@ -44,9 +48,10 @@ rollback() {
   if [ -f "$backup/material_search.py" ]; then install -m 644 "$backup/material_search.py" "$app_dir/material_search.py"; else rm -f "$app_dir/material_search.py"; fi
   if [ -f "$backup/accounts.py" ]; then install -m 644 "$backup/accounts.py" "$app_dir/accounts.py"; else rm -f "$app_dir/accounts.py"; fi
   if [ -f "$backup/billing.py" ]; then install -m 644 "$backup/billing.py" "$app_dir/billing.py"; else rm -f "$app_dir/billing.py"; fi
-  for file in local_acquisition.py acquisition_sync.py precise-public-sources.json; do
+  for file in local_acquisition.py acquisition_sync.py precise-public-sources.json prompt_library.py; do
     if [ -f "$backup/$file" ]; then install -m 644 "$backup/$file" "$app_dir/$file"; else rm -f "$app_dir/$file"; fi
   done
+  if [ -f "$backup/prompt-library.json" ]; then install -m 640 -o root -g ai-gateway "$backup/prompt-library.json" "$app_dir/prompt-library.json"; else rm -f "$app_dir/prompt-library.json"; fi
   # Preserve post-start receipts and fee reservations, including unknown outcomes.
   # This deployment has no destructive migrations; backups are diagnostic only.
   if [ -e "$backup/20-operation-receipts.conf" ]; then
@@ -80,7 +85,9 @@ PY
   fi
 done
 trap rollback EXIT
-install -m 644 "$source_dir/service.py" "$source_dir/material_search.py" "$source_dir/accounts.py" "$source_dir/billing.py" "$app_dir/"
+install -m 644 "$source_dir/service.py" "$source_dir/material_search.py" "$source_dir/accounts.py" "$source_dir/billing.py" "$source_dir/prompt_library.py" "$app_dir/"
+# The prompt wording is product know-how: readable by the gateway service only.
+install -m 640 -o root -g ai-gateway "$source_dir/prompt-library.json" "$app_dir/prompt-library.json"
 # Account administration token, shared with the maintenance admin through systemd
 # (read as root at start; the services never read this root-only file themselves).
 accounts_env=/etc/ai-maintenance/accounts-admin.env
@@ -118,4 +125,4 @@ PY
 systemctl is-active --quiet ai-provider-gateway
 trap - EXIT
 echo "Provider gateway updated; previous code retained: $backup"
-sha256sum "$app_dir/service.py" "$app_dir/material_search.py" "$app_dir/accounts.py" "$app_dir/billing.py"
+sha256sum "$app_dir/service.py" "$app_dir/material_search.py" "$app_dir/accounts.py" "$app_dir/billing.py" "$app_dir/prompt_library.py" "$app_dir/prompt-library.json"

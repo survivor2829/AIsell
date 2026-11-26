@@ -36,6 +36,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener, urlopen
 from material_search import MaterialSearch
+from prompt_library import PromptError, PromptLibrary
 
 
 try:
@@ -749,6 +750,9 @@ class GatewayServer(ThreadingHTTPServer):
         self.account_rates = {}
         self.account_rate_hits = collections.Counter()
         self.account_rate_day = None
+        # Prompt wording the app names by token (prompt_library.py); next to service.py unless configured.
+        self.prompts = PromptLibrary(os.environ.get("XIAOXI_PROMPT_LIBRARY")
+                                     or str(Path(__file__).with_name("prompt-library.json")))
         self.material_search = MaterialSearch((config.receipt_db_path + ".materials") if config.receipt_db_path and config.receipt_db_path != ":memory:" else ":memory:")
         # Whether the APIMart route (the fixed outbound node when one is set) answers at all. Filled by
         # the background probe; requests never trigger a probe, so a busy health endpoint costs nothing.
@@ -2141,6 +2145,13 @@ class Handler(BaseHTTPRequestHandler):
                     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
                 except (ValueError, TypeError, KeyError, UnicodeError):
                     return self._reply_json(400, {"error": "invalid_avatar_submission"})
+
+            # Prompt tokens become the stored wording before anything is keyed, metered or sent; an unknown
+            # token stops here, before any paid call (prompt_library.py).
+            try:
+                body = self.server.prompts.expand(body)
+            except PromptError as error:
+                return self._reply_json(422, {"error": error.code})
 
         operation_id = self.headers.get("X-Xiaoxi-Operation-Id", "").strip()
         billing_subject = self._session_subject()

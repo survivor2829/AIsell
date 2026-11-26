@@ -38,6 +38,7 @@ from provider_transport import build_provider_opener
 from collections import Counter
 from typing import Callable, Optional
 
+from prompt_ref import prompt_ref
 from ai_refine_v2.prompts.planner import (
     PRODUCT_PRESENTATIONS,
     SYSTEM_PROMPT,
@@ -1480,9 +1481,9 @@ def plan_v2(
     if require_strategy:
         from .buyer_strategy import SYSTEM_PROMPT as strategy_prompt
         system_prompt = strategy_prompt
+        # The closing instruction is one stored prompt; the strategy variant is another (wording on the server).
         user_prompt = user_prompt.replace(
-            "完整保留事实、参数与所有应有图片；画面指令简洁明确，避免无意义重复。",
-            "先展开核心事实下的不同需求，再列参数；不要生成screens或长生图指令。")
+            prompt_ref("detail.planner.user_v2.p4"), prompt_ref("detail.planner.user_v2.p4_strategy"))
     if require_demand_first:
         from .buyer_strategy import demand_first_prompt
         system_prompt = demand_first_prompt()

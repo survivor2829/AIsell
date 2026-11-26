@@ -15,6 +15,7 @@ from unittest import mock
 
 from service import GatewayConfig, GatewayServer, Handler
 from service import _HandshakeRetryHTTPSConnection, _HandshakeRetryHTTPSHandler
+from prompt_library import PromptLibrary
 
 
 class FakeResponse:
@@ -277,6 +278,39 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(operation.get_header("Authorization"), "Bearer deepseek-server-secret")
         self.assertIsNone(operation.get_header("X-api-key"))
         self.assertEqual(json.loads(operation.data), body)
+
+    def test_prompt_tokens_are_expanded_on_the_server_and_unknown_ones_are_never_sent(self):
+        library_path = os.path.join(self.receipt_dir.name, "prompt-library.json")
+        with open(library_path, "w", encoding="utf-8") as handle:
+            json.dump({"demo.system@1": "服务器上的提示词原文"}, handle, ensure_ascii=False)
+        self.server.prompts = PromptLibrary(library_path)
+        token = self.session()
+
+        def post(body):
+            return urllib.request.Request(
+                self.origin + "/v1/provider-gateway/deepseek/v1/chat/completions",
+                data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+                method="POST",
+            )
+
+        body = {"model": "deepseek-v4-flash", "messages": [
+            {"role": "system", "content": "⟦xiaoxi-prompt:demo.system@1⟧"},
+            {"role": "user", "content": "客户资料：扫地机"}]}
+        with urllib.request.urlopen(post(body)) as response:
+            self.assertEqual(response.status, 200)
+        operation, _timeout = self.upstream_requests[-1]
+        sent = json.loads(operation.data)
+        self.assertEqual(sent["messages"][0]["content"], "服务器上的提示词原文")
+        self.assertEqual(sent["messages"][1]["content"], "客户资料：扫地机")
+
+        before = len(self.upstream_requests)
+        body["messages"][0]["content"] = "⟦xiaoxi-prompt:demo.unknown@1⟧"
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(post(body))
+        self.assertEqual(error.exception.code, 422)
+        self.assertEqual(json.load(error.exception)["error"], "prompt_unknown")
+        self.assertEqual(len(self.upstream_requests), before, "an unknown prompt is never paid for")
 
     def test_fixed_routes_cover_sse_and_multipart_without_open_proxy(self):
         token = self.session()
