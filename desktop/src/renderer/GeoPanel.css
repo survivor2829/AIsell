@@ -37,8 +37,9 @@
 .ga-mark.is-dim { background: #d6d6db; }
 .ga-tag { justify-self: start; padding: 1px 9px; border-radius: 999px; background: var(--ok-bg); color: var(--ok); font-size: 12px; font-weight: 800; white-space: nowrap; }
 .ga-tag.is-big { background: var(--warn-bg); color: var(--warn); }
-.ga-live-dot { display: inline-block; width: 9px; height: 9px; margin-right: 9px; border-radius: 50%; background: var(--red); vertical-align: 2px; animation: ga-pulse 1.6s infinite; }
-@keyframes ga-pulse { 0% { box-shadow: 0 0 0 0 rgba(230, 0, 0, .4); } 70% { box-shadow: 0 0 0 9px rgba(230, 0, 0, 0); } 100% { box-shadow: 0 0 0 0 rgba(230, 0, 0, 0); } }
+/* Still working: follows the shared heartbeat (beat.ts, html[data-beat]); an endless animation would keep the window redrawing. */
+.ga-live-dot { display: inline-block; width: 9px; height: 9px; margin-right: 9px; border-radius: 50%; background: var(--red); vertical-align: 2px; box-shadow: 0 0 0 0 rgba(230, 0, 0, 0); transition: box-shadow .4s ease; }
+html[data-beat="1"] .ga-live-dot { box-shadow: 0 0 0 5px rgba(230, 0, 0, .22); }
 .ga-working { margin: 0; font-weight: 700; }
 .ga :is(input:not([type="checkbox"]), textarea, select), .ga-portal :is(input:not([type="checkbox"]), textarea, select) { width: 100%; min-width: 0; padding: 11px 14px; border: 1.5px solid #e0dfe4; border-radius: 14px; background: #fff; color: var(--ink); font: inherit; font-size: 16px; }
 .ga textarea, .ga-portal textarea { resize: vertical; line-height: 1.75; }
