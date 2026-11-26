@@ -13,6 +13,30 @@ function runReplayFile(source, options) {
 const { openWechatSearchResult, openWechatSearchResultAsync, discardSearchCapture, runPowerShell } = require("./wechat_window_driver.cjs");
 const { searchObservationEvidence } = require("./wechat_search_result_resolver.cjs");
 
+// WeChat 4's own result rows (mmui::SearchContentCellView, named by the display name): 47d2578f on 1.3.71
+// still skipped people the old search_item_function_ ids never matched. The one row named exactly this person
+// under a contact heading is clicked; a namesake, a group or chat-history row of the same name, or none
+// leaves it to the old rules. The chat title is still checked after the click (not a trusted mode).
+{
+  const { resolveWechatSearchResultObservation: resolve, isVerifiedWechatSearchResultMode } = require('./wechat_search_result_resolver.cjs');
+  const row = (name, top, section = "联系人") => ({ name, section, left: 70, top, right: 400, bottom: top + 60, x: 235, y: top + 30 });
+  const byId = resolve({ cellCandidates: [row("测试客户甲", 120)], ocrOk: false }, { query: "abc123", queryType: "wechat_id", expectedName: "测试客户甲" });
+  assert.equal(byId.status, "selected"); assert.equal(byId.mode, "exact_name_cell"); assert.equal(byId.candidate.y, 150);
+  const often = resolve({ cellCandidates: [row("测试客户甲", 120, "最常使用")], ocrOk: false }, { query: "测试客户甲", queryType: "name", expectedName: "测试客户甲" });
+  assert.equal(often.mode, "exact_name_cell", "最常使用 is a contact heading too");
+  const byName = resolve({ cellCandidates: [row("测试客户甲", 120), row("测试客户甲乙", 180)], ocrOk: false }, { query: "测试客户甲", queryType: "name_fallback", expectedName: "测试客户甲" });
+  assert.equal(byName.mode, "exact_name_cell", "a longer name is not this person");
+  const twins = resolve({ cellCandidates: [row("测试客户甲", 120), row("测试客户甲", 180)], ocrOk: false }, { query: "测试客户甲", queryType: "name", expectedName: "测试客户甲" });
+  assert.notEqual(twins.status, "selected", "two rows of the same name: never guessed");
+  for (const section of ["群聊", "聊天记录", "公众号", ""]) {
+    const group = resolve({ cellCandidates: [row("测试客户甲", 120, section)], ocrOk: false }, { query: "测试客户甲", queryType: "name", expectedName: "测试客户甲" });
+    assert.notEqual(group.mode, "exact_name_cell", "a row under " + (section || "no heading") + " is never the contact");
+  }
+  const other = resolve({ cellCandidates: [row("测试客户乙", 120)], ocrOk: false }, { query: "abc123", queryType: "wechat_id", expectedName: "测试客户甲" });
+  assert.notEqual(other.mode, "exact_name_cell", "a row of another name is never taken");
+  assert.equal(isVerifiedWechatSearchResultMode("exact_name_cell"), false, "the chat title is checked after a click on a named row");
+}
+
 // Anonymous text on the four failure-package geometries (1809, 125% DPI).
 {
   const { resolveWechatSearchResultObservation: resolve } = require('./wechat_search_result_resolver.cjs');
@@ -497,7 +521,7 @@ ${script.slice(start, end)}
     const replay = `$ErrorActionPreference='Stop'\n$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8\n`
       + `$query='offline123'; $ocrScale=3; $script:inputLeaseTick=1; $script:searchPopupCandidateCount=0\n`
       + `$matched=@{title='offline';focused=$true;processName='Weixin';pid=11;hWnd=22;x=200;y=100;width=800;height=600}\n`
-      + `$uiaCandidates=New-Object System.Collections.Generic.List[object]\n$visualCandidates=New-Object System.Collections.Generic.List[object]\n`
+      + `$uiaCandidates=New-Object System.Collections.Generic.List[object]\n$cellCandidates=New-Object System.Collections.Generic.List[object]\n$visualCandidates=New-Object System.Collections.Generic.List[object]\n`
       + `$webSearchCandidates=New-Object System.Collections.Generic.List[object]\n$webSearchTop=$null;$webSearchVisible=$false;$ocrOk=$false\n`
       + `$cropBounds=$null;$popupBounds=$null;$popupDpi=$null;$captureSource='formula_crop'\n`
       + `$compactQuery='offline123';$networkSearchPattern=@('搜索网络结果','搜一搜')\n`
@@ -813,4 +837,20 @@ process.on("beforeExit", () => {
   const driver = require("node:fs").readFileSync(require.resolve("./wechat_window_driver.cjs"), "utf8");
   assert.match(driver, /\$rect\.Top -ge \(\$windowRect\.Top \+ 30 \* \$titleDpi \/ 96\.0\)/u, "the header band scales with DPI");
   console.log("header chrome is not a chat title: window buttons ignored, DPI-scaled band");
+}
+
+// The named row moved or doubled before the press (search-cell-moved): nothing else is clicked from that
+// reading, since the list has moved and its other points may be other people (review 2026-11-26).
+{
+  const { openWechatSearchResult } = require("./wechat_window_driver.cjs");
+  const cell = { name: "测试客户甲", section: "联系人", left: 70, top: 120, right: 400, bottom: 180, x: 235, y: 150 };
+  const modes = [];
+  const result = openWechatSearchResult("测试客户甲", { pid: 11, hWnd: "22", searchQueryType: "name", searchIdentity: { expectedName: "测试客户甲" },
+    runner: () => ({ ok: true, pid: 11, hWnd: "22", title: "微信", processName: "Weixin", searchQuery: "测试客户甲", inputLeaseTick: 5,
+      searchResultObservation: { cellCandidates: [cell], uiaCandidates: [{ automationId: "search_item_function_1", name: "测试客户甲", x: 240, y: 160 }], visualCandidates: [], ocrOk: false } }),
+    clickRunner: (_script, env) => { modes.push(env.XIAOXI_SEARCH_CANDIDATE_MODE + ":" + env.XIAOXI_SEARCH_CELL_NAME);
+      return { ok: false, reason: "search_result_identity_unverified", rule_id: "search-cell-moved" }; } });
+  assert.deepEqual(modes, ["exact_name_cell:测试客户甲"], "the named row goes first, by name, and nothing else is pressed");
+  assert.equal(result.ok, false);
+  console.log("moved named row is never re-pressed from a stale reading");
 }

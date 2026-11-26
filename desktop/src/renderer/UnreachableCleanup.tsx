@@ -9,7 +9,7 @@ import "./UnreachableCleanup.css";
 type WechatDelete = { status: "deleted" | "failed" | "unknown"; stage: string; reason: string };
 export type UnreachableEntry = { accountId: string; key: string; name: string; kind: "blocked" | "deleted"; at: string; removed: boolean; removedAt: string; wechatDelete?: WechatDelete };
 export type UnreachableList = { ok: boolean; entries: UnreachableEntry[]; pending: number; removed: number; removedNow?: number; restored?: boolean; error?: string;
-  wechatRunning?: boolean; wechatStopping?: boolean; wechatStarted?: boolean; wechatReason?: string; wechatSkipped?: number; wechatProgress?: { done: number; total: number; deleted: number; failed: number; unknown: number; current: string } };
+  wechatRunning?: boolean; wechatStopping?: boolean; wechatStarted?: boolean; wechatReason?: string; wechatSkipped?: number; wechatProgress?: { done: number; total: number; deleted: number; failed: number; unknown: number; current: string; halted?: string } };
 
 const id = (entry: UnreachableEntry) => `${entry.accountId}\u0000${entry.key}`;
 const KIND = { blocked: "拉黑了你", deleted: "删除了你" };
@@ -39,6 +39,8 @@ const STOPPED: Record<string, string> = {
   search_result_ambiguous: "微信里搜到好几个同名的人，为免删错没有删",
   chat_not_opened: "点开搜索结果后没进到这个人的聊天，已停下",
   search_box_not_found: "没找到微信的搜索框，已停下",
+  wechat_main_window_not_found: "没找到微信聊天主窗口，整轮已停下",
+  wechat_window_not_ready: "微信窗口还没准备好，整轮已停下",
   confirm_text_mismatch: "确认框上的名字对不上，已停下"
 };
 const wechatText = (result: WechatDelete) => result.status === "deleted" ? "微信里已删"
@@ -69,7 +71,9 @@ export function UnreachableCleanup({ onClose }: { onClose: () => void }) {
         setList(next);
         const done = next?.wechatProgress;
         if (next && !next.wechatRunning && done) {
-          setNotice([`微信里已删 ${done.deleted} 人`, done.failed ? `没删成 ${done.failed} 人` : "", done.unknown ? `结果不明 ${done.unknown} 人` : ""].filter(Boolean).join("，") + "。");
+          // WeChat itself could not be read: the run stopped at once instead of skipping everyone (2026-11-26).
+          setNotice(done.halted ? `微信里没能删：${STOPPED[done.halted] || "微信界面读不到"}。${PERMANENT.has(done.halted) ? "" : "请打开微信聊天主界面后点“再删一次”。"}`
+            : [`微信里已删 ${done.deleted} 人`, done.failed ? `没删成 ${done.failed} 人` : "", done.unknown ? `结果不明 ${done.unknown} 人` : ""].filter(Boolean).join("，") + "。");
         }
       }).catch(() => undefined);
     }, 1500);

@@ -28,6 +28,10 @@ const NO_RETRY = new Set(["contact_name_not_unique", "delete_name_missing", "con
   "search_result_not_found", "search_input_failed", "search_box_not_found", "profile_wechat_id_mismatch", "profile_wechat_id_unreadable",
   "chat_member_mismatch", "chat_title_mismatch", "confirm_text_mismatch"]);
 
+// Not about this person: WeChat itself cannot be read. Every next person would fail the same way, so the run stops
+// and says why (b070e34b, 2026-11-26: no chat window found, all 36 people skipped one by one, nothing deleted).
+const WHOLE_RUN = new Set(["wechat_main_window_not_found", "search_box_not_found", "wechat_version_unsupported", "wechat_window_not_ready"]);
+
 function createTouchCleanup(activeTouchDir) {
   const registry = createUnreachableRegistry(activeTouchDir);
   const contactsFile = path.join(activeTouchDir, "contacts.json");
@@ -133,6 +137,12 @@ function createTouchCleanup(activeTouchDir) {
           // A stop the customer asked for is not a failure to report.
           if (status !== "deleted" && result?.reason !== "stopped_by_user") onFailure({ stage: String(result?.stage || ""), reason: String(result?.reason || ""), status, retrying: false, ...evidenceOf(result) });
           finish(entry, status, result?.stage, result?.reason);
+          if (status === "failed" && WHOLE_RUN.has(String(result?.reason || ""))) {
+            const rest = wanted.slice(wanted.indexOf(entry) + 1);
+            for (const later of rest) finish(later, "failed", String(result?.stage || "window"), String(result.reason));
+            wechatRun.progress.halted = String(result.reason);
+            break;
+          }
         }
         return { started: true, ...wechatRun.progress };
       } finally {

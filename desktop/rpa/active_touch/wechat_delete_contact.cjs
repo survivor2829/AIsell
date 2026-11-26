@@ -62,6 +62,7 @@ $wechatId = [string]$env:XIAOXI_DELETE_WECHAT_ID
 $confirm = $env:XIAOXI_DELETE_CONFIRM -eq "1"
 $phase = [string]$env:XIAOXI_DELETE_PHASE
 $expectedPid = [string]$env:XIAOXI_EXPECTED_PID
+$expectedHwnd = [string]$env:XIAOXI_EXPECTED_HWND
 $uniqueName = $env:XIAOXI_DELETE_UNIQUE_NAME -eq "1"
 $ui = [System.Windows.Automation.AutomationElement]
 $all = [System.Windows.Automation.Condition]::TrueCondition
@@ -78,6 +79,24 @@ function Get-WxWindows {
   @($ui::RootElement.FindAll($scope::Children, $all) | Where-Object { $pids -contains $_.Current.ProcessId })
 }
 function Get-WxWindow([string]$className) { Get-WxWindows | Where-Object { $_.Current.ClassName -eq $className } | Select-Object -First 1 }
+# The chat window: the one the shared window rules already confirmed (its handle), whatever UI Automation calls
+# it. 4.2.0.53 reports mmui::MainWindow, but 1.3.73 on a 200% laptop (b070e34b, 2026-11-26) found no window of
+# that class and skipped all 36 people; a WeChat window holding the 搜索 box and the chat list is the fallback.
+function Get-WxMain {
+  if ($expectedHwnd) {
+    try {
+      $byHandle = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr][int64]$expectedHwnd)
+      if ($byHandle -and (-not $expectedPid -or [string]$byHandle.Current.ProcessId -eq $expectedPid)) { return $byHandle }
+    } catch { }
+  }
+  $byClass = Get-WxWindow "mmui::MainWindow"
+  if ($byClass) { return $byClass }
+  # Only the chat window: the 搜索 box and the chat list together (a contacts or Moments window has a search box too).
+  foreach ($w in @(Get-WxWindows)) {
+    if (@(Find-Elements $w "Edit" "搜索" "").Count -and @(Find-Elements $w "ListItem" $null "mmui::ChatSessionCell").Count) { return $w }
+  }
+  $null
+}
 # $elementName is untyped on purpose: a [string] parameter turns $null ("any name") into "".
 function Find-Elements($root, [string]$type, $elementName, [string]$className) {
   if (-not $root) { return @() }
@@ -154,7 +173,7 @@ function Press-Element($element, $stage) {
 function Close-Profile {
   # Leave nothing open. A dialog drawn inside the main window (e.g. 发起群聊 from a stray press on 添加) is
   # cancelled by its own 取消; then the profile card's confirm is cancelled and Esc closes its menu/card.
-  $mainWindow = Get-WxWindow "mmui::MainWindow"
+  $mainWindow = Get-WxMain
   foreach ($inner in (Find-Elements $mainWindow "Window" $null "")) {
     $innerCancel = Find-Elements $inner "Button" "取消" "" | Select-Object -First 1
     if ($innerCancel) { Click-Element $innerCancel | Out-Null; Start-Sleep -Milliseconds 300 }
@@ -208,8 +227,8 @@ function Get-ContactResults($mainWindow) {
 if ($phase -eq "open") {
   $query = [string]$env:XIAOXI_DELETE_QUERY
   Close-Profile
-  $main = Get-WxWindow "mmui::MainWindow"
-  if (-not $main) { Out-Result $false "open" "wechat_main_window_not_found" }
+  $main = Get-WxMain
+  if (-not $main) { Out-Result $false "open" "wechat_main_window_not_found" @{ window_kind = @(Get-WxWindows | ForEach-Object { $_.Current.ClassName }) } }
   # Only the box WeChat names 搜索; never another edit box (the chat input holds the customer's drafts).
   $box = Find-Elements $main "Edit" "搜索" "" | Select-Object -First 1
   if (-not $box) { Out-Result $false "open" "search_box_not_found" }
@@ -229,7 +248,7 @@ if ($phase -eq "open") {
   if ($null -ne $typed -and $typed -and $typed -ne $query) { Clear-Search $box; Out-Result $false "open" "search_input_failed" }
   $state = @{ rows = 0 }
   $found = Wait-Element {
-    $rows = @(Get-ContactResults (Get-WxWindow "mmui::MainWindow"))
+    $rows = @(Get-ContactResults (Get-WxMain))
     $state.rows = $rows.Count
     $same = @($rows | Where-Object { $_.Current.Name -eq $name })
     if ($same.Count) { ,$same }
@@ -240,7 +259,7 @@ if ($phase -eq "open") {
   Press-Element $target "open"
   # The chat is open when its title (left of 聊天信息) is this person.
   $opened = Wait-Element {
-    $m = Get-WxWindow "mmui::MainWindow"
+    $m = Get-WxMain
     $infoButton = Find-Elements $m "Button" "聊天信息" "" | Select-Object -First 1
     if ($infoButton) {
       $ib = $infoButton.Current.BoundingRectangle
@@ -261,7 +280,7 @@ if ($phase -eq "commit") {
   Click-Element $deleteButton | Out-Null
   $gone = Wait-Element {
     $p = if (Get-WxWindow "mmui::ProfileUniquePop") { $true } else { Find-Anywhere "Text" $question }
-    $m = Get-WxWindow "mmui::MainWindow"
+    $m = Get-WxMain
     $rows = Find-Elements $m "ListItem" $null "mmui::ChatSessionCell" | Where-Object { $_.Current.Name -eq $name -or $_.Current.Name.StartsWith($name + " ") }
     $open = Find-Elements $m "Text" $name "mmui::XTextView"
     if (-not $p -and -not @($rows).Count -and -not @($open).Count) { $true }
@@ -270,8 +289,8 @@ if ($phase -eq "commit") {
   Out-Result $false "verify" "delete_outcome_unknown" @{ outcomeUnknown = $true }
 }
 Close-Profile
-$main = Get-WxWindow "mmui::MainWindow"
-if (-not $main) { Out-Result $false "window" "wechat_main_window_not_found" }
+$main = Get-WxMain
+if (-not $main) { Out-Result $false "window" "wechat_main_window_not_found" @{ window_kind = @(Get-WxWindows | ForEach-Object { $_.Current.ClassName }) } }
 if ($expectedPid -and [string]$main.Current.ProcessId -ne $expectedPid) { Out-Result $false "window" "wechat_window_changed" }
 
 # 1. The open chat is this person: the title sits on the row of the 聊天信息 button, left of it.
@@ -286,7 +305,7 @@ if (-not $title) { Out-Result $false "title" "chat_title_mismatch" }
 # 2. 聊天信息 → the one member cell, named exactly (a group chat has several and is refused). The button toggles
 # the side panel, so it is pressed only when the panel is not already open.
 if (-not (Find-Elements $main "Button" $null "mmui::ChatMemberCell").Count) { Press-Element $info "member" }
-$members = Wait-Element { $cells = Find-Elements (Get-WxWindow "mmui::MainWindow") "Button" $null "mmui::ChatMemberCell"; if ($cells.Count) { ,$cells } }
+$members = Wait-Element { $cells = Find-Elements (Get-WxMain) "Button" $null "mmui::ChatMemberCell"; if ($cells.Count) { ,$cells } }
 if (-not $members) { Stop-Before "member" "chat_member_not_found" }
 if (@($members).Count -ne 1 -or $members[0].Current.Name -ne $name) { Stop-Before "member" "chat_member_mismatch" @{ members = @($members).Count } }
 Press-Element $members[0] "profile"
@@ -396,15 +415,16 @@ async function deleteOnce(contact, { confirm = false, uniqueName = false, runner
   let opened = null;
   for (const query of queries) {
     if (stopped()) return { ok: false, stage: "open", reason: "stopped_by_user" };
-    opened = await Promise.resolve(runner(DELETE_SCRIPT, { XIAOXI_DELETE_PHASE: "open", XIAOXI_DELETE_QUERY: query, XIAOXI_DELETE_NAME: name, XIAOXI_EXPECTED_PID: String(window.pid || "") },
+    opened = await Promise.resolve(runner(DELETE_SCRIPT, { XIAOXI_DELETE_PHASE: "open", XIAOXI_DELETE_QUERY: query, XIAOXI_DELETE_NAME: name, XIAOXI_EXPECTED_PID: String(window.pid || ""), XIAOXI_EXPECTED_HWND: String(window.hWnd || "") },
       { ensure: false, timeout: 25000 }));
     if (opened?.ok === true && opened.opened === true) break;
     // Only "WeChat shows no such row" moves on to the name; anything else (someone at the mouse, no search box) stops.
     if (!["search_result_not_found", "search_results_not_loaded"].includes(String(opened?.reason || ""))) break;
   }
   if (!(opened?.ok === true && opened.opened === true)) return { ok: false, stage: "open", reason: String(opened?.reason || "conversation_open_failed"),
-    ...(Number.isFinite(opened?.result_count) ? { resultCount: opened.result_count } : {}) };
-  const environment = { XIAOXI_DELETE_NAME: name, XIAOXI_DELETE_WECHAT_ID: wechatId, XIAOXI_EXPECTED_PID: String(window.pid || ""),
+    ...(Number.isFinite(opened?.result_count) ? { resultCount: opened.result_count } : {}),
+    ...(Array.isArray(opened?.window_kind) ? { window_kind: opened.window_kind.map(String).slice(0, 12) } : {}) };
+  const environment = { XIAOXI_DELETE_NAME: name, XIAOXI_DELETE_WECHAT_ID: wechatId, XIAOXI_EXPECTED_PID: String(window.pid || ""), XIAOXI_EXPECTED_HWND: String(window.hWnd || ""),
     XIAOXI_DELETE_UNIQUE_NAME: uniqueName === true ? "1" : "0" };
   const shape = (result, fallback) => ({ ok: result?.ok === true, deleted: result?.deleted === true, outcomeUnknown: result?.outcomeUnknown === true,
     dryRun: result?.dryRun === true, stage: String(result?.stage || "script"), reason: String(result?.reason || (result?.ok ? "" : fallback)),
