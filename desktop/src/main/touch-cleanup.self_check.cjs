@@ -314,6 +314,12 @@ async function checkVisualEyes(person, focus) {
     && script.includes("mouse_event(4, 0, 0, 0, [XiaoxiDeleteInputGuard]::Marker)"), "our presses are marked for the input guard");
   assert.ok(script.includes("if (injected && vk == 0xFC)"), "an injected VK_NONAME is counted, not taken for a person");
   assert.ok(!script.includes("UIntPtr]::Zero)") || !/mouse_event\([24], 0, 0, 0, \[UIntPtr\]::Zero\)/u.test(script), "no unmarked press left");
+  // 1.3.78 (b070e34b, 1.3.77: the chat window was raised over the card and confirm, which then could not be read and
+  // whose 删除 was pressed on the chat window): only the window meant is raised, never the chat window over an open
+  // card or confirm, and a press needs that very window under the point.
+  assert.ok(!script.includes("SetForegroundWindow([IntPtr]$mainHwnd)"), "the chat window is never raised on its own");
+  assert.ok(script.includes("[XiaoxiVisualDelete]::RootAt([int]$x, [int]$y) -ne $target"), "a press needs the window meant under the point");
+  for (const read of ["Uncover $card", "Uncover $menuWindow", "    Uncover $h"]) assert.ok(script.includes(read), `uncovered before reading: ${read.trim()}`);
   checkLabelReading(script);
   checkVisualTypeCompiles(script);
   await checkCoreUniqueName();

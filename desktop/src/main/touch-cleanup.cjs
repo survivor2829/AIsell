@@ -15,12 +15,14 @@ const evidenceOf = (result) => ({
   ...(Array.isArray(result?.menuItems) ? { menu_item_kind: result.menuItems } : {}),
   ...(result?.idCheck && typeof result.idCheck === "object" ? { id_check: result.idCheck } : {}),
   ...(Number.isFinite(result?.resultCount) ? { result_count: result.resultCount } : {}),
-  ...(Array.isArray(result?.eyes) ? { eyes: result.eyes } : {}),
+  // "member:found" and the like; named *_outcome so the diagnostics filter keeps them readable (as "eyes" they were hashed).
+  ...(Array.isArray(result?.eyes) ? { eyes_outcome: result.eyes } : {}),
   ...(typeof result?.addFound === "boolean" ? { add_found: result.addFound } : {}),
   ...(Number.isFinite(result?.lineCount) ? { line_count: result.lineCount } : {}),
   ...(Number.isFinite(result?.inputTicksIgnored) ? { input_ticks_ignored: result.inputTicksIgnored } : {}),
   ...(typeof result?.inputReason === "string" ? { input_reason: result.inputReason } : {}),
   ...(Number.isFinite(result?.inputNonameKeys) ? { input_noname_keys: result.inputNonameKeys } : {}),
+  ...(Number.isFinite(result?.windowsRaised) ? { windows_raised: result.windowsRaised } : {}),
   ...(Number.isFinite(result?.scriptLine) ? { script_line: result.scriptLine } : {}),
   ...(typeof result?.errorType === "string" ? { error_type: result.errorType } : {})
 });
