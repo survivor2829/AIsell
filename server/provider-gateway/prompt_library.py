@@ -49,6 +49,7 @@ class PromptLibrary:
         self.path = path
         self._entries: dict[str, str] = {}
         self._mtime = None
+        self._failed_mtime = None  # A broken file is parsed once, not on every request.
         self._lock = threading.Lock()
         self.reload()
 
@@ -66,9 +67,13 @@ class PromptLibrary:
     def _current(self) -> dict[str, str]:
         # A deployed library update is picked up without restarting the gateway.
         try:
-            if self.path and os.path.exists(self.path) and os.path.getmtime(self.path) != self._mtime:
-                self.reload()
-        except (OSError, ValueError):
+            mtime = os.path.getmtime(self.path) if self.path and os.path.exists(self.path) else None
+            if mtime is not None and mtime not in (self._mtime, self._failed_mtime):
+                try:
+                    self.reload()
+                except (OSError, ValueError):
+                    self._failed_mtime = mtime
+        except OSError:
             pass  # Keep serving the last good library; a broken file never empties it.
         with self._lock:
             return self._entries
@@ -91,10 +96,9 @@ class PromptLibrary:
                 raise PromptError("prompt_unknown")
             return entries[key]
 
-        expanded = TOKEN.sub(replace, value)
-        if OPEN in expanded:
-            raise PromptError("prompt_token_invalid")
-        return expanded
+        # Only well-formed tokens are the app's; text that merely looks like one (a pasted page, a chat message) is
+        # data and passes through unchanged rather than failing the customer's request.
+        return TOKEN.sub(replace, value)
 
     def expand(self, body: bytes) -> bytes:
         """Returns the body with every token replaced. A body without tokens is returned as it came."""

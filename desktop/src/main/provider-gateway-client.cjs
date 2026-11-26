@@ -36,6 +36,13 @@ function sanitizeCapabilities(value) {
   return result;
 }
 
+// Whether a request body carries a stored-prompt token (src/shared/prompt-ref.cjs); JSON may escape the bracket.
+function bodyNamesPrompts(body) {
+  if (body === undefined || body === null) return false;
+  const text = typeof body === "string" ? body : Buffer.isBuffer(body) || body instanceof Uint8Array ? Buffer.from(body).toString("utf8") : "";
+  return text.includes("xiaoxi-prompt:");
+}
+
 function validGatewayHealth(payload) {
   return Boolean(payload?.ok === true
     && payload.service === "provider-gateway"
@@ -417,6 +424,12 @@ function createProviderGatewayClient(options = {}) {
     } else {
       await initialize();
       Object.assign(headers, requestHeaders());
+      // Prompt wording lives on the server: a body naming stored prompts goes only to a gateway that puts them back.
+      // An older or rolled-back gateway would pass the bare tokens to a paid model (and a reply without its rules
+      // could reach a real WeChat contact), so the request is not sent.
+      if (capabilities.prompt_library !== true && bodyNamesPrompts(requestOptions.body)) {
+        throw createError("PROMPT_LIBRARY_UNAVAILABLE", "云端智能服务暂未就绪，请求没有发出，不会扣费；请稍后重试。");
+      }
       const billing = billingScope.getStore();
       if (billing?.job) headers["X-Xiaoxi-Billing-Job"] = billing.job;
       if (billing?.feature && !headers["X-Xiaoxi-Billing-Feature"]) headers["X-Xiaoxi-Billing-Feature"] = billing.feature;

@@ -68,7 +68,10 @@ def prompt_bytes(text: str) -> int:
     for match in _TOKEN.finditer(text):
         key = f"{match.group(1)}@{match.group(2)}"
         total += len(text[last:match.start()].encode("utf-8"))
-        total += len(library[key].encode("utf-8")) if library is not None else SIZES[key]
+        size = (len(library[key].encode("utf-8")) if key in library else None) if library is not None else SIZES.get(key)
+        if size is None:
+            raise KeyError(f"prompt not in library: {key}")
+        total += size
         last = match.end()
     return total + len(text[last:].encode("utf-8"))
 

@@ -101,7 +101,7 @@ ${STYLE}${promptRef("video.realshoot_plan.scene_plate.p5")}`;
 }
 
 // fixed: whether the camera stays put, carried as data (the camera wording is a server-stored prompt on a customer computer).
-function shotPrompt({ device, scene, detail, floor, soil, point, camera, fixed = /固定/u.test(camera), seconds, productImages = 1 }) {
+function shotPrompt({ device, scene, detail, floor, soil, point, camera, fixed = point?.fixed ?? /固定/u.test(camera), seconds, productImages = 1 }) {
   // Real photos first, then the confirmed 定妆照 (third paid round, 2026-11-19: it kept the back and sides true), then the scene.
   const photos = productImages > 1 ? `${Array.from({ length: productImages }, (_, i) => `图${i + 1}`).join('、')}是这台机器不同角度的真实产品照片` : '图1是这台机器的真实产品照片';
   const sheet = `图${productImages + 1}`, plate = `图${productImages + 2}`;

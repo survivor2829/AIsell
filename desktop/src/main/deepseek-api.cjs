@@ -8,7 +8,7 @@ const {
   AUTO_REPLY_REASON_CODES,
   isAutoReplyActionReason
 } = require("./auto-reply-decision.cjs");
-const { promptRef } = require("../shared/prompt-ref.cjs");
+const { promptRef, withoutPromptTokens } = require("../shared/prompt-ref.cjs");
 
 const DEEPSEEK_ORIGIN = "https://api.deepseek.com";
 const DEEPSEEK_MODEL = "deepseek-v4-flash";
@@ -496,7 +496,8 @@ function createDeepSeekClient({ keyStore, gatewayClient, fetchImpl = global.fetc
   async function classifySalutationWithKey(key, { contact }) {
     const payload = await request({
       key,
-      messages: salutationPrompt(contact),
+      // A contact's name is other people's text: it can never name a stored prompt.
+      messages: salutationPrompt(Object.fromEntries(Object.entries(contact || {}).map(([field, value]) => [field, typeof value === "string" ? withoutPromptTokens(value) : value]))),
       maxTokens: 120,
       temperature: 0,
       responseFormat: { type: "json_object" },
@@ -513,7 +514,9 @@ function createDeepSeekClient({ keyStore, gatewayClient, fetchImpl = global.fetc
     if (!normalizedExpert.expertRules || !normalizedExpert.businessKnowledge) {
       throw new DeepSeekApiError("AI_EXPERT_MISSING", "请先在 AI专家 中补齐专家规则和业务知识。");
     }
-    const normalizedContext = (Array.isArray(context) ? context : []).filter((message) => String(message?.content || "").trim()).slice(-12);
+    // The conversation is other people's text: it can never name a stored prompt (src/shared/prompt-ref.cjs).
+    const normalizedContext = (Array.isArray(context) ? context : []).filter((message) => String(message?.content || "").trim()).slice(-12)
+      .map((message) => ({ ...message, content: withoutPromptTokens(message.content) }));
     if (!normalizedContext.length || normalizedContext.at(-1)?.role !== "user") {
       throw new DeepSeekApiError("AI_CONTEXT_INVALID", "未读取到可靠的客户最新消息，自动回复已取消。");
     }
@@ -601,7 +604,8 @@ function createDeepSeekClient({ keyStore, gatewayClient, fetchImpl = global.fetc
   }
 
   async function generateMomentsCommentWithKey(key, { postText, guidance = "" } = {}) {
-    const normalizedPostText = String(postText || "").replace(/\s+/g, " ").trim();
+    // A friend's post is other people's text: it can never name a stored prompt.
+    const normalizedPostText = withoutPromptTokens(String(postText || "").replace(/\s+/g, " ").trim());
     if (normalizedPostText.length < 2) {
       throw new DeepSeekApiError("AI_CONTEXT_INVALID", "未读取到可用于生成评论的帖子正文");
     }

@@ -44,10 +44,12 @@ class PromptLibraryTest(unittest.TestCase):
         self.assertEqual(self.library.expand_text("⟦xiaoxi-prompt:demo.system@1⟧"), "你是测试助手。")
 
     def test_unknown_or_malformed_token_stops_the_request(self):
-        for text in ("⟦xiaoxi-prompt:demo.missing@1⟧", "⟦xiaoxi-prompt:Demo.System@1⟧", "⟦xiaoxi-prompt:demo.system⟧"):
-            body = json.dumps({"prompt": text}).encode()
-            with self.assertRaises(PromptError):
-                self.library.expand(body)
+        body = json.dumps({"prompt": "⟦xiaoxi-prompt:demo.missing@1⟧"}).encode()
+        with self.assertRaises(PromptError):
+            self.library.expand(body)
+        # Text that only looks like a token (wrong case, no version) is data, not a prompt: it passes through.
+        for text in ("⟦xiaoxi-prompt:Demo.System@1⟧", "⟦xiaoxi-prompt:demo.system⟧"):
+            self.assertEqual(json.loads(self.library.expand(json.dumps({"prompt": text}).encode()))["prompt"], text)
         with self.assertRaises(PromptError) as caught:
             self.library.expand("⟦xiaoxi-prompt:demo.system@1⟧ not json".encode())
         self.assertEqual(caught.exception.code, "prompt_body_unsupported")
@@ -61,6 +63,13 @@ class PromptLibraryTest(unittest.TestCase):
             handle.write("{broken")
         os.utime(self.path, (time.time() + 10, time.time() + 10))
         self.assertEqual(self.library.text("demo.system@1"), "改过的")
+        # The broken version is parsed once; later requests do not read it again.
+        calls = []
+        original = self.library.reload
+        self.library.reload = lambda: (calls.append(1), original())[1]
+        for _ in range(3):
+            self.assertEqual(self.library.text("demo.system@1"), "改过的")
+        self.assertEqual(calls, [])
 
     def test_entries_are_validated(self):
         for bad in ({"Bad@1": "x"}, {"a@0": "x"}, {"a@1": ""}, {"a@1": "⟦xiaoxi-prompt:b@1⟧"}):

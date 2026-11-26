@@ -45,10 +45,18 @@ function promptLength(text) {
   let total = 0, last = 0;
   for (const match of value.matchAll(TOKEN)) {
     const key = `${match[1]}@${match[2]}`;
-    total += [...value.slice(last, match.index)].length + (entries ? [...entries[key]].length : chars[key]);
+    const size = entries ? (typeof entries[key] === "string" ? [...entries[key]].length : undefined) : chars[key];
+    if (!Number.isInteger(size)) throw new Error(`prompt not in library: ${key}`);
+    total += [...value.slice(last, match.index)].length + size;
     last = match.index + match[0].length;
   }
   return total + [...value.slice(last)].length;
 }
 
-module.exports = { promptRef, promptLength, PROMPT_TOKEN_OPEN: OPEN, PROMPT_TOKEN_CLOSE: CLOSE };
+// Text from other people (a WeChat contact's message, a friend's post, a contact's name) can never name a stored
+// prompt: the gateway would otherwise put the wording into the model input, where a reply could repeat it.
+function withoutPromptTokens(text) {
+  return String(text ?? "").replaceAll(OPEN, "[xiaoxi-prompt:");
+}
+
+module.exports = { promptRef, promptLength, withoutPromptTokens, PROMPT_TOKEN_OPEN: OPEN, PROMPT_TOKEN_CLOSE: CLOSE };

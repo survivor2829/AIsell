@@ -16,6 +16,8 @@ const aiDirector = require('./real-shoot-ai-director.cjs');
 const crewRoles = require('./real-shoot-crew.cjs');
 const CREW_OPERATION = /^(?:crew_|direct_risk)/u;
 const sceneCatalog = require('./scene-video-catalog.cjs');
+// Prompt wording is stored on the server; limits count the stored wording (promptLength), not the tokens.
+const { promptLength } = require("../shared/prompt-ref.cjs");
 const { estimateTask, recordTiming, readTimings } = require('./product-video-eta.cjs');
 // Shots of one video made at the same time (each is its own Wan3 task); more wait for a free slot.
 const SHOT_SLOTS = 3, IMAGE_SLOTS = 4;
@@ -393,7 +395,7 @@ function createProductVideoService(options = {}) {
     if (task.plan.pipelineVersion === 6) {
       if (task.plan.videoModel !== wan.DIRECT_MODEL || task.plan.videoAudio !== true || task.plan.sourceResolution !== '480p' || !sceneCatalog.DURATIONS.includes(task.durationSeconds)
         || (directedReady(task.plan) && !task.plan.platePrompt) || task.plan.shots.reduce((sum, shot) => sum + shot.seconds, 0) !== task.durationSeconds
-        || task.plan.shots.some((shot) => (directedReady(task.plan) && !shot.prompt) || [...shot.prompt].length > real.PROMPT_LIMIT || shot.seconds < 2 || shot.seconds > 15)
+        || task.plan.shots.some((shot) => (directedReady(task.plan) && !shot.prompt) || promptLength(shot.prompt) > real.PROMPT_LIMIT || shot.seconds < 2 || shot.seconds > 15)
         || task.plan.productImages !== 1 + (task.extraImageIds || []).length)
         throw fail('product_video_plan_invalid', '无人实拍方案与模型、时长不一致，请重新生成。');
       return;

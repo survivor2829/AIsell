@@ -304,6 +304,21 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(sent["messages"][0]["content"], "服务器上的提示词原文")
         self.assertEqual(sent["messages"][1]["content"], "客户资料：扫地机")
 
+        # A retry of the same operation after the wording changed is the same request: replayed, never sent again.
+        retry = post(body)
+        retry.add_header("X-Xiaoxi-Operation-Id", "op-prompt-retry-0001")
+        with urllib.request.urlopen(retry) as response:
+            self.assertEqual(response.status, 200)
+        sent_once = len(self.upstream_requests)
+        with open(library_path, "w", encoding="utf-8") as handle:
+            json.dump({"demo.system@1": "改过的提示词原文"}, handle, ensure_ascii=False)
+        os.utime(library_path, (time.time() + 30, time.time() + 30))
+        retry = post(body)
+        retry.add_header("X-Xiaoxi-Operation-Id", "op-prompt-retry-0001")
+        with urllib.request.urlopen(retry) as response:
+            self.assertEqual(response.status, 200)
+        self.assertEqual(len(self.upstream_requests), sent_once, "a retry is matched on the bytes the app sent")
+
         before = len(self.upstream_requests)
         body["messages"][0]["content"] = "⟦xiaoxi-prompt:demo.unknown@1⟧"
         with self.assertRaises(urllib.error.HTTPError) as error:
