@@ -407,9 +407,12 @@ async function deleteVisually({ name, wechatId, plan, uniqueName, confirm, windo
   // The title is read from the screen too and can lose a character (a 1 read as l, dev machine 2026-11-26). The
   // card's 微信号 then decides alone: it must match exactly; without one to compare, stop.
   if (!title?.ok && !wechatId) return { ok: false, stage: "open", reason: "chat_title_mismatch", visual: true };
+  // A row opened from a 微信号 one or two characters off (touch re-checks it strictly): the card must match exactly.
+  const near = String(opened?.searchResultMode || "") === "sectioned_wechat_id_near";
+  if (near && !wechatId) return { ok: false, stage: "open", reason: "chat_title_mismatch", visual: true };
   const environment = { XIAOXI_DELETE_NAME: name, XIAOXI_DELETE_WECHAT_ID: wechatId, XIAOXI_EXPECTED_PID: String(window.pid || ""),
     XIAOXI_EXPECTED_HWND: String(window.hWnd || ""), XIAOXI_DELETE_UNIQUE_NAME: uniqueName === true ? "1" : "0",
-    XIAOXI_DELETE_REQUIRE_ID: title?.ok ? "0" : "1" };
+    XIAOXI_DELETE_REQUIRE_ID: title?.ok && !near ? "0" : "1" };
   const prepared = await Promise.resolve(runner(VISUAL_DELETE_SCRIPT, { ...environment, XIAOXI_VDEL_PHASE: "prepare", XIAOXI_DELETE_CONFIRM: confirm ? "1" : "0" }, { ensure: false, timeout: 60000 }));
   if (!prepared?.ok || prepared.ready !== true) return prepared || { ok: false, stage: "script", reason: "delete_script_failed", visual: true };
   markCommitting();
