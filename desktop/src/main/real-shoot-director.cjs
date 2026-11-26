@@ -33,11 +33,11 @@ function pick(rows, id, label) {
 const spread = (total, count) => Array.from({ length: count }, (_, i) => Math.floor(total / count) + (i < total % count ? 1 : 0));
 // Extra cleaning shots when few points were picked: different cameras, still one move each.
 const FILLERS = [
-  { camera: promptRef("video.realshoot_plan.camera_low"), caption: '一趟过去 地面见本色' },
-  { camera: promptRef("video.realshoot_plan.camera_behind"), caption: '边走边清 身后就干净' },
-  { camera: promptRef("video.realshoot_plan.camera_front"), caption: '日常保洁 交给它' },
-  { camera: '场地边上略高的固定远景机位，看到机器在整片场地里沿直线作业', caption: '整片场地 一遍搞定' },
-  { camera: promptRef("video.realshoot_plan.camera_side"), caption: '贴地清洁 细节看得见' }
+  { camera: promptRef("video.realshoot_plan.camera_low"), caption: '一趟过去 地面见本色', fixed: false },
+  { camera: promptRef("video.realshoot_plan.camera_behind"), caption: '边走边清 身后就干净', fixed: false },
+  { camera: promptRef("video.realshoot_plan.camera_front"), caption: '日常保洁 交给它', fixed: true },
+  { camera: '场地边上略高的固定远景机位，看到机器在整片场地里沿直线作业', caption: '整片场地 一遍搞定', fixed: true },
+  { camera: promptRef("video.realshoot_plan.camera_side"), caption: '贴地清洁 细节看得见', fixed: false }
 ];
 
 function planRealShoot(input) {
@@ -66,16 +66,16 @@ function planRealShoot(input) {
   const core = catalog.POINTS.find((point) => point.core);
   // The floor going from dirty to clean is the heart of the video: keep one such shot.
   if (!points.some((point) => point.cleaning) && points.length < catalog.POINT_LIMIT[seconds]) points.unshift(core);
-  const shots = points.map((point) => ({ point, camera: point.camera }));
+  const shots = points.map((point) => ({ point, camera: point.camera, fixed: point.fixed }));
   for (let i = 0; shots.length < catalog.MIN_SHOTS[seconds]; i += 1) shots.push({ point: core, ...FILLERS[i % FILLERS.length], filler: true });
   const lengths = spread(seconds, shots.length);
   let cursor = 0, dirtTurn = 0;
-  const planned = shots.map(({ point, camera, caption, filler }, index) => {
+  const planned = shots.map(({ point, camera, fixed, caption, filler }, index) => {
     const soil = point.dirt && catalog.DIRT.some((row) => row.id === point.dirt) && (device.dirt.includes(point.dirt) || dirt.some((row) => row.id === point.dirt))
       ? catalog.DIRT.find((row) => row.id === point.dirt) : dirt[dirtTurn++ % dirt.length];
     const shot = { index, seconds: lengths[index], startSecond: cursor, endSecond: cursor + lengths[index], pointId: point.id, title: filler ? '清洁效果' : point.name,
       caption: caption || point.caption, narration: '', place: point.place, cleaning: Boolean(point.cleaning), dirt: point.cleaning ? soil.name : '' };
-    shot.prompt = shotPrompt({ device, scene, detail, floor, soil, point, camera, seconds: shot.seconds, productImages });
+    shot.prompt = shotPrompt({ device, scene, detail, floor, soil, point, camera, fixed, seconds: shot.seconds, productImages });
     if (promptLength(shot.prompt) > PROMPT_LIMIT) throw fail('product_video_invalid_input', '这一镜的拍摄要求太长，请减少勾选后重试。');
     cursor += shot.seconds; return shot;
   });
@@ -100,7 +100,8 @@ function platePrompt({ scene, detail, floor, dirt }) {
 ${STYLE}${promptRef("video.realshoot_plan.scene_plate.p5")}`;
 }
 
-function shotPrompt({ device, scene, detail, floor, soil, point, camera, seconds, productImages = 1 }) {
+// fixed: whether the camera stays put, carried as data (the camera wording is a server-stored prompt on a customer computer).
+function shotPrompt({ device, scene, detail, floor, soil, point, camera, fixed = /固定/u.test(camera), seconds, productImages = 1 }) {
   // Real photos first, then the confirmed 定妆照 (third paid round, 2026-11-19: it kept the back and sides true), then the scene.
   const photos = productImages > 1 ? `${Array.from({ length: productImages }, (_, i) => `图${i + 1}`).join('、')}是这台机器不同角度的真实产品照片` : '图1是这台机器的真实产品照片';
   const sheet = `图${productImages + 1}`, plate = `图${productImages + 2}`;
@@ -115,7 +116,7 @@ function shotPrompt({ device, scene, detail, floor, soil, point, camera, seconds
   const sound = point.quiet ? '机器运转声很轻，几乎被环境声盖过' : '机器运转声平稳真实（电机、刷盘或吸风的声音），与画面动作对得上';
   return `${promptRef("video.realshoot_plan.shot.p1")}${seconds}${promptRef("video.realshoot_plan.shot.p2")}${device.body}${promptRef("video.realshoot_plan.shot.p3")}${point.name}${promptRef("video.realshoot_plan.shot.p4")}${products}${promptRef("video.realshoot_plan.shot.p5")}${place}${promptRef("video.realshoot_plan.shot.p6")}${floor.name}，${floor.look}。${light}
 【四、人物】${people.rule}
-【五、动作】${action}${point.cleaning ? `${device.parts}。` : ''}${promptRef("video.realshoot_plan.shot.p7")}${camera}。${/固定/u.test(camera) ? '摄影机全程固定在这个位置，只有很轻的手持呼吸感，不推拉、不摇镜。' : promptRef("video.realshoot_plan.camera_once")}
+【五、动作】${action}${point.cleaning ? `${device.parts}。` : ''}${promptRef("video.realshoot_plan.shot.p7")}${camera}。${fixed ? '摄影机全程固定在这个位置，只有很轻的手持呼吸感，不推拉、不摇镜。' : promptRef("video.realshoot_plan.camera_once")}
 ${cleaning}${promptRef("video.realshoot_plan.shot.p8")}${sound}${promptRef("video.realshoot_plan.shot.p9")}${detail.ambient}${promptRef("video.realshoot_plan.shot.p10")}${STYLE}
 【九、负向】${NEG}${point.cleaning && !device.wet ? '地面上不凭空出现任何液体或水痕。' : ''}${people.neg}`;
 }

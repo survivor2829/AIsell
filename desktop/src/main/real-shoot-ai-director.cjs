@@ -142,8 +142,9 @@ function pointHint(shot) {
   const point = catalog.POINTS.find((row) => row.id === shot.pointId);
   // Liquid words in a hint would be copied into the prompt; only the station shot keeps them.
   if (!point) return shot.custom ? '客户自己写的卖点，按字面意思拍出看得见的证明，不夸大' : '';
-  const action = point.action.replace('{work}', '机器正常作业');
-  const said = point.id === 'water' ? action : action.split(/(?<=[，。；])/u).filter((part) => !LIQUID.test(part)).join('');
+  // The catalog holds this hint ready-made (said: liquid sentences removed, the station shot keeps them): the action
+  // wording is a server-stored prompt on a customer computer, so it cannot be split here.
+  const said = point.said;
   return `${said}（参考机位：${shot.camera || point.camera}）`;
 }
 

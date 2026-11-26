@@ -137,6 +137,7 @@ const checks = [
   "src/main/touch-cleanup.self_check.cjs",
   "src/main/failure-reporting.self_check.cjs",
   "scripts/prompt-library.self_check.cjs",
+  "scripts/prompt-equivalence.self_check.cjs",
   "src/main/demo-mode-guard.self_check.cjs",
   "src/main/product-detail-ipc.self_check.cjs",
   "src/main/product-detail-release-smoke.self_check.cjs",
