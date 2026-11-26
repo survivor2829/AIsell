@@ -108,7 +108,7 @@ function productDetailEvent(before, report) {
 }
 
 const VIRAL_STAGE = { collect: "搜索爆款视频", comments: "读评论、核对作者", blocked: "平台拦了一下，换下一个" };
-const GEO_BUSY = { writing: ["写 GEO 文章", "大约要一分钟"], publish: ["把文章发到媒体号", "结果以平台页面为准"], visibility: ["在豆包里查有没有提到你", ""] };
+const GEO_BUSY = { writing: ["写 GEO 文章", "大约要一分钟"], planning: ["写这一周的 GEO 文章", "每篇大约一分钟"], publish: ["把文章发到媒体号", "结果以平台页面为准"], visibility: ["问 AI 有没有提到你", ""] };
 // Only statuses where the software is really working: a task waiting for the customer must not look busy.
 const WORKING_TASK = new Set(["imaging", "directing", "writing_story", "composing", "uploading", "preparing_frames", "frame_generating", "locking_frames", "preparing_audio", "submitting", "generating", "assembling", "enhancing", "transcribing",
   "audio_preparing", "video_submitting", "video_generating", "packaging"]);
@@ -123,8 +123,8 @@ function serviceActivity(title, items) {
 }
 function pushedActivity(channel, state) {
   if (channel === "geo:update") {
-    const busy = GEO_BUSY[state?.busy];
-    return busy ? { title: "正在做 GEO 推广", step: busy[0], detail: busy[1] } : null;
+    const busy = GEO_BUSY[state?.busy], total = Number(state?.progress?.total) || 0;
+    return busy ? { title: "正在做 GEO 推广", step: busy[0], detail: busy[1], ...(total ? { done: Math.min(total, Number(state.progress.done) || 0), total } : {}) } : null;
   }
   if (channel === "moments-publish:update") return state?.status === "publishing" ? { title: "正在发朋友圈", detail: "发完我会核对一遍" } : null;
   if (channel === "moments-campaign:update") {

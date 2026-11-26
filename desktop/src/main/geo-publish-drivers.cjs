@@ -322,10 +322,15 @@ const DRIVERS = { zhihu: ZHIHU, toutiao: TOUTIAO, sohu: SOHU, baijiahao: BAIJIAH
 
 const DOUBAO = {
   name: "豆包", url: "https://www.doubao.com/chat/", hosts: ["doubao.com"], loginCookies: ["sessionid", "sessionid_ss"],
-  loginRequired: (url, text) => /\/login/.test(url) || /手机号登录|扫码登录|登录后/.test(text) && !/用户\d+/.test(text),
+  // The page follows the browser's language: a Traditional-Chinese profile shows 登入 (seen 2026-11-26).
+  loginRequired: (url, text) => /\/login/.test(url) || /手机号登录|扫码登录|登录后|手機號登入|掃碼登入|登入後|手機號登錄|掃碼登錄|登錄後/.test(text) && !/用[户戶]\d+/.test(text),
   input: `document.querySelector('[data-testid="chat_input_input"][contenteditable="true"], [data-testid="chat_input_input"] [contenteditable="true"], [contenteditable="true"]')`,
   answer: `[...document.querySelectorAll('[data-testid="receive_message"]')].at(-1)?.querySelector('[data-testid="message_text_content"]')`,
   finished: `[...document.querySelectorAll('[data-testid="receive_message"]')].at(-1)?.querySelector('[data-testid="message_action_bar"]')`,
+  answers: `document.querySelectorAll('[data-testid="receive_message"]').length`,
+  // Shows once there is text and is greyed while a send is under way. Clicked from the page itself: it does not answer
+  // mouse events sent from here.
+  clickSend: `(() => { const el = document.querySelector('[data-testid="chat_input_send_button"]'); if (!el || el.disabled || el.getAttribute("aria-disabled") === "true") return false; el.click(); return true; })()`,
   referencesControl: `(() => { const all = [...document.querySelectorAll('[data-testid="receive_message"]')].at(-1)?.querySelectorAll("*") || []; const el = [...all].filter((node) => /参考|參考/.test(node.innerText || "") && (node.innerText || "").length < 30 && node.getClientRects().length).at(-1); if (!el) return null; el.scrollIntoView({ block: "center" }); const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
   // Each cited page is a numbered link inside the answer's message; the leading number is not part of its title.
   references: `[...[...document.querySelectorAll('[data-testid="receive_message"]')].at(-1).querySelectorAll('[data-testid="message_content"] a[href^="http"]')].filter((a) => /^\\s*\\d+[.、]/.test(a.innerText || "")).map((a) => ({ title: a.innerText.replace(/^\\s*\\d+[.、]\\s*/, "").replace(/\\s+/g, " ").trim().slice(0, 200), url: a.href })).slice(0, 50)`
@@ -342,6 +347,8 @@ const GEO_CHANNELS = [
   // Confirmed by a real article on 2026-11-02.
   { id: "zhihu", name: "知乎", available: true, titleLimit: ZHIHU.titleLimit }
 ];
+// Assistants the software can ask today. 千问, DeepSeek and 元宝 are added once each was asked on a real account.
+const GEO_ENGINES = ["doubao"];
 const GEO_ACCOUNT_PLATFORMS = {
   zhihu: { name: "知乎", home: ZHIHU.home, hosts: ZHIHU.hosts, loginCookies: ZHIHU.loginCookies },
   toutiao: { name: "今日头条", home: TOUTIAO.home, hosts: TOUTIAO.hosts, loginCookies: TOUTIAO.loginCookies },
@@ -349,6 +356,26 @@ const GEO_ACCOUNT_PLATFORMS = {
   baijiahao: { name: BAIJIAHAO.name, home: BAIJIAHAO.home, hosts: BAIJIAHAO.hosts, loginCookies: BAIJIAHAO.loginCookies },
   doubao: { name: DOUBAO.name, home: DOUBAO.url, hosts: DOUBAO.hosts, loginCookies: DOUBAO.loginCookies }
 };
+
+// Seen on the real page 2026-11-26: Enter sends, but the page can take more than three seconds to show it (the old
+// 2.5 s check then closed the browser and cut the send off). Sent means the box emptied or went away, the page moved to
+// a conversation address (/chat/local_… or /chat/<number>), or a new answer started. Only when Enter changed nothing is
+// the page's send button clicked, once, and only while it is enabled: greyed means a send is under way.
+async function sendDoubao(page, { waitMs = 15_000, step = 500 } = {}) {
+  const before = Number(await page.evaluate(DOUBAO.answers)) || 0;
+  // Only a move to a conversation address counts: a page that opened on an old conversation proves nothing.
+  const where = async () => { try { return new URL(String(await page.url())).pathname; } catch { return ""; } };
+  const start = await where();
+  const conversation = async () => { const now = await where(); return now !== start && /^\/chat\/[^/]+/.test(now); };
+  const sent = async () => !squash(await page.evaluate(`(${DOUBAO.input})?.innerText || ""`)) || await conversation() || (Number(await page.evaluate(DOUBAO.answers)) || 0) > before;
+  const settle = async () => { for (let waited = 0; waited < waitMs; waited += step) { await sleep(step); if (await sent()) return true; } return false; };
+  // No text on the key event: with "\r" the editor types a line break instead of sending.
+  await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  if (await settle()) return true;
+  if (!(await page.evaluate(DOUBAO.clickSend))) return false;
+  return settle();
+}
 
 const coverHtml = (title) => `<!doctype html><meta charset="utf-8"><body style="margin:0;width:800px;height:600px;display:flex;align-items:center;padding:0 70px;box-sizing:border-box;background:linear-gradient(135deg,#fff5f6,#ffe3e6);font-family:'Microsoft YaHei',sans-serif"><h1 style="margin:0;font-size:50px;line-height:1.4;color:#1f2937">${String(title).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`)}</h1></body>`;
 async function makeCover(page, title) {
@@ -456,7 +483,8 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
   }
   // The page first shows a placeholder textarea and swaps in a rich-text box a few seconds later. Enter sends
   // (the send button does not answer mouse events from here); the box emptying is what proves it went out.
-  async function ask({ profileDir, question, shouldStop = () => false, onDetail = () => {} }) {
+  async function ask({ engine = "doubao", profileDir, question, shouldStop = () => false, onDetail = () => {} }) {
+    if (!GEO_ENGINES.includes(engine)) throw fail("GEO_CHANNEL_UNAVAILABLE", "这个 AI 还没接入。");
     return withPage(profileDir, async (page) => {
       await page.navigate(DOUBAO.url);
       const box = await waitThroughVerify(page, () => page.evaluate(`Boolean(${DOUBAO.input})`), { ms: 25_000, shouldStop, onDetail });
@@ -470,11 +498,7 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
       await sleep(1200);
       const typed = String(await page.evaluate(`(${DOUBAO.input}).innerText`) || "");
       if (squash(typed) !== squash(question)) throw fail("GEO_FORM_MISMATCH", "豆包输入框里的问题和要问的不一致，没有发送。");
-      // No text on the key event: a carriage return would be typed into the box as a line break.
-      await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
-      await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
-      await sleep(2500);
-      if (squash(await page.evaluate(`(${DOUBAO.input})?.innerText || ""`))) throw fail("GEO_NOT_SENT", "问题没有发出去，可以再查一次。");
+      if (!(await sendDoubao(page))) throw fail("GEO_NOT_SENT", "问题没有发出去，可以再查一次。");
       // Finished when the answer stops growing and its action bar appears.
       let last = "", still = 0;
       const answered = await waitThroughVerify(page, async () => {
@@ -497,4 +521,4 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
   return { publish, ask, stop, dispose: stop };
 }
 
-module.exports = { makeCover, coverHtml, createGeoBrowserAdapter, GEO_CHANNELS, GEO_ACCOUNT_PLATFORMS, DRIVERS, DOUBAO, sameArticle, paragraphs, waitThroughVerify, findSoon, noticesOf, VERIFY };
+module.exports = { makeCover, coverHtml, createGeoBrowserAdapter, sendDoubao, GEO_CHANNELS, GEO_ENGINES, GEO_ACCOUNT_PLATFORMS, DRIVERS, DOUBAO, sameArticle, paragraphs, waitThroughVerify, findSoon, noticesOf, VERIFY };
