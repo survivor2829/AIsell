@@ -4,7 +4,7 @@ const { nurtureActivity, publishActivity } = require("./sprite-activity.cjs");
 // 小玺（用户 2026-10-30）：养号、一键分发在 Chrome 里跑时，小玺说正在做什么。
 assert.equal(nurtureActivity({ running: "", plans: [{ id: "p" }] }), null, "没在跑就不显示");
 assert.deepEqual(nurtureActivity({ running: "p", plans: [{ id: "p", accountLabel: "抖音号", phase: "watching", today: { counts: { watched: 12, likes: 3, follows: 1, comments: 0 } } }] }),
-  { title: "正在养号 · 抖音号", step: "刷视频", detail: "已看 12 个视频，赞 3 · 关注 1 · 评 0" });
+  { title: "正在养号 · 抖音号", owner: "nurture:p", step: "刷视频", detail: "已看 12 个视频，赞 3 · 关注 1 · 评 0" });
 assert.equal(nurtureActivity({ running: "p", plans: [{ id: "p", accountLabel: "抖音号", phase: "opening" }] }).step, "打开 Chrome");
 assert.equal(publishActivity({ jobs: [{ id: "a", status: "published", createdAt: "1" }] }), null);
 // 新的在前（和发布记录一样）：最早一个还没结束的任务之后，已结束的算完成。
@@ -24,7 +24,7 @@ const { videoActivity, videoEvents, acquisitionActivity } = require("./sprite-ac
 const { createSpriteFeeds } = require("./sprite-feeds.cjs");
 assert.equal(videoActivity([{ task_id: "a", task_type: "mix_generation", status: "completed" }]), null);
 assert.deepEqual(videoActivity([{ task_id: "a", task_type: "mix_generation", status: "rendering", progress: .42 }, { task_id: "b", task_type: "creative_cover", status: "queued" }]),
-  { title: "正在做视频", step: "配音和剪辑", detail: "还有 1 个在排队", done: 42, total: 100 });
+  { title: "正在做视频", owner: "video:a", step: "配音和剪辑", detail: "还有 1 个在排队", done: 42, total: 100 });
 assert.equal(videoActivity([{ task_id: "c", task_type: "creative_analysis", status: "analyzing", progress: 0 }]).title, "正在看你的素材");
 const before = new Map([["a", "rendering"], ["b", "rendering"], ["c", "analyzing"]]);
 assert.deepEqual(videoEvents(before, [{ task_id: "a", task_type: "mix_generation", status: "completed" }]), [{ text: "视频做好啦～", sub: "去成片中心看看吧", mood: "done" }]);
@@ -32,7 +32,9 @@ assert.deepEqual(videoEvents(before, [{ task_id: "c", task_type: "creative_analy
 assert.equal(videoEvents(before, [{ task_id: "b", task_type: "creative_cover", status: "failed" }])[0].mood, "error");
 assert.deepEqual(acquisitionActivity("keyword-acquisition:update", { busy: true }), { title: "正在用关键词找客户" });
 assert.equal(acquisitionActivity("social-acquisition:update", { running: "" }), null);
-assert.deepEqual(acquisitionActivity("map-acquisition:update", { tasks: [{ status: "running", message: "正在读取地图" }] }), { title: "正在地图上找客户", step: "正在读取地图" });
+assert.deepEqual(acquisitionActivity("map-acquisition:update", { tasks: [{ status: "running", message: "正在读取地图" }] }), { title: "正在地图上找客户", step: "正在读取地图", detail: "正在读取地图" });
+// A message naming each shop is the detail; the log keeps the broad step (review 2026-11-26).
+assert.equal(acquisitionActivity("map-acquisition:update", { tasks: [{ status: "running", message: "第 1 页 · 正在读取第 7 家" }] }).step, "读取地图上的商家");
 assert.equal(acquisitionActivity("cloud:update", {}), undefined, "别的消息不管");
 
 (async () => {
@@ -44,7 +46,7 @@ assert.equal(acquisitionActivity("cloud:update", {}), undefined, "别的消息�
     setTimer: () => null, clearTimer: () => {} });
   feeds.start();
   await feeds.pollVideo();
-  assert.deepEqual(activities.at(-1), ["video", { title: "正在做视频", step: "配音和剪辑", detail: "", done: 50, total: 100 }]);
+  assert.deepEqual(activities.at(-1), ["video", { title: "正在做视频", owner: "video:a", step: "配音和剪辑", detail: "", done: 50, total: 100 }]);
   tasks = [{ task_id: "a", task_type: "mix_generation", status: "completed", progress: 1 }];
   await feeds.pollVideo();
   assert.deepEqual(activities.at(-1), ["video", null]); assert.equal(lines.at(-1).text, "视频做好啦～");
@@ -88,8 +90,10 @@ assert.equal(acquisitionActivity("cloud:update", {}), undefined, "别的消息�
   assert.equal(serviceActivity("正在做场景效果视频", [{ status: "generating", statusLabel: "生成镜头", progress: 30 }]).step, "生成镜头");
   // Every feature that runs gives the card a step, so none falls back to a bare title (user 2026-11-26).
   for (const [channel, state] of [["geo:update", { busy: "publish" }], ["moments-campaign:update", { status: "running", current_post: 1 }],
-    ["digital-human:viral-progress", { stage: "search", message: "搜索抖音" }], ["digital-human:viral-pipeline", { items: [{ status: "running", message: "写文案" }] }],
+    ["digital-human:viral-progress", { stage: "collect", message: "正在搜索抖音：洗地机" }], ["digital-human:viral-pipeline", { items: [{ status: "running", message: "写文案" }] }],
     ["map-acquisition:update", { tasks: [{ status: "running", message: "读取地图" }] }]]) assert.ok(pushedActivity(channel, state).step, channel + " 没有给卡片步骤");
+  assert.equal(pushedActivity("digital-human:viral-pipeline", { items: [{ id: "j", status: "queued", message: "", title: "洗地机爆款" }] }).detail, "洗地机爆款", "没有进度文字时仍显示是哪条视频");
+  assert.notEqual(videoActivity([{ task_id: "a", task_type: "mix_generation", status: "rendering" }]).owner, videoActivity([{ task_id: "b", task_type: "creative_cover", status: "queued" }]).owner, "下一个任务从新的日志开始");
   for (const row of SPRITE_FEATURES) if (row.channel) assert.notEqual(pushedActivity(row.channel, {}), undefined, row.feature + " 登记了消息却没有处理");
   const registered = new Set(SPRITE_FEATURES.map((row) => row.channel).filter(Boolean));
   const sent = new Set(), computed = new Set();

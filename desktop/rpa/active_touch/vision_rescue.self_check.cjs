@@ -62,7 +62,8 @@ fs.unlinkSync(path.join(os.tmpdir(), reference));
       visionRescue: async (input) => { asked = input; return { ok: true, x: 0.25, y: 0.1 }; } }, root, failed(), args);
     assert.equal(rescued.ok, true); assert.equal(rescued.vision_rescued, true);
     // The AI look is its own stage, so 小玺 can say the AI is looking (user 2026-11-26).
-    assert.deepEqual(stages, ["vision_search:start", "vision_search:finish"]);
+    // Only a reading that opened the chat counts as found ("AI 帮忙找到 N 位").
+    assert.deepEqual(stages, ["vision_search:start", "vision_search:finish", "vision_found:finish"]);
     assert.deepEqual(asked, { file: capture, query: "测试联系人甲", queryType: "name", expectedName: "测试联系人甲" });
     assert.deepEqual(steps.at(-1), ["click-search-result-dry-run", ...args, "--vision-point", `0.2500,0.1000,${sha},${path.basename(capture)}`]);
     assert.equal(fs.existsSync(capture), false);

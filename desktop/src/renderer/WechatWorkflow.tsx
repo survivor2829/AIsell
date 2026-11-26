@@ -988,8 +988,10 @@ export function FloatingWorkflowWindow() {
   const cleanupRun = (state.external || []).find((item) => item.kind === "contactCleanup");
   const activity: SpriteActivity | null = cleanupRun ? { ...cleanupRun } : wechatActive ? {
     kind: "wechat",
-    title: sync?.running ? "正在读取微信联系人" : touching ? "正在联系客户" : workflowStatusText(state),
-    ...(touching ? { step, owner: contactOwner.current || current!.id }
+    // Waiting for the customer to log in is the headline, not a log line: they have to act.
+    title: sync?.running ? sync.stage === "waiting_login_window" ? SYNC_STAGE_LABELS.waiting_login_window : "正在读取微信联系人"
+      : touching ? "正在联系客户" : workflowStatusText(state),
+    ...(touching ? { step, owner: contactOwner.current || current!.id, ticking: true }
       : sync?.running ? { step: SYNC_STAGE_LABELS[sync.stage] || "读取联系人", owner: "contactSync" } : {}),
     detail: moments && current ? `已赞 ${moments.liked} · 已评 ${moments.commented}`
       : touching ? touchExtra : executionDetail || (state.waitingTaskId ? waitingDetail : "") || (current && current.title !== TASK_LABELS[current.type] ? current.title : ""),

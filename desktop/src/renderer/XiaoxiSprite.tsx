@@ -11,7 +11,8 @@ import "./XiaoxiSprite.css";
 // Every run shows the live card (user 2026-11-26: the same card for every feature, not only 精准触达):
 // step is the broad step now; the card keeps the last three steps of the current owner and starts over
 // when it changes. owner defaults to the feature (kind), so a changing title or detail updates in place.
-export type SpriteActivity = { kind: string; title: string; step?: string; owner?: string; detail?: string; done?: number; total?: number; attention?: boolean; pausable?: boolean; spacePause?: boolean };
+// ticking: the detail changes every second (touch countdown), so it stays out of the spoken status.
+export type SpriteActivity = { kind: string; title: string; step?: string; owner?: string; detail?: string; ticking?: boolean; done?: number; total?: number; attention?: boolean; pausable?: boolean; spacePause?: boolean };
 type Line = { text: string; sub?: string; mood?: "done" | "error" | "" };
 
 const GREETINGS: [RegExp, string][] = [
@@ -128,7 +129,8 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
     stepOwner.current = owner;
     if (!owner) { setSteps([]); return; }
     if (fresh) { setSteps(text ? [{ id: ++stepId.current, text }] : []); return; }
-    if (text) setSteps((list) => list[list.length - 1]?.text === text ? list : [...list, { id: ++stepId.current, text }].slice(-3));
+    // A step already in the log is not added again (touch: the click after an AI look is the same "找这位客户").
+    if (text) setSteps((list) => list.some((item) => item.text === text) ? list : [...list, { id: ++stepId.current, text }].slice(-3));
   }, [activity?.kind, activity?.owner, activity?.step, Boolean(activity)]);
 
   // One-off lines from the main process (a finished video, a failed job).
@@ -201,7 +203,7 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
             return <li key={item.id} className={now ? "is-now" : undefined}><i aria-hidden="true">{now ? "›" : "✓"}</i>{item.text}</li>;
           })}</ol>}
           {/* The countdown changes every second: kept out of the spoken status. */}
-          {activity.detail && <span className="xiaoxi-sub" aria-live="off" aria-hidden="true">{activity.detail}</span>}
+          {activity.detail && <span className="xiaoxi-sub" {...(activity.ticking ? { "aria-live": "off" as const, "aria-hidden": true } : {})}>{activity.detail}</span>}
           {percent !== null && <span className="xiaoxi-bar" aria-hidden="true"><span style={{ width: `${percent}%` }} /></span>}
         </>}
         {/* Pausing is a double press of the space bar anywhere (space-pause-hotkey.cjs); the small

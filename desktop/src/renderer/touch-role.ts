@@ -2,6 +2,7 @@
 // 下面滚动最近三步）。执行器一秒内会报好几个细步骤，这里只归成几大步，大步骤变了日志才添一行。
 // 执行器按“段”发送：先文字，再一张张图片，最后网址；每段开头都会重新准备联系人、核对当前聊天，
 // 所以先看正在发哪一段：图片段、网址段整段算一步，只有文字段才分找人 / 核对 / 发文字。认不出的步骤返回空，不添行。
+// 例外：AI 看图（vision_search / vision_title，用户 2026-11-26 要看得见 AI）不论哪一段都单独显示。
 export type TouchStep = { stage: string; partKind: string; partIndex?: number };
 
 const WRITE = new Set(["draft_generation"]);

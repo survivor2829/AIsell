@@ -11,7 +11,7 @@ function nurtureActivity(state) {
   const counts = plan.today?.counts || {};
   const detail = plan.phase === "watching"
     ? `已看 ${counts.watched || 0} 个视频，赞 ${counts.likes || 0} · 关注 ${counts.follows || 0} · 评 ${counts.comments || 0}` : "";
-  return { title: `正在养号 · ${plan.accountLabel || "抖音号"}`, step: NURTURE_PHASE[plan.phase] || "", detail };
+  return { title: `正在养号 · ${plan.accountLabel || "抖音号"}`, owner: `nurture:${plan.id}`, step: NURTURE_PHASE[plan.phase] || "", detail };
 }
 
 function publishActivity(state) {
@@ -49,7 +49,8 @@ function videoActivity(items) {
   if (!running.length) return null;
   const task = running.find((item) => item.status !== "queued") || running[0];
   const percent = Math.round(Math.max(0, Math.min(1, Number(task.progress) || 0)) * 100);
-  return { title: videoTitle(task.task_type), step: VIDEO_STEP[task.status] || "", detail: running.length > 1 ? `还有 ${running.length - 1} 个在排队` : "", done: percent, total: 100 };
+  // Each video starts its own log, so the next task does not inherit the last one's ticked steps.
+  return { title: videoTitle(task.task_type), owner: `video:${task.task_id}`, step: VIDEO_STEP[task.status] || "", detail: running.length > 1 ? `还有 ${running.length - 1} 个在排队` : "", done: percent, total: 100 };
 }
 
 // One line when a video finished or failed since the last look.
@@ -70,7 +71,11 @@ function acquisitionActivity(channel, state) {
   if (channel === "social-acquisition:update") return state?.running ? { title: "正在评论区里找意向客户" } : null;
   if (channel === "map-acquisition:update") {
     const task = (state?.tasks || []).find((item) => item.status === "running");
-    return task ? { title: "正在地图上找客户", step: String(task.message || "").slice(0, 40) } : null;
+    // The message changes for every shop read (第 1 页 · 正在读取第 N 家): that is the detail line; the
+    // log keeps the broad step only.
+    if (!task) return null;
+    const message = String(task.message || "").slice(0, 40);
+    return { title: "正在地图上找客户", step: /[0-9]/.test(message) ? "读取地图上的商家" : message, detail: message };
   }
   return undefined;
 }
@@ -81,16 +86,17 @@ function productDetailActivity(report) {
   if (state !== "pending" && !String(task.status || "").startsWith("running_")) return null;
   const message = String(task.progress_msg || "");
   const title = "正在做产品详情图";
-  if (task.status === "running_assembler" || /拼接|拼装/.test(message)) return { title, step: "拼成长图", detail: "马上就好" };
-  if (task.status === "running_recovery") return { title, step: "接着做上次的详情图", detail: "已经做好的不会重画" };
+  const owner = task.task_id ? { owner: `productDetail:${task.task_id}` } : {};
+  if (task.status === "running_assembler" || /拼接|拼装/.test(message)) return { title, ...owner, step: "拼成长图", detail: "马上就好" };
+  if (task.status === "running_recovery") return { title, ...owner, step: "接着做上次的详情图", detail: "已经做好的不会重画" };
   if (task.status === "running_generator") {
     // Only the message counts this round: the task's totals still describe the whole set during a single redo.
     const counted = message.match(/(\d+)\s*\/\s*(\d+)/);
-    if (!counted) return /重做/.test(message) ? { title, step: "重画这一张", detail: "其他图片不动" } : { title, step: "开始动笔画", detail: "一张一张认真画" };
+    if (!counted) return /重做/.test(message) ? { title, ...owner, step: "重画这一张", detail: "其他图片不动" } : { title, ...owner, step: "开始动笔画", detail: "一张一张认真画" };
     const total = Number(counted[2]), finished = Math.min(total, Number(counted[1]));
-    return { title, step: `画第 ${Math.min(total, finished + 1)}/${total} 张`, detail: "一张一张认真画", done: finished, total };
+    return { title, ...owner, step: `画第 ${Math.min(total, finished + 1)}/${total} 张`, detail: "一张一张认真画", done: finished, total };
   }
-  return { title, step: "琢磨这款产品的卖点", detail: "想清楚客户最在意什么，再动笔" };
+  return { title, ...owner, step: "琢磨这款产品的卖点", detail: "想清楚客户最在意什么，再动笔" };
 }
 function productDetailEvent(before, report) {
   if (!before) return null;
@@ -101,6 +107,7 @@ function productDetailEvent(before, report) {
   return { text: "这次详情图没做完，别着急～", sub: "已完成的部分保留着，打开软件可以接着做", mood: "error" };
 }
 
+const VIRAL_STAGE = { collect: "搜索爆款视频", comments: "读评论、核对作者", blocked: "平台拦了一下，换下一个" };
 const GEO_BUSY = { writing: ["写 GEO 文章", "大约要一分钟"], publish: ["把文章发到媒体号", "结果以平台页面为准"], visibility: ["在豆包里查有没有提到你", ""] };
 // Only statuses where the software is really working: a task waiting for the customer must not look busy.
 const WORKING_TASK = new Set(["imaging", "directing", "writing_story", "composing", "uploading", "preparing_frames", "frame_generating", "locking_frames", "preparing_audio", "submitting", "generating", "assembling", "enhancing", "transcribing",
@@ -111,7 +118,8 @@ function serviceActivity(title, items) {
   if (!task) return null;
   const percent = Math.max(0, Math.min(100, Math.round(Number(task.progress) || 0)));
   const eta = Number(task.etaSeconds), left = Number.isFinite(eta) && eta > 0 ? `还要约 ${Math.max(1, Math.round(eta / 60))} 分钟` : "";
-  return { title, step: String(task.statusLabel || ""), detail: left, ...(percent ? { done: percent, total: 100 } : {}) };
+  const owner = task.id ? { owner: `service:${task.id}` } : {};
+  return { title, ...owner, step: String(task.statusLabel || ""), detail: left, ...(percent ? { done: percent, total: 100 } : {}) };
 }
 function pushedActivity(channel, state) {
   if (channel === "geo:update") {
@@ -124,12 +132,14 @@ function pushedActivity(channel, state) {
     return { title: "正在给朋友圈点赞评论", step: state.current_post ? `第 ${state.current_post} 条` : "" };
   }
   if (channel === "digital-human:viral-progress") {
-    return state?.stage && state.stage !== "done" ? { title: "正在全网找爆款文案", step: String(state.message || "").slice(0, 40) } : null;
+    // Searching and reading comments name the item in their message: the log keeps the stage only.
+    return state?.stage && state.stage !== "done"
+      ? { title: "正在全网找爆款文案", step: VIRAL_STAGE[state.stage] || "", detail: String(state.message || "").slice(0, 40) } : null;
   }
   if (channel === "digital-human:viral-pipeline") {
     const job = (state?.items || []).find((item) => item.status === "running") || (state?.items || []).find((item) => item.status === "queued");
     if (!job) return null;
-    return { title: "正在一键成片", step: String(job.message || "").slice(0, 40), detail: job.message ? String(job.title || "").slice(0, 40) : "",
+    return { title: "正在一键成片", owner: `viral-pipeline:${job.id || ""}`, step: String(job.message || "").replace(/^正在/, "").slice(0, 40), detail: String(job.title || "").slice(0, 40),
       ...(job.progress ? { done: Math.round(job.progress), total: 100 } : {}) };
   }
   return acquisitionActivity(channel, state);

@@ -1023,7 +1023,7 @@ function createTouchWorkflow(options = {}) {
               { trace: true, level: "warn", code: "session_reuse_flags_invalid" });
           }
         }
-        // A contact the rules could not find or confirm and the AI looked at, then sent: counted for 小玺
+        // A contact the rules could not find or confirm, whom the AI's reading found, then sent: counted for 小玺
         // ("AI 帮忙找到 N 位", user 2026-11-26), once per contact.
         let aiAskedFor = "";
         const executePart = async (part, partIndex, onPartTransition) => {
@@ -1072,11 +1072,11 @@ function createTouchWorkflow(options = {}) {
             ...(multipart ? { captureSessionAnchor: true, now,
               ...(partIndex > 0 ? { reuseSession: { partIndex, sourcePartIndex, anchor: sessionAnchor, disabled: !reuseEnabled } } : {}) } : {}),
             onDiagnostic: (detail) => {
-              if (detail.phase === "start" && /^vision_/.test(String(detail.stage || ""))) aiAskedFor = current.id;
+              if (detail.stage === "vision_found") aiAskedFor = current.id;
               if (detail.phase === "start") reportProgress({ ...partProgress, stage: detail.stage,
                 readAttempt: detail.clipboard_read_attempts, retryAttempt: detail.retry_index, waitUntil: detail.wait_until });
               diagnostics().event("active_touch", "send_stage", detail, {
-                trace: true, traceId: sendOperation.traceId, phase: detail.phase, level: detail.ok === false ? "warn" : "info", code: detail.reason
+                trace: true, traceId: sendOperation.traceId, phase: detail.phase, level: detail.ok === false && !/^vision_/.test(String(detail.stage || "")) ? "warn" : "info", code: detail.reason
               });
             },
             isExecutionAllowed: enabled,

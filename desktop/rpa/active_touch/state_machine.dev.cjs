@@ -38,6 +38,10 @@ const { summarizeSendResult, observeSendStage } = require("../../src/shared/wech
 // search runs once more and that row is clicked only if the dropdown is the very same picture, then
 // the usual landing and title checks decide. No answer or any doubt keeps the old skip.
 const VISION_RESCUE_REASONS = new Set(["exact_search_result_not_found", "search_result_identity_unverified"]);
+// The AI's reading opened the right chat: said once, so 小玺 can count "AI 帮忙找到 N 位" (user 2026-11-26).
+function aiFound(options) {
+  try { options?.onDiagnostic?.({ stage: "vision_found", phase: "finish", ok: true }); } catch { /* Display only. */ }
+}
 async function visionRescueSearch(options, baseDir, opened, windowArgs) {
   const file = String(opened?.diagnostics?.search_capture_file || "");
   const reason = String(opened?.blocked_reason || opened?.reason || "");
@@ -61,6 +65,7 @@ async function visionRescueSearch(options, baseDir, opened, windowArgs) {
   const retried = await options.runStep("click-search-result-dry-run", [...windowArgs, "--vision-point", point]);
   if (retried?.ok) {
     discardSearchCapture(opened);
+    aiFound(options);
     return { ...retried, vision_rescued: true, diagnostics: { ...(retried.diagnostics || {}), vision_outcome: "vision_clicked", vision_ms: Date.now() - started } };
   }
   discardSearchCapture(retried);
@@ -103,6 +108,7 @@ async function visionRescueTitle(options, baseDir, opened, windowArgs) {
   const confirmed = await options.runStep("confirm-vision-title", [...windowArgs, "--vision-title", `${box.join(",")},${capture},${path.basename(file)}`]);
   if (!confirmed?.ok) return note(`vision_title_${String(confirmed?.diagnostics?.vision_title_outcome || confirmed?.blocked_reason || "failed").slice(0, 60)}`);
   discardTitleCapture(file);
+  aiFound(options);
   return { ...confirmed, vision_title_rescued: true, diagnostics: { ...(confirmed.diagnostics || {}), vision_title_outcome: "vision_title_confirmed", vision_title_ms: Date.now() - started } };
 }
 
