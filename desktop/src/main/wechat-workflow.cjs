@@ -763,7 +763,7 @@ function createWechatWorkflowController(options) {
                   ? currentExecution.startedAt : new Date(now()).getTime(),
                 partKind: ["text", "image", "link"].includes(progress.partKind) ? progress.partKind : "",
                 textSent: progress.textSent === true };
-              for (const key of ["contactIndex", "contactTotal", "partIndex", "partTotal", "verifiedParts", "readAttempt", "retryAttempt"]) {
+              for (const key of ["contactIndex", "contactTotal", "partIndex", "partTotal", "verifiedParts", "readAttempt", "retryAttempt", "aiFound"]) {
                 if (Number.isSafeInteger(progress[key]) && progress[key] >= 0) next[key] = progress[key];
               }
               if (Number.isSafeInteger(progress.waitUntil) && progress.waitUntil > 0) next.waitUntil = progress.waitUntil;

@@ -72,7 +72,7 @@ type WorkflowExecution = {
   taskId: string; stage: string; startedAt: number;
   contactIndex?: number; contactTotal?: number;
   partKind: string; partIndex?: number; partTotal?: number; verifiedParts?: number; textSent: boolean;
-  readAttempt?: number; retryAttempt?: number; waitUntil?: number;
+  readAttempt?: number; retryAttempt?: number; waitUntil?: number; aiFound?: number;
 };
 export type WorkflowState = {
   enabled: boolean;
@@ -343,7 +343,7 @@ function useTouchFooter(execution: WorkflowExecution | null) {
   const recovery = (execution.readAttempt && execution.readAttempt > 1 ? execution.readAttempt - 1 : 0) + (execution.retryAttempt || 0);
   return [execution.textSent && execution.partKind !== "text" ? "文字已发送" : "",
     seconds !== null ? seconds > 0 ? `${seconds} 秒后继续` : "即将继续" : elapsed >= 8 ? `本步骤 ${elapsed} 秒` : "",
-    recovery ? `已自动恢复 ${recovery} 次` : ""].filter(Boolean).join(" · ");
+    recovery ? `已自动恢复 ${recovery} 次` : "", execution.aiFound ? `AI 帮忙找到 ${execution.aiFound} 位` : ""].filter(Boolean).join(" · ");
 }
 
 function useExecutionDetail(execution?: WorkflowExecution | null) {
@@ -988,8 +988,11 @@ export function FloatingWorkflowWindow() {
   const cleanupRun = (state.external || []).find((item) => item.kind === "contactCleanup");
   const activity: SpriteActivity | null = cleanupRun ? { ...cleanupRun } : wechatActive ? {
     kind: "wechat",
-    title: sync?.running ? (SYNC_STAGE_LABELS[sync.stage] || "正在读取微信联系人") : touching ? "正在联系客户" : workflowStatusText(state),
-    ...(touching ? { step, owner: contactOwner.current || current!.id } : {}),
+    // Waiting for the customer to log in is the headline, not a log line: they have to act.
+    title: sync?.running ? sync.stage === "waiting_login_window" ? SYNC_STAGE_LABELS.waiting_login_window : "正在读取微信联系人"
+      : touching ? "正在联系客户" : workflowStatusText(state),
+    ...(touching ? { step, owner: contactOwner.current || current!.id, ticking: true }
+      : sync?.running ? { step: SYNC_STAGE_LABELS[sync.stage] || "读取联系人", owner: "contactSync" } : {}),
     detail: moments && current ? `已赞 ${moments.liked} · 已评 ${moments.commented}`
       : touching ? touchExtra : executionDetail || (state.waitingTaskId ? waitingDetail : "") || (current && current.title !== TASK_LABELS[current.type] ? current.title : ""),
     ...(!sync && state.phase !== "replying" && displayed && displayed.progress?.total > 0 ? { done: displayed.progress.done, total: displayed.progress.total } : {}),

@@ -456,6 +456,21 @@ function uniqueWechatIdLocalSurface(candidates, webCandidate, query) {
   };
 }
 
+// WeChat 4's own result rows (UI Automation, named by the display name; wechat_window_driver.cjs): the one
+// row named exactly this person under a contact heading (最常使用 / 联系人). A group, a 公众号 or a chat-history
+// row of the same name never counts; two such contact rows or none leave it to the rules below. The mode is
+// not one the chat is trusted on: the title is checked after the click (state_machine.cjs).
+const LOCAL_CELL_SECTIONS = new Set(["最常使用", "联系人"]);
+function exactNameCell(observation, expectedName) {
+  const expected = normalized(expectedName);
+  if (!expected) return null;
+  const cells = (Array.isArray(observation.cellCandidates) ? observation.cellCandidates : [])
+    .filter((cell) => cell && Number.isFinite(Number(cell.x)) && Number.isFinite(Number(cell.y)) && !isNetworkLookupCandidate(cell)
+      && LOCAL_CELL_SECTIONS.has(String(cell.section || "").trim()));
+  const exact = cells.filter((cell) => normalized(cell.name) === expected);
+  return exact.length === 1 ? exact[0] : null;
+}
+
 function resolveBaselineObservation(observation = {}, identity = {}) {
   const reject = (rule_id, reason = "search_result_identity_unverified") => ({
     status: reason === "exact_search_result_not_found" ? "not_found" : "unverified", reason, rule_id,
@@ -719,6 +734,13 @@ function resolveWechatSearchResultObservationStrict(observation = {}, identity =
     });
     return longerId ? reject("search-r020") : result;
   };
+  // WeChat 4's own row for this person comes first, on either popup layout.
+  const cell = exactNameCell(observation, String(identity.expectedName ?? "").trim());
+  if (cell) {
+    return superstringVeto(observation, { status: "selected", mode: "exact_name_cell",
+      candidate: cell, diagnostics: { rule_id: "search-cell", candidate_count: 1, cell_candidate_count: observation.cellCandidates.length,
+        capture_source: observation.captureSource === "popup" ? "popup" : "formula_crop" } });
+  }
   const popup = validRectangle(observation.popupBounds);
   const dpi = Number(observation.popupDpi);
   const searchColumns = [];
