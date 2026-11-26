@@ -414,7 +414,9 @@ function Test-PublishPanelPixel($frame, [int]$x, [int]$y) {
 
 function Find-PublishOverlayBounds($frame, $ocr, [double]$scale) {
   if (-not $ocr.ok) { return @{ ok = $false; reason = "moments_publish_overlay_read_failed" } }
-  $audience = @($ocr.lines | Where-Object { (Normalize-PublishText ([string]$_.text)) -ceq "谁可以看" })
+  # The row may be read in one line with its value on the right (谁可以看公开): the same OCR join that hid 添加 when
+  # deleting friends (b070e34b, 2026-11-26). The label starts the line; a longer sentence is not it.
+  $audience = @($ocr.lines | Where-Object { $t = Normalize-PublishText ([string]$_.text); $t.StartsWith("谁可以看", [StringComparison]::Ordinal) -and $t.Length -le 12 })
   $reminder = @($ocr.lines | Where-Object { (Normalize-PublishText ([string]$_.text)).Contains("提醒谁看") })
   if ($audience.Count -ne 1 -or $reminder.Count -ne 1) {
     return @{ ok = $false; reason = "moments_publish_composer_not_found" }

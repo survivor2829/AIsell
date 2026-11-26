@@ -28,6 +28,14 @@ const workflowPolicies = Object.freeze({
   // The script stopped before 删除 without a clearer reason (it closes what it opened): may be tried again.
   delete_script_failed: { classification: "recoverable", attentionScope: "task" },
   visual_script_failed: { classification: "recoverable", attentionScope: "task" },
+  // 1.3.76: how one AI look at a delete step went (wechat-vision-check.cjs deleteStep). Logged in the person's evidence
+  // ("eyes"), never their result: the step then stops with its own reason (chat_member_not_found, …).
+  vision_confirm_other: { classification: "blocker", attentionScope: "task" },
+  vision_group: { classification: "blocker", attentionScope: "task" },
+  vision_unsure: { classification: "recoverable", attentionScope: "task" },
+  vision_failed: { classification: "recoverable", attentionScope: "task" },
+  vision_kind_unknown: { classification: "blocker", attentionScope: "task" },
+  vision_request_invalid: { classification: "blocker", attentionScope: "task" },
   search_input_failed: { classification: "blocker", attentionScope: "task" },
   confirm_dialog_not_shown: { classification: "recoverable", attentionScope: "task" },
   // The card's 微信号 could not be read and another synced friend shows the same name: never guessed.

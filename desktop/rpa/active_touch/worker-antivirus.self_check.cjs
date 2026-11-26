@@ -16,7 +16,8 @@ const boot = Buffer.from('$raw=[Console]::In.ReadToEnd();$text=[Text.Encoding]::
 const scripts = [["failure screen capture", FAILURE_SCREEN_SCRIPT], ["prelude with clipboard", `${FAILURE_EVIDENCE_SCRIPT}\n${WECHAT_CLIPBOARD_POWERSHELL}`]];
 for (const file of fs.readdirSync(__dirname).filter(name => name.endsWith(".cjs") && !name.includes("self_check"))) {
   let exported;
-  try { exported = require(path.join(__dirname, file)); } catch { continue; }
+  // A driver that does not even load must fail here, not be skipped (a broken script once passed as "23 scripts").
+  try { exported = require(path.join(__dirname, file)); } catch (error) { assert.fail(`${file} does not load: ${error.message}`); }
   for (const [key, value] of Object.entries(exported || {})) {
     if (typeof value === "string" && value.length > 2000 && /function [A-Z][a-z]+-/u.test(value) && value !== FAILURE_SCREEN_SCRIPT) {
       scripts.push([`${file} ${key}`, `${FAILURE_EVIDENCE_SCRIPT}\n${value}`]);

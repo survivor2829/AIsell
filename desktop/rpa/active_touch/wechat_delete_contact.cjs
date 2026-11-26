@@ -8,11 +8,50 @@
 // Identity is checked four times — chat title, member cell, profile card name (and 微信号 when known), and the
 // confirm text — and any mismatch stops before 删除. After 删除 the result is read back; if it cannot be, the
 // outcome is unknown and nothing is retried.
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { focusWechatWindowAsync, runPowerShellAsync, openWechatSearchResultAsync } = require("./wechat_window_driver.cjs");
 const { customerSearchPlan } = require("./state_machine.cjs");
 const { VISUAL_DELETE_SCRIPT } = require("./wechat_delete_contact_visual.cjs");
 // The UI Automation steps cannot start: this WeChat gives no tree (b070e34b, 2026-11-26). Read the screen instead.
 const NO_UIA_TREE = new Set(["wechat_main_window_not_found", "search_box_not_found"]);
+const VISION_KINDS = new Set(["member", "card_more", "menu_item", "confirm"]);
+
+// AI 看图 for the screen-reading delete (1.3.76): the script leaves "<id>.req.json" plus its picture in a folder of its
+// own and waits; each request is answered once through eyes.deleteStep (wechat-vision-check.cjs), and the answer is
+// written as "<id>.res.json" (via a temporary name, so the script never reads half a file). Returns a stop function.
+function answerEyes(folder, eyes, { name, onAi }) {
+  const handled = new Set();
+  let busy = false;
+  const timer = setInterval(async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      for (const file of fs.readdirSync(folder).filter((entry) => entry.endsWith(".req.json"))) {
+        const id = file.slice(0, -".req.json".length);
+        if (handled.has(id)) continue;
+        handled.add(id);
+        let answer = { ok: false, reason: "vision_failed" };
+        try {
+          const request = JSON.parse(fs.readFileSync(path.join(folder, file), "utf8"));
+          const picture = path.join(folder, path.basename(String(request.file || "")));
+          if (!VISION_KINDS.has(String(request.kind)) || !fs.existsSync(picture)) answer = { ok: false, reason: "vision_request_invalid" };
+          else {
+            try { onAi?.(String(request.kind)); } catch { /* display only */ }
+            const read = await eyes.deleteStep({ file: picture, kind: String(request.kind), name });
+            answer = { ok: read?.ok === true, group: read?.group === true, reason: String(read?.reason || ""), points: read?.ok === true ? read.points : {} };
+          }
+        } catch (error) { answer = { ok: false, reason: String(error?.code || "vision_failed") }; }
+        fs.writeFileSync(path.join(folder, `${id}.res.tmp`), JSON.stringify(answer));
+        fs.renameSync(path.join(folder, `${id}.res.tmp`), path.join(folder, `${id}.res.json`));
+      }
+    } catch { /* the folder went away: the run is over */ }
+    finally { busy = false; }
+  }, 150);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
 
 const DELETE_SCRIPT = String.raw`
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -388,7 +427,16 @@ Out-Result $true "confirm" "" @{ ready = $true; id_check = $idCheck }
 
 // The same delete by looking at the screen (wechat_delete_contact_visual.cjs). The chat is opened with touch's own
 // search and its title checked first, as touch does before it sends.
-async function deleteVisually({ name, wechatId, plan, uniqueName, confirm, window, runner, opener, titleCheck, stopped }, markCommitting) {
+async function deleteVisually(options, markCommitting) {
+  // Only with the vision model at hand: a folder the script hands its pictures through, gone when this person is done.
+  const eyes = typeof options.eyes?.deleteStep === "function" && options.eyes.ready?.() !== false ? options.eyes : null;
+  const folder = eyes ? fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-vdel-")) : "";
+  const stop = eyes ? answerEyes(folder, eyes, { name: options.name, onAi: options.onAi }) : () => {};
+  try { return await deleteVisuallyIn(options, markCommitting, folder); }
+  finally { stop(); if (folder) fs.rmSync(folder, { recursive: true, force: true }); }
+}
+
+async function deleteVisuallyIn({ name, wechatId, plan, uniqueName, confirm, window, runner, opener, titleCheck, stopped }, markCommitting, folder) {
   // As touch does (state_machine.cjs): after an unconfirmed 微信号 the name search may not take the first row.
   const queries = plan.queryType === "wechat_id" ? [[wechatId, "wechat_id"], [plan.fallbackQuery, "name_fallback"]] : [[plan.query, plan.queryType || "name"]];
   let opened = null;
@@ -412,18 +460,19 @@ async function deleteVisually({ name, wechatId, plan, uniqueName, confirm, windo
   if (near && !wechatId) return { ok: false, stage: "open", reason: "chat_title_mismatch", visual: true };
   const environment = { XIAOXI_DELETE_NAME: name, XIAOXI_DELETE_WECHAT_ID: wechatId, XIAOXI_EXPECTED_PID: String(window.pid || ""),
     XIAOXI_EXPECTED_HWND: String(window.hWnd || ""), XIAOXI_DELETE_UNIQUE_NAME: uniqueName === true ? "1" : "0",
-    XIAOXI_DELETE_REQUIRE_ID: title?.ok && !near ? "0" : "1" };
-  const prepared = await Promise.resolve(runner(VISUAL_DELETE_SCRIPT, { ...environment, XIAOXI_VDEL_PHASE: "prepare", XIAOXI_DELETE_CONFIRM: confirm ? "1" : "0" }, { ensure: false, timeout: 60000 }));
+    XIAOXI_DELETE_REQUIRE_ID: title?.ok && !near ? "0" : "1", ...(folder ? { XIAOXI_VDEL_ASK_DIR: folder } : {}) };
+  // Longer with the vision model: each look can take up to 40 s.
+  const prepared = await Promise.resolve(runner(VISUAL_DELETE_SCRIPT, { ...environment, XIAOXI_VDEL_PHASE: "prepare", XIAOXI_DELETE_CONFIRM: confirm ? "1" : "0" }, { ensure: false, timeout: folder ? 180000 : 60000 }));
   if (!prepared?.ok || prepared.ready !== true) return prepared || { ok: false, stage: "script", reason: "delete_script_failed", visual: true };
   markCommitting();
   // The windows that were already open before prepare: commit never takes, closes or counts them.
   const committed = await Promise.resolve(runner(VISUAL_DELETE_SCRIPT, { ...environment, XIAOXI_VDEL_PHASE: "commit",
     XIAOXI_VDEL_HAS_BASELINE: "1", XIAOXI_VDEL_BASELINE: String(prepared.baseline || "") },
-    { ensure: false, timeout: 30000 }));
+    { ensure: false, timeout: folder ? 75000 : 30000 }));
   // After the press: anything short of a clear "deleted" or "not pressed" is unknown, never retried.
   const known = committed?.deleted === true || committed?.notClicked === true;
   return { ...(committed || {}), ...(known ? {} : { ok: false, deleted: false, outcomeUnknown: true, stage: String(committed?.stage || "commit"),
-    reason: String(committed?.reason || "delete_outcome_unknown") }), ...(prepared.id_check ? { id_check: prepared.id_check } : {}) };
+    reason: String(committed?.reason || "delete_outcome_unknown") }), ...(prepared.id_check ? { id_check: prepared.id_check } : {}), eyes: [...(prepared.eyes || []), ...(committed?.eyes || [])] };
 }
 
 // contact: { name, remark, nickname, wechatId } from the synced contact list. confirm=false stops at the confirm
@@ -441,7 +490,7 @@ async function deleteWechatContact(contact, options = {}) {
 
 async function deleteOnce(contact, { confirm = false, uniqueName = false, runner = runPowerShellAsync, focus = focusWechatWindowAsync, stopped = () => false,
   opener = openWechatSearchResultAsync, titleCheck = (...args) => require("./wechat_window_driver.dev.cjs").observeWechatConversationAsync(...args),
-  visualOnly = process.env.XIAOXI_DELETE_VISUAL === "1" } = {}, markCommitting) {
+  visualOnly = process.env.XIAOXI_DELETE_VISUAL === "1", eyes = null, onAi = null } = {}, markCommitting) {
   const name = String(contact?.remark || contact?.name || contact?.nickname || "").trim();
   if (!name) return { ok: false, stage: "input", reason: "delete_name_missing" };
   const plan = customerSearchPlan(contact);
@@ -458,8 +507,12 @@ async function deleteOnce(contact, { confirm = false, uniqueName = false, runner
   const shapeVisual = (result) => ({ ok: result?.ok === true && result?.deleted === true, deleted: result?.deleted === true, outcomeUnknown: result?.outcomeUnknown === true,
     dryRun: result?.dryRun === true, stage: String(result?.stage || "script"), reason: String(result?.reason || (result?.deleted ? "" : "delete_script_failed")), visual: true,
     ...(result?.notClicked === true ? { notClicked: true } : {}),
+    // What the vision model was asked and how it went ("member:found"), and how much the screen showed: no names.
+    ...(Array.isArray(result?.eyes) && result.eyes.length ? { eyes: result.eyes.map(String).slice(0, 8) } : {}),
+    ...(typeof result?.add_found === "boolean" ? { addFound: result.add_found } : {}),
+    ...(Number.isFinite(result?.line_count) ? { lineCount: result.line_count } : {}),
     ...(result?.id_check && typeof result.id_check === "object" ? { idCheck: result.id_check } : {}) });
-  const visually = async () => shapeVisual(await deleteVisually({ name, wechatId, plan, uniqueName, confirm, window, runner, opener, titleCheck, stopped }, markCommitting));
+  const visually = async () => shapeVisual(await deleteVisually({ name, wechatId, plan, uniqueName, confirm, window, runner, opener, titleCheck, stopped, eyes, onAi }, markCommitting));
   if (visualOnly) return visually();
   // Open the chat: by 微信号 first, then by name, each time clicking the search result named exactly this person.
   const queries = [...new Set([wechatId, name].filter(Boolean))];

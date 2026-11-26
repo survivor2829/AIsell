@@ -14,7 +14,10 @@ const evidenceOf = (result) => ({
   ...(Array.isArray(result?.window_kind) ? { window_kind: result.window_kind } : {}),
   ...(Array.isArray(result?.menuItems) ? { menu_item_kind: result.menuItems } : {}),
   ...(result?.idCheck && typeof result.idCheck === "object" ? { id_check: result.idCheck } : {}),
-  ...(Number.isFinite(result?.resultCount) ? { result_count: result.resultCount } : {})
+  ...(Number.isFinite(result?.resultCount) ? { result_count: result.resultCount } : {}),
+  ...(Array.isArray(result?.eyes) ? { eyes: result.eyes } : {}),
+  ...(typeof result?.addFound === "boolean" ? { add_found: result.addFound } : {}),
+  ...(Number.isFinite(result?.lineCount) ? { line_count: result.lineCount } : {})
 });
 // Tries per person when it stopped before 删除: one more only, for a step WeChat was not ready for (no search rows yet,
 // confirm not shown yet, a panel still sliding in); a wrong path is fixed, not retried (user 2026-11-25: "错误的方法再重试
@@ -28,7 +31,10 @@ const NO_RETRY = new Set(["contact_name_not_unique", "delete_name_missing", "con
   "search_result_not_found", "search_input_failed", "search_box_not_found", "profile_wechat_id_mismatch", "profile_wechat_id_unreadable",
   "chat_member_mismatch", "chat_title_mismatch", "confirm_text_mismatch",
   // Read from the screen (1.3.75): the card has no "…" because the person is no longer a friend; a point off WeChat.
-  "contact_not_friend", "visual_point_invalid", "wechat_target_changed"]);
+  "contact_not_friend", "visual_point_invalid", "wechat_target_changed",
+  // The screen did not show it, and the vision model already looked in the same try (1.3.76; user 2026-11-26: "好多本身
+  // 失败的步骤又重复一次，还是失败"). The same picture read again gives the same answer.
+  "chat_member_not_found", "profile_more_not_found", "delete_menu_item_not_found", "confirm_dialog_not_shown", "confirm_button_not_found"]);
 
 // Not about this person: WeChat itself cannot be read. Every next person would fail the same way, so the run stops
 // and says why (b070e34b, 2026-11-26: no chat window found, all 36 people skipped one by one, nothing deleted).

@@ -347,6 +347,13 @@ function registerWechatWorkflowIpc(options) {
     showFloating().catch(() => undefined);
     cleanupRunning = true;
     syncSpaceHotkey(controller.status());
+    // What 小玺 shows while the vision model looks at a delete step, and how many people it helped with.
+    let lastProgress = null, aiHelped = 0, aiPerson = "";
+    const AI_LOOKS = { member: "AI 看图找头像", card_more: "AI 看图找“…”", menu_item: "AI 看图找“删除联系人”", confirm: "AI 看图读确认框" };
+    const showCleanup = (progress, step) => setExternalActivity("contactCleanup", progress.finished ? null : {
+      title: "正在删除无效好友", step: step || (progress.current ? `删除 ${progress.current}` : "准备中"),
+      done: progress.done, total: progress.total, pausable: true, spacePause: Boolean(spaceHotkey.ready?.()),
+      ...(aiHelped ? { detail: `AI 帮忙看了 ${aiHelped} 位` } : {}) });
     const run = cleanup().deleteInWechat(plan.wanted, {
       // The PP-OCRv4 line reader is up first, as for touch (5 s at most): deleting on a WeChat without a UI
       // Automation tree reads the card's 微信号 with it. Without it Windows' own reading is used.
@@ -355,7 +362,13 @@ function registerWechatWorkflowIpc(options) {
           const ready = require("./line-ocr-service.cjs").lineOcrService()?.ensure();
           if (ready) await Promise.race([ready, new Promise((resolve) => setTimeout(resolve, 5000).unref?.())]);
         } catch { /* optional */ }
-        return options.deleteWechatContact(...args);
+        const [contact, deleteOptions = {}] = args;
+        const eyes = options.wechatEyes && typeof options.wechatEyes.deleteStep === "function" ? options.wechatEyes : null;
+        return options.deleteWechatContact(contact, { ...deleteOptions, eyes, onAi: (kind) => {
+          if (!lastProgress) return;
+          if (aiPerson !== lastProgress.current) { aiPerson = lastProgress.current; aiHelped += 1; }
+          showCleanup(lastProgress, `${AI_LOOKS[kind] || "AI 看图"}：${lastProgress.current || ""}`.slice(0, 40));
+        } });
       },
       coordinator: options.coordinator,
       currentAccount,
@@ -364,9 +377,8 @@ function registerWechatWorkflowIpc(options) {
         // WeChat itself could not be read: the run stopped at once (touch-cleanup.cjs WHOLE_RUN); 小玺 says so.
         if (progress.finished && progress.halted) say({ text: "微信里没能删好友", mood: "error",
           sub: progress.halted === "wechat_version_unsupported" ? "这个微信版本还不支持自动删除" : "没读到微信聊天主界面，打开微信后再删一次" });
-        setExternalActivity("contactCleanup", progress.finished ? null : {
-        title: "正在删除无效好友", step: progress.current ? `删除 ${progress.current}` : "准备中",
-        done: progress.done, total: progress.total, pausable: true, spacePause: Boolean(spaceHotkey.ready?.()) });
+        lastProgress = progress;
+        showCleanup(progress);
       },
       // Each miss is logged (step and reason, no names) so a failure report shows where deleting stops.
       onFailure: (failure) => options.logger?.event?.("wechat_workflow", failure.retrying ? "contact_cleanup.retry" : failure.degraded ? "contact_cleanup.id_check_degraded" : "contact_cleanup.person_failed", failure,
