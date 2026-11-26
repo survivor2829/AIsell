@@ -31,7 +31,8 @@ const INQUIRY_FROM = ["豆包", "千问", "DeepSeek", "元宝", "抖音", "搜�
 const GROUPS = ["本地", "场景", "价格", "选购", "售后", "大词"];
 // Where a cited page lives, by the address the AI linked to.
 const SOURCES = [[/toutiao\.com|toutiaocdn|snssdk\.com/, "今日头条"], [/douyin\.com|iesdouyin\.com/, "抖音"], [/zhihu\.com/, "知乎"], [/baijiahao\.baidu\.com|mbd\.baidu\.com/, "百家号"],
-  [/sohu\.com/, "搜狐"], [/mp\.weixin\.qq\.com|weixin\.qq\.com/, "公众号"], [/csdn\.net/, "CSDN"], [/163\.com/, "网易"], [/baidu\.com/, "百度"], [/qq\.com/, "腾讯"], [/bilibili\.com/, "B站"], [/xiaohongshu\.com/, "小红书"]];
+  [/sohu\.com/, "搜狐"], [/mp\.weixin\.qq\.com|weixin\.qq\.com/, "公众号"], [/csdn\.net/, "CSDN"], [/163\.com/, "网易"], [/baike\.baidu\.com/, "百度百科"], [/baidu\.com/, "百度"], [/qq\.com/, "腾讯"],
+  [/bilibili\.com/, "B站"], [/xiaohongshu\.com/, "小红书"], [/sina\.com\.cn|sina\.cn|weibo\.com/, "新浪"], [/36kr\.com/, "36氪"], [/chinanews\.com/, "中新网"], [/ifeng\.com/, "凤凰网"], [/people\.com\.cn/, "人民网"], [/xinhuanet\.com|news\.cn/, "新华网"]];
 // The request never went out or was plainly refused: nothing was bought, so it is free to try again.
 const AI_NOT_SENT = /^(API_KEY_|SECURE_STORAGE_|AI_INPUT_INVALID$|AI_BALANCE_INSUFFICIENT$|AI_RATE_LIMITED$|AI_REQUEST_REJECTED$|PROVIDER_GATEWAY_UNAVAILABLE$)/;
 // The AI answered, but with something unusable: it counts, and asking again is safe.

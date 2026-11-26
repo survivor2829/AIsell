@@ -342,6 +342,7 @@ const code = (expected) => (error) => { assert.equal(error.code, expected, error
     assert.equal(named("10. 示例清洁").rank, "mention", "第 10 项不是第 1 项");
     assert.equal(named("别家").rank, "none");
     assert.equal(named("别家").references[0].source, "今日头条");
+    assert.equal(classifyVisibility({ answer: "", references: [{ title: "x", url: "https://finance.sina.com.cn/tech/1.shtml" }, { title: "y", url: "https://www.ecovacsb2b.com/news" }], brand: { name: "示例" }, articles: [], publications: [] }).references.map((ref) => ref.source).join("|"), "新浪|ecovacsb2b.com", "常见媒体用中文名，其他网站显示网址");
   }
   {
     // 首页的数：最近 7 天按 AI 分开算；每周的比例连成线；自己的文章被引用几篇；AI 常看哪些平台；本月询盘。
