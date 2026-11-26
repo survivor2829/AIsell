@@ -72,7 +72,7 @@ export function UnreachableCleanup({ onClose }: { onClose: () => void }) {
         const done = next?.wechatProgress;
         if (next && !next.wechatRunning && done) {
           // WeChat itself could not be read: the run stopped at once instead of skipping everyone (2026-11-26).
-          setNotice(done.halted ? `微信里没能删：${STOPPED[done.halted] || "微信界面读不到"}。请打开微信聊天主界面后点“再删一次”。`
+          setNotice(done.halted ? `微信里没能删：${STOPPED[done.halted] || "微信界面读不到"}。${PERMANENT.has(done.halted) ? "" : "请打开微信聊天主界面后点“再删一次”。"}`
             : [`微信里已删 ${done.deleted} 人`, done.failed ? `没删成 ${done.failed} 人` : "", done.unknown ? `结果不明 ${done.unknown} 人` : ""].filter(Boolean).join("，") + "。");
         }
       }).catch(() => undefined);

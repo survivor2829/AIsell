@@ -81,7 +81,7 @@ function Get-WxWindows {
 function Get-WxWindow([string]$className) { Get-WxWindows | Where-Object { $_.Current.ClassName -eq $className } | Select-Object -First 1 }
 # The chat window: the one the shared window rules already confirmed (its handle), whatever UI Automation calls
 # it. 4.2.0.53 reports mmui::MainWindow, but 1.3.73 on a 200% laptop (b070e34b, 2026-11-26) found no window of
-# that class and skipped all 36 people; a WeChat window holding the 搜索 box is the fallback.
+# that class and skipped all 36 people; a WeChat window holding the 搜索 box and the chat list is the fallback.
 function Get-WxMain {
   if ($expectedHwnd) {
     try {
@@ -91,7 +91,10 @@ function Get-WxMain {
   }
   $byClass = Get-WxWindow "mmui::MainWindow"
   if ($byClass) { return $byClass }
-  foreach ($w in @(Get-WxWindows)) { if (@(Find-Elements $w "Edit" "搜索" "").Count) { return $w } }
+  # Only the chat window: the 搜索 box and the chat list together (a contacts or Moments window has a search box too).
+  foreach ($w in @(Get-WxWindows)) {
+    if (@(Find-Elements $w "Edit" "搜索" "").Count -and @(Find-Elements $w "ListItem" $null "mmui::ChatSessionCell").Count) { return $w }
+  }
   $null
 }
 # $elementName is untyped on purpose: a [string] parameter turns $null ("any name") into "".

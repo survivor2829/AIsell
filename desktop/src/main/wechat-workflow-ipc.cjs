@@ -354,7 +354,8 @@ function registerWechatWorkflowIpc(options) {
       verifyLiveAccount: options.verifyLiveAccount,
       onProgress: (progress) => {
         // WeChat itself could not be read: the run stopped at once (touch-cleanup.cjs WHOLE_RUN); 小玺 says so.
-        if (progress.finished && progress.halted) say({ text: "微信里没能删好友", sub: "没读到微信聊天主界面，打开微信后再删一次", mood: "error" });
+        if (progress.finished && progress.halted) say({ text: "微信里没能删好友", mood: "error",
+          sub: progress.halted === "wechat_version_unsupported" ? "这个微信版本还不支持自动删除" : "没读到微信聊天主界面，打开微信后再删一次" });
         setExternalActivity("contactCleanup", progress.finished ? null : {
         title: "正在删除无效好友", step: progress.current ? `删除 ${progress.current}` : "准备中",
         done: progress.done, total: progress.total, pausable: true, spacePause: Boolean(spaceHotkey.ready?.()) });

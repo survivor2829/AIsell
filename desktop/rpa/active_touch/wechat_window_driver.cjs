@@ -2219,8 +2219,9 @@ if ($observeLocalResults) {
       for ($i = 0; $i -lt $all.Count; $i++) {
         $item = $all.Item($i)
         $automationId = [string]$item.Current.AutomationId
-        if ([string]$item.Current.ClassName -eq "mmui::XTableCell" -and -not $item.Current.IsOffscreen) {
-          [void]$cellHeaders.Add(@{ name = [string]$item.Current.Name; top = [int]$item.Current.BoundingRectangle.Top })
+        if ([string]$item.Current.ClassName -eq "mmui::XTableCell" -and -not $item.Current.IsOffscreen -and
+            -not $automationId.StartsWith("search_item_function_", [StringComparison]::Ordinal)) {
+          [void]$cellHeaders.Add(@{ name = ([string]$item.Current.Name).Trim(); top = [int]$item.Current.BoundingRectangle.Top })
           continue
         }
         if ([string]$item.Current.ClassName -eq "mmui::SearchContentCellView" -and -not $item.Current.IsOffscreen) {
@@ -2238,7 +2239,8 @@ if ($observeLocalResults) {
       }
     }
     foreach ($cell in $cellCandidates) {
-      $above = @($cellHeaders | Where-Object { $_.top -le $cell.top } | Sort-Object { $_.top } -Descending | Select-Object -First 1)
+      # A heading strictly above the row: a row's own container shares its top and is not a heading.
+      $above = @($cellHeaders | Where-Object { $_.top -lt $cell.top } | Sort-Object { $_.top } -Descending | Select-Object -First 1)
       $cell.section = $(if ($above.Count) { [string]$above[0].name } else { "" })
     }
     $signature = (@($cellCandidates | ForEach-Object { [string]$_.name + "@" + [string]$_.y + "@" + [string]$_.section }) -join "|")
@@ -2500,11 +2502,11 @@ if ($cellName) {
   $cellCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, "mmui::SearchContentCellView")
   $headerCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, "mmui::XTableCell")
   $headers = @(@($cellRoot.FindAll([System.Windows.Automation.TreeScope]::Descendants, $headerCondition)) | Where-Object { -not $_.Current.IsOffscreen } |
-    ForEach-Object { @{ name = [string]$_.Current.Name; top = [int]$_.Current.BoundingRectangle.Top } })
+    ForEach-Object { @{ name = ([string]$_.Current.Name).Trim(); top = [int]$_.Current.BoundingRectangle.Top } })
   $named = @(@($cellRoot.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cellCondition)) | Where-Object {
     if ($_.Current.IsOffscreen -or -not ([string]$_.Current.Name -ceq $cellName)) { return $false }
     $top = [int]$_.Current.BoundingRectangle.Top
-    $above = @($headers | Where-Object { $_.top -le $top } | Sort-Object { $_.top } -Descending | Select-Object -First 1)
+    $above = @($headers | Where-Object { $_.top -lt $top } | Sort-Object { $_.top } -Descending | Select-Object -First 1)
     $above.Count -and @("最常使用", "联系人") -contains [string]$above[0].name })
   if ($named.Count -ne 1) { @{ ok=$false; reason="search_result_identity_unverified"; rule_id="search-cell-moved"; send_attempted=$false; safety_diagnostics=@{ phase="before_search_result_click"; named_rows=$named.Count } } | ConvertTo-Json -Compress -Depth 4; exit }
   $cellRect = $named[0].Current.BoundingRectangle
@@ -2730,14 +2732,6 @@ function searchClickEnvironment(observed, context, resolution) {
     XIAOXI_SEARCH_CANDIDATE_MODE: resolution.mode,
     XIAOXI_SEARCH_CELL_NAME: /_cell$/.test(resolution.mode) ? String(resolution.candidate.name || "") : ""
   };
-}
-
-// The rules without WeChat 4's rows, on the same popup (used when the named row moved or doubled before the press).
-function resolveWithoutCells(observed, identity, context) {
-  const observation = { ...observed.searchResultObservation, cellCandidates: [] };
-  const strict = resolveWechatSearchResultObservation(observation, identity);
-  const ruled = firstLocalRowFallback(observation, identity, strict, String(context.searchFallbackReason || "")) || strict;
-  return ruled.status === "selected" ? ruled : null;
 }
 
 function searchCandidateFingerprint(mode, candidate) {
@@ -3122,7 +3116,7 @@ function openWechatSearchResult(query, context = {}) {
     const identity = { query, expectedName: context.searchIdentity.expectedName, queryType: context.searchQueryType };
       const strict = resolveWechatSearchResultObservation(observed.searchResultObservation, identity);
       const ruled = firstLocalRowFallback(observed.searchResultObservation, identity, strict, String(context.searchFallbackReason || "")) || strict;
-      let resolution = ruled.status === "selected" ? ruled : visionResolution(observed, context.visionPoint) || ruled;
+      const resolution = ruled.status === "selected" ? ruled : visionResolution(observed, context.visionPoint) || ruled;
     const searchEvidence = buildSearchEvidence(observed, resolution, query, context);
     const capture = detachedSearchCapture(observed, resolution, context.captureSearchFailure === true);
     if (resolution.status !== "selected") {
@@ -3132,10 +3126,9 @@ function openWechatSearchResult(query, context = {}) {
       return { ...capture.observed, ok: false, reason: resolution.reason, diagnostics: capture.diagnostics, searchEvidence,
         searchQueryType: String(context.searchQueryType || 'unknown'), searchFallbackReason: String(context.searchFallbackReason || '') };
     }
-    let clicked = clickRunner(CLICK_SEARCH_RESULT_SCRIPT, searchClickEnvironment(observed, context, resolution), { ensure: false });
-    // The named row moved or doubled before the press: the same popup is decided again by the other rules.
-    const fallback = !clicked?.ok && clicked?.rule_id === "search-cell-moved" ? resolveWithoutCells(observed, identity, context) : null;
-    if (fallback) { resolution = fallback; clicked = clickRunner(CLICK_SEARCH_RESULT_SCRIPT, searchClickEnvironment(observed, context, resolution), { ensure: false }); }
+    const clicked = clickRunner(CLICK_SEARCH_RESULT_SCRIPT, searchClickEnvironment(observed, context, resolution), { ensure: false });
+    // The named row moved or doubled before the press: nothing else is clicked from this reading, since the list
+    // has moved (a stale point can be another person). The person is skipped and comes back in the retry round.
     attachClickEvidence(searchEvidence, resolution, clicked);
     return clicked?.ok
       ? { ...capture.observed, ...clicked, searchQuery: String(query), searchQueryType: String(context.searchQueryType || "unknown"), searchFallbackReason: String(context.searchFallbackReason || ""), searchResultMode: resolution.mode, searchEvidence }
@@ -3168,7 +3161,7 @@ function openWechatSearchResultAsync(query, context = {}) {
       const identity = { query, expectedName: context.searchIdentity.expectedName, queryType: context.searchQueryType };
       const strict = resolveWechatSearchResultObservation(observed.searchResultObservation, identity);
       const ruled = firstLocalRowFallback(observed.searchResultObservation, identity, strict, String(context.searchFallbackReason || "")) || strict;
-      let resolution = ruled.status === "selected" ? ruled : visionResolution(observed, context.visionPoint) || ruled;
+      const resolution = ruled.status === "selected" ? ruled : visionResolution(observed, context.visionPoint) || ruled;
       const searchEvidence = buildSearchEvidence(observed, resolution, query, context);
       const capture = detachedSearchCapture(observed, resolution, context.captureSearchFailure === true);
       if (resolution.status !== "selected") {
@@ -3178,10 +3171,9 @@ function openWechatSearchResultAsync(query, context = {}) {
         return { ...capture.observed, ok: false, reason: resolution.reason, diagnostics: capture.diagnostics, searchEvidence,
           searchQueryType: String(context.searchQueryType || 'unknown'), searchFallbackReason: String(context.searchFallbackReason || '') };
       }
-      let clicked = await clickRunner(CLICK_SEARCH_RESULT_SCRIPT, searchClickEnvironment(observed, context, resolution), { ensure: false });
-      // The named row moved or doubled before the press: the same popup is decided again by the other rules.
-      const fallback = !clicked?.ok && clicked?.rule_id === "search-cell-moved" ? resolveWithoutCells(observed, identity, context) : null;
-      if (fallback) { resolution = fallback; clicked = await clickRunner(CLICK_SEARCH_RESULT_SCRIPT, searchClickEnvironment(observed, context, resolution), { ensure: false }); }
+      const clicked = await clickRunner(CLICK_SEARCH_RESULT_SCRIPT, searchClickEnvironment(observed, context, resolution), { ensure: false });
+      // The named row moved or doubled before the press: nothing else is clicked from this reading, since the list
+      // has moved (a stale point can be another person). The person is skipped and comes back in the retry round.
       attachClickEvidence(searchEvidence, resolution, clicked);
       return clicked?.ok
         ? { ...capture.observed, ...clicked, searchQuery: String(query), searchQueryType: String(context.searchQueryType || "unknown"), searchFallbackReason: String(context.searchFallbackReason || ""), searchResultMode: resolution.mode, searchEvidence }

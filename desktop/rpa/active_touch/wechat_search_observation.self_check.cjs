@@ -839,25 +839,18 @@ process.on("beforeExit", () => {
   console.log("header chrome is not a chat title: window buttons ignored, DPI-scaled band");
 }
 
-// The named row moved or doubled before the press (search-cell-moved): the same popup is decided again by
-// the other rules; nothing is clicked when they cannot decide either.
+// The named row moved or doubled before the press (search-cell-moved): nothing else is clicked from that
+// reading, since the list has moved and its other points may be other people (review 2026-11-26).
 {
   const { openWechatSearchResult } = require("./wechat_window_driver.cjs");
   const cell = { name: "测试客户甲", section: "联系人", left: 70, top: 120, right: 400, bottom: 180, x: 235, y: 150 };
-  const observed = (extra = {}) => ({ ok: true, pid: 11, hWnd: "22", title: "微信", processName: "Weixin", searchQuery: "测试客户甲", inputLeaseTick: 5,
-    searchResultObservation: { cellCandidates: [cell], uiaCandidates: [], visualCandidates: [], ocrOk: false, ...extra } });
-  for (const [label, extra, clicksWanted] of [
-    ["old rules decide", { uiaCandidates: [{ automationId: "search_item_function_1", name: "测试客户甲", x: 240, y: 160 }] }, 2],
-    ["old rules cannot", {}, 1]]) {
-    const modes = [];
-    const result = openWechatSearchResult("测试客户甲", { pid: 11, hWnd: "22", searchQueryType: "name", searchIdentity: { expectedName: "测试客户甲" },
-      runner: () => observed(extra),
-      clickRunner: (_script, env) => { modes.push(env.XIAOXI_SEARCH_CANDIDATE_MODE + ":" + env.XIAOXI_SEARCH_CELL_NAME);
-        return modes.length === 1 ? { ok: false, reason: "search_result_identity_unverified", rule_id: "search-cell-moved" } : { ok: true, exactSearchOpened: true }; } });
-    assert.equal(modes.length, clicksWanted, label);
-    assert.equal(modes[0], "exact_name_cell:测试客户甲", "the named row goes first, by name");
-    if (clicksWanted === 2) { assert.equal(modes[1], "unique_local_uia:", "then the other rules, without the row name"); assert.equal(result.ok, true); }
-    else assert.equal(result.ok, false, "nothing else is clicked");
-  }
-  console.log("moved named row falls back to the other rules");
+  const modes = [];
+  const result = openWechatSearchResult("测试客户甲", { pid: 11, hWnd: "22", searchQueryType: "name", searchIdentity: { expectedName: "测试客户甲" },
+    runner: () => ({ ok: true, pid: 11, hWnd: "22", title: "微信", processName: "Weixin", searchQuery: "测试客户甲", inputLeaseTick: 5,
+      searchResultObservation: { cellCandidates: [cell], uiaCandidates: [{ automationId: "search_item_function_1", name: "测试客户甲", x: 240, y: 160 }], visualCandidates: [], ocrOk: false } }),
+    clickRunner: (_script, env) => { modes.push(env.XIAOXI_SEARCH_CANDIDATE_MODE + ":" + env.XIAOXI_SEARCH_CELL_NAME);
+      return { ok: false, reason: "search_result_identity_unverified", rule_id: "search-cell-moved" }; } });
+  assert.deepEqual(modes, ["exact_name_cell:测试客户甲"], "the named row goes first, by name, and nothing else is pressed");
+  assert.equal(result.ok, false);
+  console.log("moved named row is never re-pressed from a stale reading");
 }
