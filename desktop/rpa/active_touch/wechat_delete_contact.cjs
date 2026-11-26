@@ -474,7 +474,9 @@ async function deleteVisuallyIn({ name, wechatId, plan, uniqueName, confirm, win
   // After the press: anything short of a clear "deleted" or "not pressed" is unknown, never retried.
   const known = committed?.deleted === true || committed?.notClicked === true;
   return { ...(committed || {}), ...(known ? {} : { ok: false, deleted: false, outcomeUnknown: true, stage: String(committed?.stage || "commit"),
-    reason: String(committed?.reason || "delete_outcome_unknown") }), ...(prepared.id_check ? { id_check: prepared.id_check } : {}), eyes: [...(prepared.eyes || []), ...(committed?.eyes || [])] };
+    reason: String(committed?.reason || "delete_outcome_unknown") }), ...(prepared.id_check ? { id_check: prepared.id_check } : {}), eyes: [...(prepared.eyes || []), ...(committed?.eyes || [])],
+    input_ticks_ignored: (Number(prepared.input_ticks_ignored) || 0) + (Number(committed?.input_ticks_ignored) || 0),
+    input_noname_keys: (Number(prepared.input_noname_keys) || 0) + (Number(committed?.input_noname_keys) || 0) };
 }
 
 // contact: { name, remark, nickname, wechatId } from the synced contact list. confirm=false stops at the confirm
@@ -514,6 +516,11 @@ async function deleteOnce(contact, { confirm = false, uniqueName = false, runner
     ...(typeof result?.add_found === "boolean" ? { addFound: result.add_found } : {}),
     ...(Number.isFinite(result?.line_count) ? { lineCount: result.line_count } : {}),
     ...(Number.isFinite(result?.input_ticks_ignored) ? { inputTicksIgnored: result.input_ticks_ignored } : {}),
+    ...(Number.isFinite(result?.input_noname_keys) ? { inputNonameKeys: result.input_noname_keys } : {}),
+    ...(typeof result?.input_reason === "string" && result.input_reason ? { inputReason: result.input_reason.slice(0, 40) } : {}),
+    // Where the script broke (line and error type only: an error's text can quote the contact's name).
+    ...(Number.isFinite(result?.script_line) ? { scriptLine: result.script_line } : {}),
+    ...(typeof result?.error_type === "string" && result.error_type ? { errorType: result.error_type.slice(0, 60) } : {}),
     ...(result?.id_check && typeof result.id_check === "object" ? { idCheck: result.id_check } : {}) });
   const visually = async () => shapeVisual(await deleteVisually({ name, wechatId, plan, uniqueName, confirm, window, runner, opener, titleCheck, stopped, eyes, onAi }, markCommitting));
   if (visualOnly) return visually();

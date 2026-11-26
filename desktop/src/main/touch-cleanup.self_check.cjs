@@ -308,6 +308,12 @@ async function checkVisualEyes(person, focus) {
   for (const kind of ["member", "card_more", "menu_item", "confirm"]) assert.ok(script.includes(`Ask-Eyes "${kind}"`), `AI fallback for ${kind}`);
   assert.ok(script.includes("if (-not $h -or $h -eq $mainHwnd) { return $dialog }"), "the model never looks for 删除 on the chat window itself");
   assert.ok(script.includes('if ([string]$answer.reason -eq "stopped")'), "停止 while the model looks stops at once");
+  // Someone at the computer is read from the input events (a low-level hook, as touch's search), our own presses carry
+  // the marker, and 微信输入法's injected VK_NONAME is no key; the last-input time decides only without the hook.
+  assert.ok(script.includes("[XiaoxiDeleteInputGuard]::Start()") && script.includes("mouse_event(2, 0, 0, 0, [XiaoxiDeleteInputGuard]::Marker)")
+    && script.includes("mouse_event(4, 0, 0, 0, [XiaoxiDeleteInputGuard]::Marker)"), "our presses are marked for the input guard");
+  assert.ok(script.includes("if (injected && vk == 0xFC)"), "an injected VK_NONAME is counted, not taken for a person");
+  assert.ok(!script.includes("UIntPtr]::Zero)") || !/mouse_event\([24], 0, 0, 0, \[UIntPtr\]::Zero\)/u.test(script), "no unmarked press left");
   checkLabelReading(script);
   checkVisualTypeCompiles(script);
   await checkCoreUniqueName();
@@ -341,7 +347,8 @@ function checkVisualTypeCompiles(script) {
   const start = script.indexOf('if (-not ("XiaoxiVisualDelete" -as [type]))');
   const open = script.indexOf('-TypeDefinition @"', start) + '-TypeDefinition @"'.length, close = script.indexOf('"@', open);
   assert.ok(start >= 0 && open > start && close > open, "the XiaoxiVisualDelete type is found");
-  const code = `$code = @'${script.slice(open, close)}'@\ntry { Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition $code; "compiled" } catch { "failed: " + $_.Exception.Message }`;
+  // Double-quoted, as the script itself passes it (PowerShell expands $ there).
+  const code = `$code = @"${script.slice(open, close)}"@\ntry { Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition $code; "compiled" } catch { "failed: " + $_.Exception.Message }`;
   // Encoded: a here-string piped through stdin is not run as one statement.
   const run = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(code, "utf16le").toString("base64")],
     { encoding: "utf8", windowsHide: true, timeout: 90000 });
