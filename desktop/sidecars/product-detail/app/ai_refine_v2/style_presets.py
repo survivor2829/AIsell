@@ -7,29 +7,29 @@ layout and mood; the product itself keeps the look and colours of the customer's
 import copy
 import json
 import secrets
+from prompt_ref import prompt_ref
 
 RANDOM = "random"
-STYLE_PRIORITY = ("。风格要求最优先：本页构图里的背景、光线、配色或氛围如与整套设计不同，一律改按整套设计，"
-                  "只保留场景内容和产品摆放；产品本身的外观和配色严格保持参考图原样。")
+STYLE_PRIORITY = (prompt_ref("detail.style.priority"))
 
 # The four looks offered until 1.3.68. No longer offered; kept so a task that froze one still renders the same.
 LEGACY_PRESETS = {
     "bright": {
         "label": "明亮活泼",
         "style_dna": {
-            "color_palette": "白色与浅天蓝为主的明亮背景，少量橙色作品牌强调色，高明度、通透干净，整套不使用深色大背景",
+            "color_palette": prompt_ref("detail.style.legacy.bright.palette"),
             "lighting": "明亮通透的商业摄影布光，接近真实日光，画面无暗角，阴影轻而真实",
-            "composition_style": "真实商业场景摄影为主，干净的商务版式，简洁的色块和细线分隔信息，主体突出，节奏明快",
+            "composition_style": prompt_ref("detail.style.legacy.bright.composition"),
             "mood": "明亮、积极、有活力，同时专业可信，适合企业采购和商业场景",
             "typography_hint": "现代粗体无衬线字体，标题醒目利落，深灰或深蓝字色，手机上清晰可读",
-            "unified_visual_treatment": "整套统一真实照片质感和明亮商业摄影风格；不用卡通、插画、Q版、3D萌系、贴纸、表情或拟人形象，像同一家正规企业的产品宣传册",
+            "unified_visual_treatment": prompt_ref("detail.style.legacy.bright.treatment"),
         },
     },
     "premium": {
         "label": "高级专业",
         "style_dna": {
-            "color_palette": "深炭灰到近黑的沉稳背景，点缀香槟金或冷银，低饱和，大面积深色，整套不使用亮白大背景",
-            "lighting": "侧逆光与聚光勾勒轮廓，明暗对比克制，暗部保留细节，产品主体保持足够亮度",
+            "color_palette": prompt_ref("detail.style.legacy.dark.palette"),
+            "lighting": prompt_ref("detail.style.legacy.dark.lighting"),
             "composition_style": "严谨对称网格，克制留白，细线分隔，信息层级分明",
             "mood": "沉稳、高级、专业、值得信赖",
             "typography_hint": "细长现代黑体，白色或香槟金字色，深底上清晰可读",
@@ -39,23 +39,23 @@ LEGACY_PRESETS = {
     "fresh": {
         "label": "清新自然",
         "style_dna": {
-            "color_palette": "米白、浅草绿和原木色的柔和背景，低对比，温润干净，整套不使用深色大背景",
+            "color_palette": prompt_ref("detail.style.legacy.fresh.palette"),
             "lighting": "清晨般柔和的自然窗光，光影细腻，空气感强",
             "composition_style": "呼吸感留白，少量绿植与自然材质作陪衬，版式舒展不拥挤",
             "mood": "清爽、自然、干净、让人放心",
             "typography_hint": "细圆黑体，深绿或深棕字色，手机上清晰可读",
-            "unified_visual_treatment": "整套统一自然窗光和米白浅绿色调，陪衬元素不抢产品，像同一处清爽空间",
+            "unified_visual_treatment": prompt_ref("detail.style.legacy.fresh.treatment"),
         },
     },
     "tech": {
         "label": "科技未来",
         "style_dna": {
-            "color_palette": "浅银白、冰蓝灰为主的明亮背景，科技蓝作细线和点缀，冷色调但整体明亮，整套不使用大面积深蓝、藏青或黑色背景",
-            "lighting": "明亮干净的影棚光，冷白色调，轻微的蓝色边缘高光，产品真实颜色不被染色",
-            "composition_style": "浅色背景上的细线几何和淡网格，模块化信息面板，数据感强，结构精准，留白干净",
+            "color_palette": prompt_ref("detail.style.legacy.tech.palette"),
+            "lighting": prompt_ref("detail.style.legacy.tech.lighting"),
+            "composition_style": prompt_ref("detail.style.legacy.tech.composition"),
             "mood": "前沿、精准、智能、清爽明亮",
             "typography_hint": "方正无衬线字体，深灰或科技蓝字色，浅底上清晰可读",
-            "unified_visual_treatment": "整套统一浅色明亮底和科技蓝细线语言，像同一套智能产品发布视觉，不出现暗沉的深色画面",
+            "unified_visual_treatment": prompt_ref("detail.style.legacy.tech.treatment"),
         },
     },
 }
@@ -116,14 +116,12 @@ def _scheme(entry):
         "swatches": [base, secondary, accent],
         "dark": dark,
         "style_dna": {
-            "color_palette": (f"严格使用三色配色：{base_words} {base} 约占六成，作背景和大面积底色；{secondary_words} {secondary} 约占三成，"
-                              f"作信息面板、次级色块和分隔线；{accent_words} {accent} 约占一成，只用于关键数字、标签、图标和少量强调。"
-                              "不引入其他鲜艳颜色，整套同一套配色。"),
+            "color_palette": (f"{prompt_ref('detail.style.scheme.palette.p1')}{base_words} {base}{prompt_ref('detail.style.scheme.palette.p2')}{secondary_words} {secondary}{prompt_ref('detail.style.scheme.palette.p3')}{accent_words} {accent}{prompt_ref('detail.style.scheme.palette.p4')}"),
             "lighting": lighting + "；产品真实颜色不被环境光染色",
-            "composition_style": layout + "；版式像大公司的产品官网与发布会画面，网格对齐，留白充足，信息层级清楚",
+            "composition_style": layout + prompt_ref("detail.style.scheme.composition"),
             "mood": mood + "，专业可信，适合企业采购和商业场景",
-            "typography_hint": f"现代无衬线字体，标题粗、正文细，文字用{text}，与背景对比度足够，手机上清晰可读",
-            "unified_visual_treatment": "整套统一这三种颜色和同一种光线；真实商业摄影质感，不用卡通、插画、贴纸、表情或渐变彩虹色，像同一家公司的一套正式物料",
+            "typography_hint": f"{prompt_ref('detail.style.scheme.typography.p1')}{text}{prompt_ref('detail.style.scheme.typography.p2')}",
+            "unified_visual_treatment": prompt_ref("detail.style.scheme.treatment"),
         },
     }
 

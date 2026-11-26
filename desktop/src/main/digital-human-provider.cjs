@@ -8,6 +8,7 @@ const { randomUUID } = require('node:crypto');
 const { Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { humanDirection } = require('./skills/cleaning-video-director/rules.cjs');
+const { promptRef } = require("../shared/prompt-ref.cjs");
 
 const MODEL = 'seedance-2.5';
 const SAFE_ID = /^[A-Za-z0-9._-]{1,255}$/u;
@@ -16,7 +17,7 @@ const SCENES = Object.freeze([
   { id: 'store', name: '门店陈列', description: '整洁真实的门店陈列区，货架有层次但不抢主体，自然灯光，宽敞的产品演示位置', action: '在适合产品体量的陈列位置介绍，指向清晰可见的细节' },
   { id: 'display', name: '产品展示台', description: '简约高质感的产品展示区，小件使用展示台，大件使用同风格地面展示区，人物和产品同画面，背景干净', action: '在产品旁介绍，按真实体量展示其正面或清晰可见的操作区域' },
 ]);
-const PRODUCT_INTERACTION = '依据参考产品的类别、结构和文案中的尺寸信息，保持人物与产品的真实比例。只有适合拿取的小件才可自然手持；大型、重型或落地设备保持落地，人物站在旁边指向细节，或轻触图片中可辨认的操作区域。体量不明确时采用站旁讲解，不强行拿起。不得把大型产品缩成手持模型、抬离地面或放在普通桌上；不新增图片中不存在的按钮、零件或操作功能。';
+const PRODUCT_INTERACTION = promptRef("video.digital.product_interaction");
 const VOICES = Object.freeze([
   { id: 'workbench', name: '沿用创作工作台声音', prompt: '沿用创作工作台已确认的配音声音' },
   { id: 'natural_female', name: '自然女声', prompt: '自然亲切的成年女性普通话，吐字清楚，节奏从容' },
@@ -168,7 +169,7 @@ function resultUrl(payload, kind) {
 function previewPrompt(task) {
   const scene = SCENES.find((item) => item.id === task.sceneId);
   const direction = humanDirection({ scene, voice: VOICES.find((item) => item.id === task.voiceStyle) });
-  return `制作一张竖屏9:16真实商业摄影定妆图。参考图1是本人形象，保持脸部特征、年龄和发型；参考图2是实际产品，准确保留形状、颜色、品牌和包装，不增加不存在的零件或功效。场景：${scene.description}。人物与产品必须同画面。${direction.character}${direction.visual}${direction.lighting}${PRODUCT_INTERACTION} 产品介绍仅作为产品信息参考：${JSON.stringify(task.script)}。手指自然，面部及产品正面清楚，画面下方保留字幕空间。不要字幕、水印、装饰文字。`;
+  return `${promptRef("video.digital.portrait_sheet.p1")}${scene.description}${promptRef("video.digital.portrait_sheet.p2")}${direction.character}${direction.visual}${direction.lighting}${PRODUCT_INTERACTION}${promptRef("video.digital.portrait_sheet.p3")}${JSON.stringify(task.script)}${promptRef("video.digital.portrait_sheet.p4")}`;
 }
 function videoPayload(task) {
   const scene = SCENES.find((item) => item.id === task.sceneId);
@@ -181,7 +182,7 @@ function videoPayload(task) {
     model: MODEL, duration: task.durationSeconds, resolution: task.videoResolution || '1080p', size: '9:16', output_format: 'mp4',
     omni_reference_task_type: 'reference', generate_audio: true,
     image_urls: references,
-    prompt: `竖屏真实产品介绍视频，时长${task.durationSeconds}秒，源视频${task.videoResolution || '1080p'}。@图片1是已确认的本人和产品同框场景，保持构图、服装、脸、产品外观及相对尺度、背景一致；@图片2校准本人脸部；@图片3校准实际产品外形及包装。${direction.character}${direction.photography}${direction.visual}${direction.lighting}人物始终在${scene.description}里。${direction.activity}${PRODUCT_INTERACTION}本人面对镜头说出以下完整文案，口型与话语同步，不添加额外台词：${JSON.stringify(task.script)}。声音：${direction.sound}负面约束：${direction.negative}`,
+    prompt: `${promptRef("video.digital.video.p1")}${task.durationSeconds}${promptRef("video.digital.video.p2")}${task.videoResolution || '1080p'}${promptRef("video.digital.video.p3")}${direction.character}${direction.photography}${direction.visual}${direction.lighting}${promptRef("video.digital.video.p4")}${scene.description}里。${direction.activity}${PRODUCT_INTERACTION}${promptRef("video.digital.video.p5")}${JSON.stringify(task.script)}。声音：${direction.sound}${promptRef("video.digital.video.p6")}${direction.negative}`,
   };
 }
 function createDigitalHumanProvider({ gatewayClient, download = downloadMedia } = {}) {

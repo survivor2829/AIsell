@@ -14,7 +14,12 @@ install -d -o ai-gateway -g ai-gateway -m 750 "$data_dir"
 # certificate/key and provider env files remain protected by their file modes
 # and service-specific groups.
 install -d -m 751 -o root -g ai-gateway /etc/ai-maintenance
-install -m 644 "$source_dir/service.py" "$source_dir/material_search.py" "$source_dir/accounts.py" "$source_dir/billing.py" "$app_dir/"
+# The prompt library must load before the gateway starts with it (service.py imports prompt_library).
+[ -s "$source_dir/prompt-library.json" ] || { echo 'Missing deployment file: prompt-library.json' >&2; exit 1; }
+(cd "$source_dir" && python3 -c 'import sys; from prompt_library import PromptLibrary; assert len(PromptLibrary(sys.argv[1])) > 0' "$source_dir/prompt-library.json")
+install -m 644 "$source_dir/service.py" "$source_dir/material_search.py" "$source_dir/accounts.py" "$source_dir/billing.py" "$source_dir/prompt_library.py" "$app_dir/"
+# The prompt wording is product know-how: readable by the gateway service only.
+install -m 640 -o root -g ai-gateway "$source_dir/prompt-library.json" "$app_dir/prompt-library.json"
 
 if [ ! -f "$config_file" ]; then
   umask 077

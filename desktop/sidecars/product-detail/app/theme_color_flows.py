@@ -2,6 +2,7 @@
 主题色调流 — 为每套主题规划从上到下的背景色调节奏
 用于 AI 生图「无缝长图」方案：每段 prompt 带上下段色调信息，保证相邻段自然衔接。
 """
+from prompt_ref import prompt_ref
 
 ZONE_META = {
     "hero":       {"label": "英雄封面",   "height": 1334, "overlap_bottom": 120},
@@ -21,10 +22,10 @@ THEME_COLOR_FLOWS = {
         "name": "经典红",
         "primary": "#E8231A",
         "flow": {
-            "hero":       {"bg_tone": "深蓝灰到深红棕渐变，大气商业摄影氛围，顶部有微弱暖光晕，底部接近纯黑以便过渡",      "transition_hint": "底部向纯白过渡"},
-            "advantages": {"bg_tone": "纯净的浅灰白到极浅暖灰渐变，干净极简，轻微的颗粒质感，适合深色文字",             "transition_hint": "底部向浅暖灰过渡"},
+            "hero":       {"bg_tone": "深蓝灰到深红棕渐变，大气商业摄影氛围，顶部有微弱暖光晕，底部接近纯黑以便过渡",      "transition_hint": prompt_ref("detail.theme.hero_bg")},
+            "advantages": {"bg_tone": "纯净的浅灰白到极浅暖灰渐变，干净极简，轻微的颗粒质感，适合深色文字",             "transition_hint": prompt_ref("detail.theme.advantages_bg")},
             "story":      {"bg_tone": "柔和的暖米灰到淡奶油色，自然漫射光，纸感背景，温暖但克制",                          "transition_hint": "底部向深色过渡"},
-            "specs":      {"bg_tone": "深蓝黑到石墨灰渐变，科技磨砂质感，细微网格线点缀，适合白色参数文字",                  "transition_hint": "底部向纯白过渡"},
+            "specs":      {"bg_tone": "深蓝黑到石墨灰渐变，科技磨砂质感，细微网格线点缀，适合白色参数文字",                  "transition_hint": prompt_ref("detail.theme.specs_bg")},
             "vs":         {"bg_tone": "左明右暗的分屏视觉，整体偏中性灰白，有微弱的中线光带",                              "transition_hint": "底部向浅灰过渡"},
             "scene":      {"bg_tone": "浅冷灰到暖灰渐变，模拟真实场景环境光，适合场景图网格",                                "transition_hint": "底部向品牌红过渡"},
             "brand":      {"bg_tone": "深红棕渐变到纯黑，带有微弱的金属光泽和顶部高光",                                    "transition_hint": "无"},
@@ -103,7 +104,7 @@ def build_segment_prompt(zone: str,
 
     lines += [
         "严格要求：",
-        "- 整张图是连续的纯背景氛围图，**不要画任何产品、不要画任何人物、不要出现任何文字或水印**；",
+        prompt_ref("detail.theme.pure_background"),
         "- 中央需要留出大面积干净的空间用于叠加产品图和中文文字；",
         "- 光线和色调专业克制，避免过度饱和、避免卡通风格；",
         "- 8K 超清，高级质感，商业摄影光影语言。",

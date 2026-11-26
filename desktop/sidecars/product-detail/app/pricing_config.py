@@ -17,6 +17,7 @@ def compute_estimate(product_count: int) -> dict:
     from ai_refine_v2 import refine_planner
     from ai_refine_v2.image_profile import DEFAULT_PROFILE
     from ai_refine_v2.prompts.planner import SYSTEM_PROMPT_V2, USER_PROMPT_TEMPLATE_V2
+    from prompt_ref import prompt_bytes
     count = max(0, int(product_count))
     result = {"count": count, "api_calls": None, "est_cost_yuan": None,
               "est_minutes": None, "zones_per_product": None,
@@ -29,7 +30,8 @@ def compute_estimate(product_count: int) -> dict:
     except PricingRequired as exc:
         return {**result, "error": str(exc)}
     input_bound = 4 * (refine_planner.MAX_PRODUCT_TEXT_CHARS + refine_planner.MAX_PRODUCT_TITLE_CHARS)
-    input_bound += len((SYSTEM_PROMPT_V2 + USER_PROMPT_TEMPLATE_V2).encode("utf-8")) + 4096
+    # Sized as the gateway sends it: the stored prompt wording, not the short tokens (prompt_ref.prompt_bytes).
+    input_bound += prompt_bytes(SYSTEM_PROMPT_V2 + USER_PROMPT_TEMPLATE_V2) + 4096
     rates = quote["planner_per_million_cny"]
     planner_max = money((input_bound * rates["input"] + refine_planner._MAX_TOKENS_V2 * rates["output"]) / 1_000_000)
     from ai_refine_v2.visual_merchandising import PLANNED_SCREEN_LIMIT, SQUARE_KINDS

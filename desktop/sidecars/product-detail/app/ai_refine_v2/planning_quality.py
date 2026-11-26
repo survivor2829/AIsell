@@ -6,6 +6,7 @@ planner cannot certify the visibility of a detail or a companion product.
 import copy
 import json
 import re
+from prompt_ref import prompt_ref
 
 DEMAND_ANALYSIS_VERSION = "demand-analysis-v1"
 
@@ -260,18 +261,11 @@ def repair_plan_quality(plan, source):
             captions['specifications'] = [{'name': s['name'], 'value': s['value']}
                                           for s in result['specifications']]
         screen['prompt'] = (
-            '制作竖版产品详情图。沿用本套style_dna的色彩、字体、光照与留白，中文大字清晰可读。'
-            '所有新增画面文字仅限下列JSON中的标题、说明与参数，不把字段名印到画面上：'
+            prompt_ref("detail.quality.screen")
             + json.dumps(captions, ensure_ascii=False) + '。'
             + ('主体以Image 1为唯一外观依据，保留整体轮廓和可见标识。' if hero else
-               '本页为平面信息图，只呈现文字和简洁几何分区，不安排整机、局部或配套实物。')
-            + '不得新增配套设备，不画未知底部、内部、背面、接口或结构特写。'
-            '不模拟实测场景、清洁前后对比、性能曲线或数据比例，不把示意图当作实物外形。'
-            '保持单一视觉重点，标题与说明层级分明，四周留足边距，不添加认证、承诺、数字徽章。'
-            'DO NOT INVENT any brand logos, company names, trademarks, certifications, '
-            'or printed text NOT VISIBLE in Image 1. PRESERVE all existing labels, stickers, '
-            'model markings, printed text exactly as shown in Image 1 (faithful to position, color, content). '
-            'NO 「」-quoted headlines should be added ONTO the product surface itself.'
+               prompt_ref("detail.quality.flat_info"))
+            + prompt_ref("detail.quality.no_invent")
         )
     for idx, screen in enumerate(result['screens'], 1):
         screen['idx'] = idx

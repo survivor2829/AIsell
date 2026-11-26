@@ -247,6 +247,7 @@ def _validate_product_type(product_type):
 
 # ── 全局请求钩子：更新活跃时间 + 拦截未审核用户 ──
 from datetime import datetime as _dt
+from prompt_ref import prompt_ref
 
 @app.before_request
 def _before_request():
@@ -2856,30 +2857,11 @@ def batch_progress_ws(ws, batch_id):
 
 # ── 文本解析（DeepSeek API）──────────────────────────────────────────
 _NO_FABRICATION_RULE = (
-    "【数据准确性要求】\n"
-    "1. advantages 中的每一条必须能在用户提供的文案中找到依据，没有依据不要写。\n"
-    "2. 如果文案中没有明确提到APP/云平台/智能导航等功能，不要在advantages中包含这些。\n"
-    "3. 【最重要】detail_params 必须完整提取文案中的每一个参数，一个都不能遗漏！\n"
-    "   包括但不限于：效率、宽度、容量、功率、电机、电池、重量、尺寸、噪音、转速、\n"
-    "   吸力、压力、速度、材质、充电时间、续航时间等所有出现的技术数据。\n"
-    "   用户给了多少参数就提取多少，不要截断、不要省略、不要合并。\n"
-    "4. floor_items（适用地面）：只根据产品实际用途判断，如果无法确定就返回空数组。\n"
-    "5. vs_comparison 中的数字（替代人数、节省金额）必须有文案依据，没有依据就留空。\n"
-    "   vs_rows 数组 3-5 项。每项 left（本产品）必须引用文案里的具体数字/规格\n"
-    "   （如 清洗宽度 620mm / 工作效率 3600㎡/h / 续航 8h / 清水箱 60L），\n"
-    "   不允许写 高效/稳定/先进 等形容词。对应的 right（人工/传统）必须是合理的具体对照数据\n"
-    "   （如 手工拖把宽 40cm / 人工 300㎡/h / 保洁员连续工作 4h 需休息 / 桶装 10L 每 30 分钟更换）。\n"
-    "   每对 left/right 必须是同一维度、可直接量化比较的。label 是维度名（如 清洁效率/续航/覆盖面积），不超过 4 字。\n"
-    "6. story_title/story_desc：必须用文案中的真实参数数据，不能编造数字。\n"
-    "7. 售后承诺、质保年限等：只有文案中明确写了才能填，没写的一律不填。\n"
-    "8. 不要编造用户文案中没有提到的服务承诺（如送货上门、上门培训等）。\n\n"
+    prompt_ref("detail.copy.no_fabrication")
 )
 
 _EXTREME_WORDS_RULE = (
-    "【合规要求】文案中严禁出现以下极限词（电商平台违禁词）：\n"
-    "最强、最大、最好、最高、最低、最快、最优、最先进、最专业、最安全、最耐用、最便捷、最智能、\n"
-    "第一、唯一、极致、顶级、顶尖、行业领先、业界领先、全球领先、世界领先、无与伦比。\n"
-    "请用具体数据或中性词替代，如【超强】【高效】【优质】【行业前列】等。\n\n"
+    prompt_ref("detail.copy.extreme_words")
 )
 
 
@@ -2888,348 +2870,35 @@ def _build_category_prompt(product_type: str, raw_text: str) -> str:
 
     if product_type == "配件类":
         return (
-            "你是一个清洁配件营销文案专家。请根据以下产品参数，完成两件事：\n\n"
-            "第一，提取所有技术参数（型号、规格、材质等）填入对应字段。\n"
-            "第二，根据这些参数生成营销文案（严格基于真实数据，不得编造产品没有的功能）。\n\n"
+            prompt_ref("detail.copy.accessory.intro")
             + _NO_FABRICATION_RULE
             + _EXTREME_WORDS_RULE +
-            "返回以下JSON格式（所有字段必须返回，不要遗漏）：\n"
-            "```json\n"
-            "{\n"
-            '  "brand": "品牌中文名",\n'
-            '  "product_name": "产品全称",\n'
-            '  "model": "型号/规格",\n'
-            '  "product_type": "配件类型（如刷盘、吸水胶条、滤芯）",\n'
-            '  "detail_params": {"参数名":"参数值", ...},\n'
-            '  "dimensions": {"length":"mm值","width":"mm值","height":"mm值"},\n'
-            '  "category_line": "产品品类短语（不超过10字）",\n'
-            '  "main_title": "一句话核心卖点（6-12字）。突出 原厂/适配/耐用 具体，如 原厂滚刷 3 倍寿命 / 适配 12 款主流机型。禁止 稳定/高效/可靠 等虚词，禁止写品牌名/口号",\n'
-            '  "hero_subtitle": "副标题（适配XX系列，原厂品质，不超过15字）",\n'
-            '  "slogan": "主标语（一句话概括产品最大卖点）",\n'
-            '  "sub_slogan": "副标语（补充说明）",\n'
-            '  "advantages": [\n'
-            '    {"emoji":"🔧","text":"原厂适配"},\n'
-            '    ...\n'
-            '  ],\n'
-            '  "compat_models": [\n'
-            '    {"model":"DZ50X","series":"清洁机器人系列"},\n'
-            '    ...\n'
-            '  ],\n'
-            '  "install_steps": [\n'
-            '    {"title":"拆卸旧件","desc":"关闭电源，取下旧配件"},\n'
-            '    ...\n'
-            '  ],\n'
-            '  "materials": [\n'
-            '    {"name":"304 不锈钢","source_type":"mineral","source_story_hint":"国内特钢厂出料"},\n'
-            '    ...\n'
-            '  ],\n'
-            '  "package_items": [\n'
-            '    {"name":"主刷","qty":"1","note":""},\n'
-            '    ...\n'
-            '  ],\n'
-            '  "block_b2_items": [\n'
-            '    {"icon_text":"🔧","label":"适配12型"},\n'
-            '    ...\n'
-            '  ],\n'
-            '  "listing_title": "电商标题（60字以内，含品牌+型号+核心卖点+品类词）",\n'
-            '  "listing_keywords": "搜索关键词（10-15个，逗号分隔）",\n'
-            '  "listing_selling_points": ["卖点1（15字以内）","卖点2","卖点3","卖点4","卖点5"],\n'
-            '  "listing_description": "商品描述（200字以内，适合电商详情页顶部）",\n'
-            '  "spec_callouts": [{"label":"参数名","value":"参数值"},...]\n'
-            "}\n"
-            "```\n\n"
-            "【重要提示】\n"
-            "- 识别文案中提到的所有兼容机型，填入 compat_models（多列出，不要遗漏）\n"
-            "- install_steps 提供清晰的安装步骤（3-6步）\n"
-            "- materials 提取产品材质 + 来源类型 (source_type 4 选 1):\n"
-            "    natural=天然/植物/动物 (橡胶/木材/棉麻); chemical=化学合成 (尼龙/EVA/树脂);\n"
-            "    mineral=矿物/金属 (304不锈钢/铝合金/玻璃); recycled=回收再生 (再生塑料/纤维)\n"
-            "  source_story_hint 一句中文 (≤30 字), 描述材料来源/产地/工艺. 严禁编造文案中没有的产地或工艺.\n"
-            "- package_items 列出包装内所有配件清单\n"
-            "- advantages 6-9项，每项附带贴切的emoji，严禁编造\n"
-            "- block_b2_items: 必须是 N 项（N 等于 2、4 或 6），每项 {icon_text: emoji, label: \"4 字以内的核心能力\"}。\n"
-            "  label 必须是从文案里提炼的具体能力（如 原厂适配 / 3倍寿命 / 适配12型），不能是通用形容词（如 高效/专业）。\n"
-            "  icon_text 选 1 个与能力语义匹配的 emoji（🔩🧹🪶♻️🛡⚡🧪🌿💧💰🔧⏱✅ 等）。\n"
-            "- listing_title 要包含核心搜索词，便于电商平台搜索\n"
-            "- spec_callouts 从参数中提取3-6个最吸引眼球的数据，用于主图标注\n\n"
-            "只返回JSON，不要其他解释文字：\n\n" + raw_text
+            prompt_ref("detail.copy.accessory.format") + raw_text
         )
 
     elif product_type == "耗材类":
         return (
-            "你是一个清洁耗材营销文案专家。请根据以下产品参数，完成两件事：\n\n"
-            "第一，提取所有技术参数（型号、规格、成分、稀释比等）填入对应字段。\n"
-            "第二，根据这些参数生成营销文案（严格基于真实数据，不得编造产品没有的功能）。\n\n"
+            prompt_ref("detail.copy.consumable.intro")
             + _NO_FABRICATION_RULE
             + _EXTREME_WORDS_RULE +
-            "返回以下JSON格式（所有字段必须返回，不要遗漏）：\n"
-            "```json\n"
-            "{\n"
-            '  "brand": "品牌中文名",\n'
-            '  "product_name": "产品全称",\n'
-            '  "model": "型号/规格",\n'
-            '  "product_type": "耗材类型（如清洁剂、除垢液）",\n'
-            '  "detail_params": {"参数名":"参数值", ...},\n'
-            '  "dimensions": {"length":"mm值","width":"mm值","height":"mm值"},\n'
-            '  "category_line": "产品品类短语（不超过10字）",\n'
-            '  "main_title": "一句话核心卖点（6-12字）。突出 浓度/成本/环保 具体数字，如 1:50 稀释 每次 0.3元 / 食品级可降解无残留。禁止 稳定/高效/可靠 等虚词，禁止写品牌名/口号",\n'
-            '  "hero_subtitle": "副标题（不超过15字）",\n'
-            '  "slogan": "主标语（突出稀释比或覆盖面积）",\n'
-            '  "sub_slogan": "副标语（补充说明）",\n'
-            '  "advantages": [\n'
-            '    {"emoji":"🧪","text":"专业配方"},\n'
-            '    ...\n'
-            '  ],\n'
-            '  "usage_steps": [\n'
-            '    {"title":"稀释","desc":"按1:200比例加水稀释"},\n'
-            '    ...\n'
-            '  ],\n'
-            '  "kpis": [\n'
-            '    {"label":"稀释比","value":"1:200","unit":"","note":""},\n'
-            '    ...\n'
-            '  ],\n'
-            '  "before_after": [\n'
-            '    {"before_label":"使用前","after_label":"使用后","desc":"顽固油污一喷即净"}\n'
-            '  ],\n'
-            '  "compat_models": ["XL-510", "DZ50X", "或不限品牌"],\n'
-            '  "materials": [\n'
-            '    {"name":"植物提取物","source_type":"natural","source_story_hint":"东南亚有机种植"},\n'
-            '    ...\n'
-            '  ],\n'
-            '  "block_b2_items": [\n'
-            '    {"icon_text":"🧪","label":"1:50稀释"},\n'
-            '    ...\n'
-            '  ],\n'
-            '  "listing_title": "电商标题（60字以内，含品牌+型号+核心卖点+品类词）",\n'
-            '  "listing_keywords": "搜索关键词（10-15个，逗号分隔）",\n'
-            '  "listing_selling_points": ["卖点1（15字以内）","卖点2","卖点3","卖点4","卖点5"],\n'
-            '  "listing_description": "商品描述（200字以内，适合电商详情页顶部）",\n'
-            '  "spec_callouts": [{"label":"参数名","value":"参数值"},...]\n'
-            "}\n"
-            "```\n\n"
-            "【重要提示】\n"
-            "- 强调安全性（是否食品级、是否需要防护）\n"
-            "- kpis 列出稀释比、覆盖面积、每升成本等关键指标\n"
-            "- usage_steps 提供清晰的使用步骤（3-5步）\n"
-            "- before_after 描述使用前后的清洁效果对比\n"
-            "- compat_models 列出该耗材适配的机型/型号 (3-8 个); 如果是通用配方不限品牌, 填 [\"通用\", \"不限品牌\"]; 严禁编造未在文案出现的型号\n"
-            "- materials 提取产品成分 + 来源类型 (source_type 4 选 1):\n"
-            "    natural=天然 (植物提取/动物源/天然橡胶); chemical=化学合成 (酶/表面活性剂/醇);\n"
-            "    mineral=矿物 (纯碱/盐酸/磷酸); recycled=回收再生\n"
-            "  source_story_hint 一句中文 (≤30 字), 描述成分来源/产地/工艺. 严禁编造未在文案出现的产地或工艺.\n"
-            "- advantages 6-9项，每项附带贴切的emoji，严禁编造\n"
-            "- block_b2_items: 必须是 N 项（N 等于 2、4 或 6），每项 {icon_text: emoji, label: \"4 字以内的核心能力\"}。\n"
-            "  label 必须是从文案里提炼的具体能力（如 0磷无害 / 1:50稀释 / 食品级），不能是通用形容词（如 高效/专业）。\n"
-            "  icon_text 选 1 个与能力语义匹配的 emoji（🔩🧹🪶♻️🛡⚡🧪🌿💧💰🔧⏱✅ 等）。\n"
-            "- listing_title 要包含核心搜索词，便于电商平台搜索\n"
-            "- spec_callouts 从参数中提取3-6个最吸引眼球的数据，用于主图标注\n\n"
-            "只返回JSON，不要其他解释文字：\n\n" + raw_text
+            prompt_ref("detail.copy.consumable.format") + raw_text
         )
 
     elif product_type == "工具类":
         return (
-            "你是一个清洁工具营销文案专家。请根据以下产品参数，完成两件事：\n\n"
-            "第一，提取所有技术参数（型号、材质、规格等）填入对应字段。\n"
-            "第二，根据这些参数生成营销文案（严格基于真实数据，不得编造产品没有的功能）。\n\n"
+            prompt_ref("detail.copy.tool.intro")
             + _NO_FABRICATION_RULE
             + _EXTREME_WORDS_RULE +
-            "返回以下JSON格式（所有字段必须返回，不要遗漏）：\n"
-            "```json\n"
-            "{\n"
-            '  "brand": "品牌中文名",\n'
-            '  "product_name": "产品全称",\n'
-            '  "model": "型号/规格",\n'
-            '  "product_type": "工具类型（如拖把、刮水器）",\n'
-            '  "detail_params": {"参数名":"参数值", ...},\n'
-            '  "dimensions": {"length":"mm值","width":"mm值","height":"mm值"},\n'
-            '  "category_line": "产品品类短语（不超过10字）",\n'
-            '  "main_title": "一句话核心卖点（6-12字）。突出 耐用/轻便/高效/适配广 四选一具体特征，如 304 不锈钢 10年耐用 / 超轻 300g 不累手。禁止 稳定/高效/可靠 等虚词，禁止写品牌名/口号",\n'
-            '  "hero_subtitle": "副标题（不超过15字）",\n'
-            '  "slogan": "主标语（突出材质或耐用性）",\n'
-            '  "sub_slogan": "副标语（补充说明）",\n'
-            '  "advantages": [\n'
-            '    {"emoji":"🔩","text":"坚固耐用"},\n'
-            '    ...\n'
-            '  ],\n'
-            '  "scenes": [\n'
-            '    {"name":"商场","desc":"大面积地面清洁"},\n'
-            '    ...\n'
-            '  ],\n'
-            '  "package_items": [\n'
-            '    {"name":"拖把杆","qty":"1","note":""},\n'
-            '    ...\n'
-            '  ],\n'
-            '  "before_after": [\n'
-            '    {"before_label":"使用前","after_label":"使用后","desc":"效果说明"}\n'
-            '  ],\n'
-            '  "block_b2_items": [\n'
-            '    {"icon_text":"🔩","label":"10年耐用"},\n'
-            '    ...\n'
-            '  ],\n'
-            '  "listing_title": "电商标题（60字以内，含品牌+型号+核心卖点+品类词）",\n'
-            '  "listing_keywords": "搜索关键词（10-15个，逗号分隔）",\n'
-            '  "listing_selling_points": ["卖点1（15字以内）","卖点2","卖点3","卖点4","卖点5"],\n'
-            '  "listing_description": "商品描述（200字以内，适合电商详情页顶部）",\n'
-            '  "spec_callouts": [{"label":"参数名","value":"参数值"},...]\n'
-            "}\n"
-            "```\n\n"
-            "【重要提示】\n"
-            "- 强调材质品质和耐用寿命\n"
-            "- scenes 列出适用场景（3-6个），如商场、医院、学校、工厂等\n"
-            "- package_items 列出包装内所有配件清单\n"
-            "- before_after 描述使用前后的清洁效果对比\n"
-            "- advantages 6-9项，每项附带贴切的emoji，严禁编造\n"
-            "- block_b2_items: 必须是 N 项（N 等于 2、4 或 6），每项 {icon_text: emoji, label: \"4 字以内的核心能力\"}。\n"
-            "  label 必须是从文案里提炼的具体能力（如 10年耐用 / 超轻300g / 适配广），不能是通用形容词（如 高效/专业）。\n"
-            "  icon_text 选 1 个与能力语义匹配的 emoji（🔩🧹🪶♻️🛡⚡🧪🌿💧💰🔧⏱✅ 等）。\n"
-            "- listing_title 要包含核心搜索词，便于电商平台搜索\n"
-            "- spec_callouts 从参数中提取3-6个最吸引眼球的数据，用于主图标注\n\n"
-            "只返回JSON，不要其他解释文字：\n\n" + raw_text
+            prompt_ref("detail.copy.tool.format") + raw_text
         )
 
     else:
         # 设备类（默认）
         return (
-            "你是一个清洁设备营销文案专家。请根据以下产品参数，完成两件事：\n\n"
-            "第一，提取所有技术参数（型号、尺寸、功率等）填入对应字段。\n"
-            "第二，根据这些参数生成营销文案（严格基于真实数据，不得编造产品没有的功能）。\n\n"
+            prompt_ref("detail.copy.device.intro")
             + _NO_FABRICATION_RULE
             + _EXTREME_WORDS_RULE +
-            "返回以下JSON格式（所有字段必须返回，不要遗漏）：\n"
-            "```json\n"
-            "{\n"
-            '  "brand": "品牌中文名",\n'
-            '  "brand_en": "品牌英文名",\n'
-            '  "product_name": "产品全称",\n'
-            '  "model": "型号",\n'
-            '  "product_type": "设备中文类型（如驾驶式扫地车）",\n'
-            '  "detail_params": {"参数名":"参数值", ...},\n'
-            '  // ⚠️ detail_params 必须提取文案中出现的【每一个】技术参数，不限数量，不能遗漏任何一个！\n'
-            '  "dimensions": {"length":"mm值","width":"mm值","height":"mm值"},\n'
-            '  "category_line": "产品品类短语（如 驾驶式洗地机 / 商用清洁机器人，不超过10字）",\n'
-            '  "main_title": "一句话核心卖点（6-12字）。必须是量化能力或独特差异，如 3600㎡/h 高效清洁 / 8小时连续续航 / 自动回充充水。禁止写产品名/型号/品牌名（如禁止 DZ50X / 驾驶式洗地机 这种），禁止 稳定/高效/可靠 等虚词",\n'
-            '  "hero_subtitle": "首屏副标题（描述适用场景+核心能力，如 大型商场高效清洁专家，不超过15字）",\n'
-            '  "floor_items": [{"icon_text":"单字","label":"地面材质名"},...] （根据产品适用场景列出4-8种适用地面材质，如大理石、环氧地坪、瓷砖、水磨石、PVC地板等，没有相关信息则返回空数组）,\n'
-            '  "slogan": "主标语（一句话概括产品最大卖点，用真实数据）",\n'
-            '  "sub_slogan": "副标语（补充说明）",\n'
-            '  "advantages": [\n'
-            '    {"emoji":"🧹","text":"超宽清扫","desc":"660mm大直径主刷，单次覆盖更大面积"},\n'
-            '    {"emoji":"⚡","text":"持久续航","desc":"90L大容量锂电池，连续工作4小时以上"},\n'
-            '    ...\n'
-            '  ],\n'
-            '  "story_title_1": "清洁故事大标题1（突出核心清洁机构，如 660mm大直径主刷+4边刷设计）",\n'
-            '  "story_title_2": "清洁故事大标题2（效果声明，如 高效清扫14600m²/h大面积场所。）",\n'
-            '  "story_desc_1": "图片说明行1（关键参数短语，如 主刷660mm、4组边刷500mm、清扫宽度1800mm）",\n'
-            '  "story_desc_2": "图片说明行2（总结短句，如 宽幅清扫，一步到位）",\n'
-            '  "story_bottom_1": "底部卖点1（最亮眼的数字宣称，如 14600m²/h超大清扫效率，没有突出数据就留空字符串）",\n'
-            '  "story_bottom_2": "底部卖点2（效果短句，如 大场所清扫首选）",\n'
-            '  "vs_comparison": {\n'
-            '    // ⚠️ 语义固定:「本产品 vs 人工」二分对比。product_* = 本产品(右侧红字/赢家),labor_* = 人工(左侧灰色)。\n'
-            '    //    不要把产品类型词(如 "智能洗扫机器人") 和 "本产品" 这类词同时用,它们是同一方,会造成滑稽重复。\n'
-            '    //    如果文案完全没有可量化对比数据,把整个 vs_comparison 留空 {} ,不要硬造。\n'
-            '    "title_line1": "主标前缀短语,如 1台顶",\n'
-            '    "title_line1_red": "主标数字突出(品牌红色),如 8-10(来自文案估算,无依据留空)",\n'
-            '    "title_line1_end": "主标后缀,如 人(无则空串)",\n'
-            '    "title_line2": "副标前半,如 机洗与人工",\n'
-            '    "title_line2_red": "副标红字部分,如 的区别",\n'
-            '    "product_label": "本产品短称,≤6字(如 智能机洗 / 驾驶机洗)。禁止写具体型号/品牌",\n'
-            '    "product_sublabel": "本产品优势总结,6-10字(如 高效省心 / 一键智能)",\n'
-            '    "product_icon": "单个 emoji,语义匹配产品(如 🤖 / ⚡ / 🧹)",\n'
-            '    "labor_label": "对比方短称,固定用 人工 或 传统人力",\n'
-            '    "labor_sublabel": "人工劣势总结,6-10字(如 疲劳效率低 / 人力成本高)",\n'
-            '    "labor_icon": "单个 emoji,固定 👷 或 👤",\n'
-            '    "vs_rows": [\n'
-            '      {"label":"效率","product_value":"3600㎡/h","product_desc":"驾驶式机洗","labor_value":"300㎡/h","labor_desc":"人工手推"},\n'
-            '      {"label":"续航","product_value":"8h 连续","product_desc":"锂电长续航","labor_value":"4h 需休息","labor_desc":"人工体力限制"},\n'
-            '      {"label":"水箱","product_value":"60L","product_desc":"一箱作业 2h","labor_value":"10L","labor_desc":"30 分钟换水"}\n'
-            '    ],\n'
-            '    // ⚠️ vs_rows 3-5 项。每项 label 是维度名 ≤4 字(如 效率/续航/水箱)。\n'
-            '    //    product_value 必须引用文案里的具体数字/规格(如 3600㎡/h、620mm、8h、60L);\n'
-            '    //    labor_value 必须是同一维度下的人工对照数据(如 300㎡/h / 40cm / 4h / 10L)。\n'
-            '    //    product_desc / labor_desc 是可选短说明 ≤8 字(如 "锂电长续航" / "30 分钟换水")。\n'
-            '    //    禁止 高效/稳定/先进 等形容词,禁止单方填数字而另一方填虚词。\n'
-            '    "summary_points": [\n'
-            '      {"num":"12x","label":"效率倍数"},\n'
-            '      {"num":"省 26W+","label":"年省成本"},\n'
-            '      {"num":"1 顶 8","label":"人力替代"}\n'
-            '    ]\n'
-            '    // summary_points 2-3 项,VS 屏底部红色方块内容。num 是最亮眼的短数字/倍数(≤6字),label 是它的含义(≤5字)。\n'
-            '    // 必须是文案里能推得出的结论,没有就返回 [](不要硬造"1顶多"这种)。\n'
-            '  },\n'
-            '  "tech_items": [\n'
-            '    {"title":"技术/部件名称（如 感应电机）","desc":"一句话技术说明（如 高效稳定，适配长时间作业）"}\n'
-            '  ],\n'
-            '  // ⚠️ tech_items: 从文案提取4-8项核心技术特征/部件/卖点详解，每项必须有原文依据。没有则返回空数组\n'
-            '  "brand_stats": [\n'
-            '    {"value":"数值（如 200+）","label":"指标名（如 服务城市）"}\n'
-            '  ],\n'
-            '  // brand_stats: 提取品牌数字指标（如城市数、客户数、行业年限），没有则返回空数组\n'
-            '  "brand_story_lines": [\n'
-            '    {"year":"年份","text":"里程碑事件"}\n'
-            '  ],\n'
-            '  // brand_story_lines: 提取品牌历史里程碑，没有则返回空数组\n'
-            '  "scenes": [{"name":"场景名","desc":"一句话描述"}],\n'
-            '  // scenes: 从文案提取适用场景（如商场、医院、工厂），没有则返回空数组\n'
-            '  "kpis": [\n'
-            '    {"label":"清扫效率","value":"3600","unit":"㎡/h","note":""},\n'
-            '    {"label":"清扫宽度","value":"1800","unit":"mm","note":""},\n'
-            '    {"label":"续航时间","value":"3.5","unit":"小时","note":""},\n'
-            '    {"label":"运行噪音","value":"≤65","unit":"dB","note":""},\n'
-            '    {"label":"水箱容量","value":"90","unit":"L","note":""},\n'
-            '    {"label":"爬坡能力","value":"8","unit":"°","note":""}\n'
-            '  ],\n'
-            '  // kpis: 尽量提取 4-6 项核心性能指标；每项必须有 label + value，缺 value 不要塞进来\n'
-            '  // 常见指标：清扫效率/清扫宽度/续航时间/噪音/水箱容量/电池容量/充电时间/爬坡能力/转弯半径/自重/清扫覆盖率\n'
-            '  // 数字与单位必须拆开：例 "1368㎡/h" 拆为 value=1368 unit=㎡/h；"3.5小时续航" 拆为 label=续航时间 value=3.5 unit=小时\n'
-            '  // 文案里有几项可拆出来就提几项，不足 3 项说明提取不充分，请重新审视文案\n'
-            '  "faqs": [\n'
-            '    {"question":"买家常见问题","answer":"基于文案数据的简洁回答（30字以内）"}\n'
-            '  ],\n'
-            '  // faqs: 根据已提取参数生成3-5个常见问题，answer必须引用文案真实数据，不可编造。无依据则返回空数组\n'
-            '  "service_compare": {\n'
-            '    "compare_rows": [\n'
-            '      {"label":"对比维度（如 质保时长）","left":"官方优势（如 整机2年）","right":"普通商家（如 无保障）"}\n'
-            '    ]\n'
-            '  },\n'
-            '  // service_compare: 生成3-5行官方vs普通商家服务对比，没有售后信息则返回空对象{}\n'
-            '  "cert_badges": [\n'
-            '    {"title":"认证名称（如 CE认证）","desc":"简短说明"}\n'
-            '  ],\n'
-            '  // cert_badges: 从文案提取资质认证（如CE/FCC/IEC/ISO），没有则返回空数组\n'
-            '  "listing_title": "电商标题（60字以内，含品牌+型号+核心卖点+品类词，如：XX品牌DZ50X商用驾驶式洗地机 大型商场工厂用全自动清洗机器人）",\n'
-            '  "listing_keywords": "搜索关键词（10-15个，逗号分隔，如：洗地机,驾驶式洗地机,商用清洁机器人,...）",\n'
-            '  "listing_selling_points": ["卖点1（15字以内）","卖点2","卖点3","卖点4","卖点5"],\n'
-            '  "listing_description": "商品描述（200字以内，适合电商详情页顶部，突出核心参数和应用场景）",\n'
-            '  "spec_callouts": [{"label":"清扫宽度","value":"1800mm"},{"label":"续航","value":"6小时"},...]  \n'
-            "}\n"
-            "```\n\n"
-            "【advantages规则】\n"
-            "- 严格从用户提供的产品文案中提取，每一条必须有原文依据\n"
-            "- 如果文案只提到了3个卖点，就只返回3个，不要凑数\n"
-            "- 绝对不要添加文案中没有的功能（如：文案没提APP就不能写智慧管理）\n"
-            "- text: 2-6个字的卖点短语，附带一个贴切的emoji\n"
-            "- desc: 10-20字的补充说明，必须引用文案中的真实参数/数据，让卖点有据可查\n"
-            "- desc示例：text='超宽清扫'→desc='1800mm清扫宽度，大面积一次覆盖'\n\n"
-            "【tech_items 与 advantages 的区别】\n"
-            "- advantages 是用户感知的卖点短语（如\"超宽清扫\"），2-6字text+10-20字desc补充说明\n"
-            "- tech_items 是技术实现细节（如\"感应电机\"），含标题+一句话技术说明\n"
-            "- 两者可能描述同一特性的不同角度，这是正常的\n\n"
-            "【扩展字段规则】\n"
-            "- tech_items/scenes/kpis/cert_badges: 严格从文案提取，文案没提到就返回空数组\n"
-            "- faqs: 可基于已提取的参数和卖点合理推导，但answer只能引用文案中的真实参数\n"
-            "- brand_stats/brand_story_lines: 仅当文案包含品牌信息时提取，否则返回空数组\n"
-            "- service_compare: 可基于产品特性合理推导官方优势，没有售后信息则返回空对象{}\n"
-            "- 以上Tier 1字段（tech_items/brand_stats/brand_story_lines/scenes/kpis/cert_badges）必须返回，即使为空数组\n"
-            "- Tier 2字段（faqs/service_compare）为补充字段，token不足时可省略\n\n"
-            "【detail_params规则 — 最高优先级】\n"
-            "- 用户文案中出现的每一个技术参数都必须提取到detail_params中\n"
-            "- 不要截断、不要省略、不要合并，有多少写多少\n"
-            "- 参数名使用文案中的原始名称，不要改写\n\n"
-            "【电商文案规则】\n"
-            "- listing_title 要包含核心搜索词，便于电商平台搜索\n"
-            "- listing_selling_points 每条15字以内，突出差异化\n"
-            "- spec_callouts 从参数中提取3-6个最吸引眼球的数据，用于主图标注\n\n"
-            "只返回JSON，不要其他解释文字：\n\n" + raw_text
+            prompt_ref("detail.copy.device.format") + raw_text
         )
 
 
@@ -3246,7 +2915,7 @@ def _call_deepseek_parse(raw_text: str, product_type: str = "设备类", api_key
         payload={
             "model": DEEPSEEK_MODEL,
             "messages": [
-                {"role": "system", "content": "你是清洁设备营销文案专家。解析产品参数并生成营销文案。只返回JSON。"},
+                {"role": "system", "content": prompt_ref("detail.copy.parse_system")},
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.1,
@@ -5877,11 +5546,7 @@ def regenerate_block_api(product_type):
     raw_context = json.dumps(parsed_data, ensure_ascii=False, indent=2)
 
     regen_prompt = (
-        f"你是清洁设备营销文案专家。请根据以下已有产品信息，重新生成「{block_name}」模块的文案。\n\n"
-        f"{_EXTREME_WORDS_RULE}"
-        f"已有产品信息：\n{raw_context}\n\n"
-        f"请用不同的角度和表达方式重新创作该模块的文案，保持信息准确但措辞新颖。\n"
-        f"返回JSON格式，只包含该模块需要的字段。\n"
+        f"{prompt_ref('detail.copy.regenerate_block.p1')}{block_name}{prompt_ref('detail.copy.regenerate_block.p2')}{_EXTREME_WORDS_RULE}{prompt_ref('detail.copy.regenerate_block.p3')}{raw_context}{prompt_ref('detail.copy.regenerate_block.p4')}"
     )
 
     use_key = api_key or DEEPSEEK_API_KEY
@@ -5895,7 +5560,7 @@ def regenerate_block_api(product_type):
             payload={
                 "model": DEEPSEEK_MODEL,
                 "messages": [
-                    {"role": "system", "content": "你是清洁设备营销文案专家。只返回JSON。"},
+                    {"role": "system", "content": prompt_ref("detail.copy.regenerate_system")},
                     {"role": "user", "content": regen_prompt}
                 ],
                 "temperature": 0.7,

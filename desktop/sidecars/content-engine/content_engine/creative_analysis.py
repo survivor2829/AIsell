@@ -42,6 +42,7 @@ from .provider_usage import (ProviderRequest, connection_refused, observe_http_e
                              unreachable_error, usage_scope)
 from .product_pipeline import normalize_product_context
 from .render_mix import discover_media_executable, _windows_process_options
+from .prompt_ref import prompt_ref
 
 
 DEFAULT_ANALYSIS_VERSION = "creative-v6-sparse-visual-evidence"
@@ -433,9 +434,7 @@ class DashScopeMediaClient:
             request_messages = [dict(message) for message in messages]
             if attempt:
                 retry_instruction = (
-                    f"上一次输出未通过校验：{previous_issue or '返回内容不是可解析的 JSON 对象。'}"
-                    "请按原始要求完整修正。现在只返回一个合法的 JSON 对象；"
-                    "不要解释、不要 Markdown 代码围栏、不要在 JSON 前后添加任何文字。"
+                    f"{prompt_ref('video.creative.retry.p1')}{previous_issue or '返回内容不是可解析的 JSON 对象。'}{prompt_ref('video.creative.retry.p2')}"
                 )
                 retry_context = (
                     validation_retry_context(previous_issue, previous_item)
@@ -565,9 +564,7 @@ class DashScopeMediaClient:
                     "product_copy_invalid", "素材时长对应的口播字数或分段要求无效。"
                 )
             voiceover_rule = (
-                f"voiceover 必须在 {voiceover_min_chars} 到 {voiceover_max_chars} 个汉字之间，"
-                f"由不少于 {voiceover_min_sentence_count} 句完整、自然的中文短句组成；"
-                "按开场、现场过程、适用场景、真实价值和收束组织，不能只写一句概述；"
+                f"voiceover 必须在 {voiceover_min_chars} 到 {voiceover_max_chars}{prompt_ref('video.creative.voiceover_length.p1')}{voiceover_min_sentence_count}{prompt_ref('video.creative.voiceover_length.p2')}"
             )
         retry_target_chars = min(
             voiceover_max_chars,
@@ -579,45 +576,25 @@ class DashScopeMediaClient:
         retry_target_floor = max(voiceover_min_chars, retry_target_chars - 5)
         retry_target_ceiling = min(voiceover_max_chars, retry_target_chars + 5)
         identity_rule = (
-            "brief 中的 product_name 是不可变的商品身份；全文只能围绕该商品，"
-            "不得替换成相近品类或凭空加入厨房、餐具、洗碗机等未被素材证明的内容。"
+            prompt_ref("video.creative.product_identity")
             if product_name
             else
-            "brief 没有指定商品名称；不要猜测具体品类、品牌、参数或使用场景，只能根据输入的"
-            "visual_evidence、transcript_evidence 和素材标签写通用的效果展示解说。"
+            prompt_ref("video.creative.no_product_name")
         )
         if guided_storyboard:
             output_schema_rule = (
-                "输出严格 JSON 对象，字段必须包括 hook、voiceover、cta。"
-                "不需要 title_candidates、shots 或 bgm_mood，也不得输出解释或额外字段。"
-                "hook 必须逐字复制 voiceover 的第一句，cta 必须逐字复制 voiceover 的最后一句，"
-                "两者都要保留原句末尾标点。"
+                prompt_ref("video.creative.output_fields")
             )
             guided_delivery_rule = (
-                "提交前请在内部逐项自检：voiceover 去掉空白后（标点也计入）必须在 "
-                f"{voiceover_min_chars} 到 {voiceover_max_chars} 个字符之间，优先写到 "
-                f"{retry_target_floor} 到 {retry_target_ceiling} 个字符，并至少有 "
-                f"{voiceover_min_sentence_count} 句完整自然短句；确认 hook 与 cta 分别逐字复制"
-                "正文首句和末句后，才返回 JSON。"
+                f"{prompt_ref('video.creative.self_check.p1')}{voiceover_min_chars} 到 {voiceover_max_chars}{prompt_ref('video.creative.self_check.p2')}{retry_target_floor} 到 {retry_target_ceiling}{prompt_ref('video.creative.self_check.p3')}{voiceover_min_sentence_count}{prompt_ref('video.creative.self_check.p4')}"
             )
         else:
             output_schema_rule = (
-                "输出严格 JSON 对象，字段必须包括 title_candidates(字符串数组)、hook、voiceover、"
-                "shots(数组)、cta、bgm_mood。shots 每项包括 asset_id、asset_tags、caption、action。"
+                prompt_ref("video.creative.output_fields_titles")
             )
             guided_delivery_rule = ""
         prompt = (
-            "你是商品展示短视频的中文编导。根据真实素材摘要写一份可渲染脚本。"
-            "不得虚构产品参数、客户评价、效果数据或素材中不存在的画面。"
-            "voiceover 就是成片中实际念出的口播，并会逐字生成同文字幕；必须面向普通观众，"
-            "使用自然、通俗、连贯的中文短句，按画面顺序说清楚产品在做什么、适合什么场景、"
-            "能带来什么已被素材或用户确认的信息。素材标签和镜头类型只是理解依据，必须改写成"
-            "观众听得懂的话，禁止照抄标签清单、内部镜头名称或编辑说明，禁止出现“素材画面记录了”、"
-            "“素材包含”、“过程记录镜头”、“结果展示镜头”、“已确认场景”、“继续查看真实素材”"
-            "或“真实现场记录”等元话语。不得为了满足字数重复同义句。hook 和 cta 也必须自然、"
-            "具体，并与 product_name、selling_points 和真实画面一致。hook 必须是 voiceover 开头"
-            "的完整原句，cta 必须是 voiceover 结尾的完整原句，确保开场、口播、字幕和收束使用同一套"
-            "文案。brief 中 must_include 里的“不要写”、“仅使用”等内容属于生成约束，不能原样念给观众。"
+            prompt_ref("video.creative.director")
             + identity_rule
             + output_schema_rule
             + voiceover_rule
@@ -673,8 +650,7 @@ class DashScopeMediaClient:
                     )
                     if sentence_count < voiceover_min_sentence_count:
                         issues.append(
-                            f"voiceover 只有 {sentence_count} 句，至少需要 "
-                            f"{voiceover_min_sentence_count} 句；每句请用句号等结束"
+                            f"voiceover 只有 {sentence_count}{prompt_ref('video.creative.sentence_count.p1')}{voiceover_min_sentence_count}{prompt_ref('video.creative.sentence_count.p2')}"
                         )
             shots = item.get("shots")
             if not guided_storyboard and (not isinstance(shots, list) or not shots):
@@ -740,22 +716,13 @@ class DashScopeMediaClient:
                 {
                     "role": "user",
                     "content": (
-                        "请基于上面这份你刚生成的百炼初稿，定向改写成可直接交付的完整 JSON，"
-                        "不要重新概述，也不要省略字段。"
-                        f"本次校验问题：{issue}。"
-                        f"voiceover 去空白后（标点也计入）必须在 {voiceover_min_chars} 到 "
-                        f"{voiceover_max_chars} 个字符之间，优先写到 {retry_target_floor} 到 "
-                        f"{retry_target_ceiling} 个字符，并至少有 "
-                        f"{voiceover_min_sentence_count} 句完整自然短句。"
+                        f"{prompt_ref('video.creative.revise_draft.p1')}{issue}{prompt_ref('video.creative.revise_draft.p2')}{voiceover_min_chars} 到 {voiceover_max_chars}{prompt_ref('video.creative.revise_draft.p3')}{retry_target_floor} 到 {retry_target_ceiling}{prompt_ref('video.creative.revise_draft.p4')}{voiceover_min_sentence_count}{prompt_ref('video.creative.revise_draft.p5')}"
                         + (
                             f"当前初稿还差至少 {missing_chars} 个字符；"
                             if missing_chars
                             else ""
                         )
-                        + "不要只在结尾生硬补一句；请顺着真实画面把整段口播改得自然、通俗、连贯。"
-                        "请先在内部完成三项检查再回复：第一，字数和完整短句数都达标；第二，hook 必须逐字"
-                        "复制 voiceover 的第一句并保留末尾标点；第三，cta 必须逐字复制 voiceover 的"
-                        "最后一句并保留末尾标点。保留真实产品身份和已证实画面，不要虚构，不要解释，只返回完整 JSON。"
+                        + prompt_ref("video.creative.revise_natural")
                     ),
                 },
             ]
@@ -1600,20 +1567,13 @@ class DashScopeMediaClient:
         context_instruction = ""
         if product_name or industry:
             context_instruction = (
-                f"这是商品展示素材。锁定商品名称为“{product_name or '未填写'}”，"
-                f"所属行业为“{industry or '未填写'}”。只描述画面中能够核验的证据，"
-                "不得把商品改写成其他品类；如果画面无法确认商品，shot_type 使用 unknown，"
-                "不要猜测洗碗机、餐具、厨房等无证据类别。"
+                f"{prompt_ref('video.creative.frames_product.p1')}{product_name or '未填写'}{prompt_ref('video.creative.frames_product.p2')}{industry or '未填写'}{prompt_ref('video.creative.frames_product.p3')}"
             )
         content.append(
             {
                 "type": "text",
                 "text": (
-                    "这些图片按时间顺序来自素材。只根据画面证据返回JSON对象，格式为"
-                    '{"frames":[{"index":0,"role":"hook|process|result|general",'
-                    '"shot_type":"lecturer|slide|audience|equipment|operation|result|unknown",'
-                    '"tags":["标签"],"quality":0.0,"caption":"客观描述"}]}。'
-                    "不要虚构课程效果、人物身份或学员评价。"
+                    prompt_ref("video.creative.frames_format")
                     + context_instruction
                 ),
             }
@@ -1793,20 +1753,7 @@ class DashScopeMediaClient:
                 }
             )
         prompt = (
-            "你是中文短视频的动效编导。一次处理多个候选，只根据真实转写、时间码和画面摘要决定辅助元素。"
-            "不要改写老师观点，不要虚构效果，不要给出像素坐标、百分比坐标或 CSS。"
-            "只返回语义区域：top_banner、upper_left、upper_right、middle_left、middle_right；"
-            "字幕固定在底部保留区，任何事件都不能放在字幕区。"
-            "元素类型只能是 hook、keyword、emphasis、step、scene、result、warning、quote；"
-            "尺寸只能是 hero、card、chip，优先级只能是1到3。"
-            "每个事件持续0.8到3.6秒，文本不超过24个汉字；同一时间最多建议两个元素，避免连续堆叠。"
-            "开头可有一个hero钩子，中间只在关键词或步骤真正说到时出现，结尾只有内容确实形成结论时才用result。"
-            "icon只可选spark、brush、office、shop、warning、check、question。"
-            "严格返回JSON对象："
-            '{"candidates":[{"id":"c1","events":[{"type":"hook","text":"...",'
-            '"start_ms":0,"end_ms":2200,"zone":"top_banner","size":"hero",'
-            '"priority":3,"icon":"question","reason":"..."}]}]}。'
-            "每个输入 id 必须且只能返回一次；任何候选缺失都视为失败。输入数据："
+            prompt_ref("video.creative.motion")
             + json.dumps(prompt_candidates, ensure_ascii=False, separators=(",", ":"))
         )
         parsed = self._structured_completion(

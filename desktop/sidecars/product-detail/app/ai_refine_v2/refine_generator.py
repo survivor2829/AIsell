@@ -37,6 +37,7 @@ from ai_refine_v2.color_extractor import ColorAnchor, extract_color_anchor  # v3
 from ai_refine_v2.prompts.generator import render
 from ai_refine_v2.prompts.planner import PRODUCT_PRESENTATIONS
 from ai_refine_v2.refine_planner import _VALID_ROLES_V2, PLANNING_VERSION
+from prompt_ref import prompt_ref
 
 
 def _resolve_refine_api_key(api_key: str | None = None) -> str:
@@ -627,46 +628,12 @@ _V2_MAX_SQUARES = 3   # plus up to three 1:1 e-commerce images (主图/场景图
 #   产品是 "chromatic island in grayscale ocean" — 强意象 + 反指令兜底.
 _INJECTION_PREFIX_V3_TEMPLATE = (
     # ── 美学作用域分层 (v3.2.4 新增, 最高权重放最开头) ──
-    "CRITICAL AESTHETIC SCOPE RULE: This image uses a 'premium minimalist "
-    "grayscale' aesthetic, BUT this aesthetic applies ONLY to the "
-    "environment (background, floor, walls, lighting, surrounding "
-    "atmosphere). The product itself is a chromatic island in a grayscale "
-    "ocean — it must retain Image 1's color saturation at FULL INTENSITY, "
-    "even when this creates sharp contrast with the muted environment. "
-    "Treat the product like a vibrant subject placed on a black-and-white "
-    "photograph: the environment is desaturated, the product is NOT. Any "
-    "product color (fluorescent, vivid, bright, neon, or muted alike) "
-    "must match Image 1's saturation 100%. DO NOT homogenize, harmonize, "
-    "dim, or desaturate the product to match the grayscale environment. "
-    "If you sense visual tension between a high-saturation product and a "
-    "low-saturation environment, that tension is INTENTIONAL — preserve it. "
-    # ── 原 vision-first 多色锚定 (v3.2.3) ──
-    "Image 1 is the AUTHORITATIVE and FINAL source for the product's "
-    "appearance — including EVERY saturated color region you see in it: "
-    "body color, accent colors, labels, handles, lights, indicators, and "
-    "decorative elements. Preserve the FULL multi-color composition of "
-    "Image 1 exactly. "
-    "Image 2 is a pure-color reference swatch programmatically extracted "
-    "from Image 1's pixels (estimated dominant tone: {primary_hex}; sampled "
-    "palette: {palette_str}). Treat Image 2 as a HINT for the dominant body "
-    "tone, NOT as a target to which all product pixels must conform — if "
-    "Image 1's actual product color differs from {primary_hex}, Image 1 "
-    "always wins. DO NOT render Image 2 as a visible element in output. "
-    "Do NOT desaturate, hue-shift, or single-tone the product based on "
-    "training data, category conventions, or environmental lighting. "
-    "If text below mentions any product color, IGNORE the text — Image 1 "
-    "is the only color authority. Preserve silhouette, parts, and "
-    "proportions exactly. "
+    (prompt_ref("detail.generator.color_anchor.p1", formatted=True) + "{primary_hex}" + "; sampled palette: " + "{palette_str}" + prompt_ref("detail.generator.color_anchor.p2", formatted=True) + "{primary_hex}" + prompt_ref("detail.generator.color_anchor.p3", formatted=True))
 )
 
 # v3.2.1 单图无 hex (anchor 失败 fallback)
 _INJECTION_PREFIX_V3_LEGACY = (
-    "Image 1 is the AUTHORITATIVE source for the product's color, "
-    "silhouette, and key parts. Match Image 1 exactly. If the text below "
-    "mentions a color that conflicts with Image 1, IGNORE the text — "
-    "Image 1 always wins. Do not substitute the product's color based on "
-    "training data or category conventions; use only the exact RGB hue "
-    "shown in Image 1. Preserve silhouette, parts, and proportions exactly. "
+    prompt_ref("detail.generator.color_legacy")
 )
 
 # 向下兼容: 旧名指向 LEGACY, 等所有引用迁完后删

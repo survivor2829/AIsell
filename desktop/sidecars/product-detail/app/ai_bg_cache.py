@@ -31,6 +31,7 @@ from typing import Dict, Iterable
 
 import ai_image_router as _router  # 2026-05-13: 走统一引擎路由层 (豆包/通义/gpt-image-2/nano-banana)
 import prompt_templates
+from prompt_ref import prompt_ref
 
 
 def _engine() -> str:
@@ -355,15 +356,11 @@ def generate_backgrounds(theme_id: str,
 _LABOR_CACHE_FILENAME = "vs_labor.png"
 
 _LABOR_PROMPT = (
-    "一位身穿蓝色工作服的中年保洁员,双手握住拖把,"
-    "正在商场大堂的光滑地面上推拖把清洁;中景写实摄影,自然顶光,"
-    "景深浅,背景是明亮的商场大堂(虚化),1:1 构图,高清,"
-    "人物姿态自然,面部清晰,不露商标不露店招,专业摄影"
+    prompt_ref("detail.bg_cache.cleaner_scene")
 )
 
 _LABOR_NEGATIVE = (
-    "卡通,插画,低质量,模糊,变形,多余手指,水印,文字,商标,"
-    "机器人,扫地机器人,洗地机,设备,科技感,未来感"
+    prompt_ref("detail.bg_cache.negative")
 )
 
 _LABOR_URL_CACHE: str | None = None

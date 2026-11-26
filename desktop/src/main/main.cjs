@@ -236,6 +236,11 @@ function providerGatewaySupports(provider) {
   const status = providerGatewayClient?.status();
   return Boolean(status?.ready && status.capabilities?.[provider] === true);
 }
+// The content and product-detail engines send stored-prompt tokens; they get the gateway only when it puts the wording
+// back (prompt_library). With an older gateway they report the cloud service as unavailable instead of sending tokens.
+function engineGatewaySupports(provider) {
+  return providerGatewaySupports(provider) && providerGatewaySupports("prompt_library");
+}
 
 function contentEngineRuntimeArgs() {
   if (app.isPackaged) return [];
@@ -639,11 +644,11 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         providerEnvironment.XIAOXI_PROVIDER_GATEWAY_ORIGIN = maintenanceConfig.origin;
         providerEnvironment.XIAOXI_PROVIDER_GATEWAY_CA_PEM = maintenanceConfig.caPem;
       }
-      if (providerGatewaySupports("deepseek")) {
+      if (engineGatewaySupports("deepseek")) {
         providerEnvironment.DEEPSEEK_API_KEY = providerGatewayClient.token();
         providerEnvironment.DEEPSEEK_API_URL = providerGatewayClient.url("/deepseek/v1/chat/completions");
       }
-      if (providerGatewaySupports("apimart")) {
+      if (engineGatewaySupports("apimart")) {
         providerEnvironment.REFINE_API_KEY = providerGatewayClient.token();
         providerEnvironment.REFINE_API_BASE_URL = providerGatewayClient.url("/apimart");
       }
@@ -769,23 +774,23 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         if (gatewayStatus?.ready && maintenanceConfig.caPem) {
           providerEnvironment.XIAOXI_PROVIDER_GATEWAY_CA_PEM = maintenanceConfig.caPem;
         }
-        if (providerGatewaySupports("deepseek")) {
+        if (engineGatewaySupports("deepseek")) {
           providerEnvironment.XIAOXI_PROVIDER_GATEWAY_ORIGIN = maintenanceConfig.origin;
           providerEnvironment.DEEPSEEK_API_KEY = gatewayToken;
           providerEnvironment.DEEPSEEK_API_URL = providerGatewayClient.url("/deepseek/chat/completions");
         }
-        if (providerGatewaySupports("bailian")) {
+        if (engineGatewaySupports("bailian")) {
           providerEnvironment.DASHSCOPE_API_KEY = gatewayToken;
           providerEnvironment.XIAOXI_BAILIAN_API_HOST = providerGatewayClient.url("/bailian");
         }
-        if (providerGatewaySupports("volcengine_tts")) {
+        if (engineGatewaySupports("volcengine_tts")) {
           providerEnvironment.XIAOXI_PROVIDER_GATEWAY_TOKEN = gatewayToken;
           providerEnvironment.XIAOXI_PROVIDER_GATEWAY_ORIGIN = maintenanceConfig.origin;
           providerEnvironment.XIAOXI_VOLCENGINE_TTS_GATEWAY_ENABLED = "1";
           providerEnvironment.XIAOXI_VOLCENGINE_TTS_API_KEY = gatewayToken;
           providerEnvironment.XIAOXI_VOLCENGINE_TTS_API_URL = providerGatewayClient.url("/volcengine/tts/sse");
         }
-        if (providerGatewaySupports("volcengine_asr")) {
+        if (engineGatewaySupports("volcengine_asr")) {
           providerEnvironment.XIAOXI_PROVIDER_GATEWAY_TOKEN = gatewayToken;
           providerEnvironment.XIAOXI_PROVIDER_GATEWAY_ORIGIN = maintenanceConfig.origin;
           providerEnvironment.XIAOXI_VOLCENGINE_ASR_GATEWAY_ENABLED = "1";
@@ -793,7 +798,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           providerEnvironment.XIAOXI_VOLCENGINE_ASR_ENDPOINT = providerGatewayClient.url("/volcengine/asr/recognize/flash");
         }
         providerEnvironment.XIAOXI_CONTENT_PROVIDER = "volcengine";
-        if (providerGatewaySupports("volcengine_ark")) {
+        if (engineGatewaySupports("volcengine_ark")) {
           providerEnvironment.XIAOXI_PROVIDER_GATEWAY_TOKEN = gatewayToken;
           providerEnvironment.XIAOXI_PROVIDER_GATEWAY_ORIGIN = maintenanceConfig.origin;
           providerEnvironment.XIAOXI_VOLCENGINE_ARK_API_KEY = gatewayToken;
@@ -801,7 +806,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           providerEnvironment.XIAOXI_VOLCENGINE_ARK_API_HOST = providerGatewayClient.url("/volcengine/ark");
           providerEnvironment.XIAOXI_VOLCENGINE_ARK_COMPATIBLE_ORIGIN = providerGatewayClient.url("/volcengine/ark");
         }
-        if (providerGatewaySupports("apimart")) {
+        if (engineGatewaySupports("apimart")) {
           providerEnvironment.XIAOXI_PROVIDER_GATEWAY_ORIGIN = maintenanceConfig.origin;
           providerEnvironment.APIMART_API_KEY = gatewayToken;
           providerEnvironment.APIMART_API_BASE_URL = providerGatewayClient.url("/apimart");
