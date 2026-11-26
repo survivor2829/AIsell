@@ -21,7 +21,8 @@ _LIBRARY = None
 
 def _repo_library() -> Path | None:
     # desktop/sidecars/<engine>/<package>/prompt_ref.py -> repository root; a packaged copy has no such file.
-    parents = Path(__file__).resolve().parents
+    # Not resolve(): it leaves the short launch junction for the deep update folder (test_auto_mix_voice_resources).
+    parents = Path(os.path.abspath(__file__)).parents
     return parents[4] / "server" / "provider-gateway" / "prompt-library.json" if len(parents) > 4 else None
 
 

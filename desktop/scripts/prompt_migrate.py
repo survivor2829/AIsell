@@ -192,10 +192,12 @@ def main(path, import_line, spec_path):
         lines = new_text.split("\n")
         uses = [n.lineno - 1 for n in ast.walk(ast.parse(new_text)) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "prompt_ref"]
         first_use = min(uses) if uses else len(lines)
-        # Module-level imports that come before the first use (a file may import again further down).
-        import_lines = [i for i, line in enumerate(lines) if i < first_use and re.match(r"(from \S+ import |import )", line)]
-        if import_lines:
-            index = max(import_lines) + 1  # After the last top-level import, before the prompt constants.
+        # Module-level imports that come before the first use (a file may import again further down); a
+        # parenthesized import spans several lines, so insert after where the statement ends.
+        import_ends = [node.end_lineno for node in ast.parse(new_text).body
+                       if isinstance(node, (ast.Import, ast.ImportFrom)) and node.lineno - 1 < first_use]
+        if import_ends:
+            index = max(import_ends)  # After the last top-level import, before the prompt constants.
         else:
             # No imports: after the module docstring, so a module-level prompt_ref(...) still has the name.
             module = ast.parse(new_text).body
