@@ -2190,6 +2190,10 @@ Assert-ExactSearchForeground
 $script:searchInputPhase = "search_observation"
 $resultOpened = $false
 $uiaCandidates = New-Object System.Collections.Generic.List[object]
+# WeChat 4 names its result rows by class (mmui::SearchContentCellView, named by the display name), not by
+# the search_item_function_ ids above, which it no longer has: every row was missed and the search fell
+# back to reading the picture (47d2578f, 2026-11-26). The delete flow reads these rows (1.3.71).
+$cellCandidates = New-Object System.Collections.Generic.List[object]
 $visualCandidates = New-Object System.Collections.Generic.List[object]
 $webSearchCandidates = New-Object System.Collections.Generic.List[object]
 $ocrOk = $false
@@ -2201,20 +2205,35 @@ $popupDpi = $null
 $captureSource = "formula_crop"
 if ($observeLocalResults) {
   $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$matched.hWnd)
-  for ($attempt = 0; $attempt -lt 5 -and $uiaCandidates.Count -eq 0; $attempt++) {
+  # The rows arrive in batches (the 最常使用 row came last on the dev machine): the rows count once two
+  # readings in a row agree.
+  $cellSignature = ""; $cellsSettled = $false
+  for ($attempt = 0; $attempt -lt 8 -and $uiaCandidates.Count -eq 0 -and -not $cellsSettled; $attempt++) {
     Assert-ExactSearchForeground
+    $cellCandidates.Clear()
     if ($root -ne $null) {
       $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
       for ($i = 0; $i -lt $all.Count; $i++) {
         $item = $all.Item($i)
         $automationId = [string]$item.Current.AutomationId
+        if ([string]$item.Current.ClassName -eq "mmui::SearchContentCellView" -and -not $item.Current.IsOffscreen) {
+          $cellRect = $item.Current.BoundingRectangle
+          if ($cellRect.Width -gt 10 -and $cellRect.Height -gt 10) {
+            [void]$cellCandidates.Add(@{ name = [string]$item.Current.Name; left = [int]$cellRect.Left; top = [int]$cellRect.Top; right = [int]$cellRect.Right; bottom = [int]$cellRect.Bottom;
+              x = [int]($cellRect.Left + ($cellRect.Width / 2)); y = [int]($cellRect.Top + ($cellRect.Height / 2)) })
+          }
+          continue
+        }
         if (-not $automationId.StartsWith("search_item_function_", [StringComparison]::Ordinal) -or $item.Current.IsOffscreen) { continue }
         $itemRect = $item.Current.BoundingRectangle
         if ($itemRect.Width -le 10 -or $itemRect.Height -le 10) { continue }
         [void]$uiaCandidates.Add(@{ automationId = $automationId; name = [string]$item.Current.Name; x = [int]($itemRect.Left + ($itemRect.Width / 2)); y = [int]($itemRect.Top + ($itemRect.Height / 2)) })
       }
     }
-    if ($uiaCandidates.Count -eq 0 -and $attempt -lt 4) { Start-Sleep -Milliseconds 250 }
+    $signature = (@($cellCandidates | ForEach-Object { [string]$_.name + "@" + [string]$_.y }) -join "|")
+    $cellsSettled = $cellCandidates.Count -gt 0 -and $signature -eq $cellSignature
+    $cellSignature = $signature
+    if ($uiaCandidates.Count -eq 0 -and -not $cellsSettled -and $attempt -lt 7) { Start-Sleep -Milliseconds 250 }
   }
   if ($uiaCandidates.Count -eq 0) {
     $bitmap = $null; $graphics = $null; $ocrBitmap = $null; $ocrGraphics = $null; $memory = $null; $random = $null; $software = $null
@@ -2358,7 +2377,7 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
     }
   }
   Assert-ExactSearchForeground
-  @{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; searchQuery = $query; cursorParked = [bool]$script:searchCursorParked; inputLeaseTick = [uint64]$script:inputLeaseTick; searchCapturePng = $searchCapturePng; searchResultObservation = @{ uiaCandidates = $uiaCandidates.ToArray(); visualCandidates = $visualCandidates.ToArray(); webSearchCandidates = $webSearchCandidates.ToArray(); webSearchTop = $webSearchTop; cropBounds = $cropBounds; popupBounds = $popupBounds; popupDpi = $popupDpi; popupCandidateCount = [int]$script:searchPopupCandidateCount; captureSource = $captureSource; ocrOk = $ocrOk; webSearchVisible = $webSearchVisible; lineOcrIdRows = [int]$script:lineOcrIdRows; lineOcrIdReplaced = [int]$script:lineOcrIdReplaced; lineOcrIdErrors = [int]$script:lineOcrIdErrors; lineOcrIdError = [string]$script:lineOcrIdError } } | ConvertTo-Json -Compress -Depth 8
+  @{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; searchQuery = $query; cursorParked = [bool]$script:searchCursorParked; inputLeaseTick = [uint64]$script:inputLeaseTick; searchCapturePng = $searchCapturePng; searchResultObservation = @{ uiaCandidates = $uiaCandidates.ToArray(); cellCandidates = $cellCandidates.ToArray(); visualCandidates = $visualCandidates.ToArray(); webSearchCandidates = $webSearchCandidates.ToArray(); webSearchTop = $webSearchTop; cropBounds = $cropBounds; popupBounds = $popupBounds; popupDpi = $popupDpi; popupCandidateCount = [int]$script:searchPopupCandidateCount; captureSource = $captureSource; ocrOk = $ocrOk; webSearchVisible = $webSearchVisible; lineOcrIdRows = [int]$script:lineOcrIdRows; lineOcrIdReplaced = [int]$script:lineOcrIdReplaced; lineOcrIdErrors = [int]$script:lineOcrIdErrors; lineOcrIdError = [string]$script:lineOcrIdError } } | ConvertTo-Json -Compress -Depth 8
   exit
 } elseif (-not [string]::IsNullOrWhiteSpace($resultAutomationId)) {
   # Kept for the explicitly named File Transfer Assistant flow.
@@ -2461,6 +2480,18 @@ $clickX = [int][Environment]::GetEnvironmentVariable("XIAOXI_SEARCH_RESULT_X")
 $clickY = [int][Environment]::GetEnvironmentVariable("XIAOXI_SEARCH_RESULT_Y")
 $candidateFingerprint = [Environment]::GetEnvironmentVariable("XIAOXI_SEARCH_CANDIDATE_FINGERPRINT")
 $candidateMode = [Environment]::GetEnvironmentVariable("XIAOXI_SEARCH_CANDIDATE_MODE")
+# A WeChat 4 row picked by its name is found again just before the press: rows arrive in batches and the
+# list moves down as a section heading appears (dev machine 2026-11-26: the row went from y=103 to y=135),
+# so the point read a moment ago can be another row. The row must still be the only one of that name.
+$cellName = [Environment]::GetEnvironmentVariable("XIAOXI_SEARCH_CELL_NAME")
+if ($cellName) {
+  $cellRoot = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$expectedHWnd)
+  $cellCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, "mmui::SearchContentCellView")
+  $named = @(@($cellRoot.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cellCondition)) | Where-Object { -not $_.Current.IsOffscreen -and [string]$_.Current.Name -eq $cellName })
+  if ($named.Count -ne 1) { @{ ok=$false; reason="search_result_identity_unverified"; rule_id="search-cell-moved"; send_attempted=$false; safety_diagnostics=@{ phase="before_search_result_click"; named_rows=$named.Count } } | ConvertTo-Json -Compress -Depth 4; exit }
+  $cellRect = $named[0].Current.BoundingRectangle
+  $clickX = [int]($cellRect.Left + ($cellRect.Width / 2)); $clickY = [int]($cellRect.Top + ($cellRect.Height / 2))
+}
 $foreground = [Win32WechatSearchResultClick]::GetForegroundWindow()
 if ($foreground.ToInt64() -ne $expectedHWnd) { @{ ok=$false; reason="wechat_window_not_foreground" } | ConvertTo-Json -Compress; exit }
 $currentTick = [uint64][Win32WechatSearchResultClick]::GetLastInputTick()
@@ -3069,7 +3100,8 @@ function openWechatSearchResult(query, context = {}) {
       XIAOXI_SEARCH_RESULT_X: String(resolution.candidate.x),
       XIAOXI_SEARCH_RESULT_Y: String(resolution.candidate.y),
       XIAOXI_SEARCH_CANDIDATE_FINGERPRINT: searchCandidateFingerprint(resolution.mode, resolution.candidate),
-      XIAOXI_SEARCH_CANDIDATE_MODE: resolution.mode
+      XIAOXI_SEARCH_CANDIDATE_MODE: resolution.mode,
+      XIAOXI_SEARCH_CELL_NAME: /_cell$/.test(resolution.mode) ? String(resolution.candidate.name || "") : ""
     }, { ensure: false });
     attachClickEvidence(searchEvidence, resolution, clicked);
     return clicked?.ok
@@ -3120,7 +3152,8 @@ function openWechatSearchResultAsync(query, context = {}) {
         XIAOXI_SEARCH_RESULT_X: String(resolution.candidate.x),
         XIAOXI_SEARCH_RESULT_Y: String(resolution.candidate.y),
         XIAOXI_SEARCH_CANDIDATE_FINGERPRINT: searchCandidateFingerprint(resolution.mode, resolution.candidate),
-        XIAOXI_SEARCH_CANDIDATE_MODE: resolution.mode
+        XIAOXI_SEARCH_CANDIDATE_MODE: resolution.mode,
+        XIAOXI_SEARCH_CELL_NAME: /_cell$/.test(resolution.mode) ? String(resolution.candidate.name || "") : ""
       }, { ensure: false });
       attachClickEvidence(searchEvidence, resolution, clicked);
       return clicked?.ok

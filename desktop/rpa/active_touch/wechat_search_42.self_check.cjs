@@ -251,5 +251,7 @@ console.log("WeChat 4.2 search popup self-check passed");
     "after an unconfirmed WeChat ID only an exactly read name may be clicked");
   const { searchableName } = require("./state_machine.cjs");
   assert.deepEqual(["✳💰何气生财", "李🌸小花", "王总①", "张三™", "🌸🌸"].map(searchableName), ["何气生财", "李小花", "王总①", "张三™", "🌸🌸"]);
+  // WeChat emoji codes are typed as nothing (the search finds nobody with "[呲牙]" in it); too short keeps it.
+  assert.deepEqual(["测试[呲牙]", "[玫瑰]王总[Smile]", "李[强]"].map(searchableName), ["测试", "王总", "李[强]"]);
   console.log("echo row, namesake guard and name cleaning passed");
 }

@@ -456,6 +456,18 @@ function uniqueWechatIdLocalSurface(candidates, webCandidate, query) {
   };
 }
 
+// WeChat 4's own result rows (UI Automation, named by the display name; wechat_window_driver.cjs): the one
+// row named exactly this person. Two such rows (a namesake friend, a chat-history row) or none leave it to
+// the rules below; the chat title is checked after the click either way.
+function exactNameCell(observation, expectedName) {
+  const expected = normalized(expectedName);
+  if (!expected) return null;
+  const cells = (Array.isArray(observation.cellCandidates) ? observation.cellCandidates : [])
+    .filter((cell) => cell && Number.isFinite(Number(cell.x)) && Number.isFinite(Number(cell.y)) && !isNetworkLookupCandidate(cell));
+  const exact = cells.filter((cell) => normalized(cell.name) === expected);
+  return exact.length === 1 ? exact[0] : null;
+}
+
 function resolveBaselineObservation(observation = {}, identity = {}) {
   const reject = (rule_id, reason = "search_result_identity_unverified") => ({
     status: reason === "exact_search_result_not_found" ? "not_found" : "unverified", reason, rule_id,
@@ -719,6 +731,13 @@ function resolveWechatSearchResultObservationStrict(observation = {}, identity =
     });
     return longerId ? reject("search-r020") : result;
   };
+  // WeChat 4's own row for this person comes first, on either popup layout.
+  const cell = exactNameCell(observation, String(identity.expectedName ?? "").trim());
+  if (cell) {
+    return superstringVeto(observation, { status: "selected", mode: identity.queryType === "wechat_id" ? "unique_local_wechat_id_cell" : "exact_name_cell",
+      candidate: cell, diagnostics: { rule_id: "search-cell", candidate_count: 1, cell_candidate_count: observation.cellCandidates.length,
+        capture_source: observation.captureSource === "popup" ? "popup" : "formula_crop" } });
+  }
   const popup = validRectangle(observation.popupBounds);
   const dpi = Number(observation.popupDpi);
   const searchColumns = [];
@@ -942,7 +961,7 @@ function resolveSectionedPopup(visual, popup, identity, column, rawLines = visua
 }
 
 function isVerifiedWechatSearchResultMode(mode) {
-  return ["unique_local_uia", "identity_matched_uia", "exact_wechat_id_visual", "unique_local_visual", "exact_wechat_id_local_visual", "unique_local_surface_visual", "unique_local_wechat_id_uia", "unique_local_wechat_id_visual", "exact_name_contact_section_visual", "sectioned_wechat_id_visual", "sectioned_name_visual"].includes(mode);
+  return ["unique_local_uia", "identity_matched_uia", "exact_wechat_id_visual", "unique_local_visual", "exact_wechat_id_local_visual", "unique_local_surface_visual", "unique_local_wechat_id_uia", "unique_local_wechat_id_cell", "exact_name_cell", "unique_local_wechat_id_visual", "exact_name_contact_section_visual", "sectioned_wechat_id_visual", "sectioned_name_visual"].includes(mode);
 }
 
 module.exports = { firstLocalContactRow, firstLocalRowFallback, NETWORK_SEARCH_LABELS, isNetworkSearchLabel, isVerifiedWechatSearchResultMode, resolveWechatSearchResultObservation, searchObservationEvidence };

@@ -154,7 +154,11 @@ const SEARCH_FALLBACK_RULES = Object.freeze({ noResult: "search-r017", invalidPl
 function searchableName(value) {
   const text = String(value || "").trim();
   // Emoji and decorative symbols only; ①、™、full-width letters stay as written, since WeChat does not fold them.
-  const stripped = text.replace(/(?![\u00A9\u00AE\u2122])(?:[\p{Extended_Pictographic}\uFE0F\u200D\u20E3]|[\u2600-\u27BF\u2B00-\u2BFF])/gu, "").replace(/\s+/gu, " ").trim();
+  // WeChat's own emoji are stored as text codes ("[\u5472\u7259]") but shown as pictures: typed into the search box
+  // the code finds nobody (dev machine, 2026-11-26), so it is left out of the query. The result row still
+  // has to be named exactly as written, code included.
+  const stripped = text.replace(/\[[\p{Script=Han}A-Za-z]{1,6}\]/gu, "")
+    .replace(/(?![\u00A9\u00AE\u2122])(?:[\p{Extended_Pictographic}\uFE0F\u200D\u20E3]|[\u2600-\u27BF\u2B00-\u2BFF])/gu, "").replace(/\s+/gu, " ").trim();
   return stripped !== text && [...stripped.replace(/\s/gu, "")].length >= 2 ? stripped : text;
 }
 function customerSearchPlan(customer) {

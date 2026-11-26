@@ -13,6 +13,24 @@ function runReplayFile(source, options) {
 const { openWechatSearchResult, openWechatSearchResultAsync, discardSearchCapture, runPowerShell } = require("./wechat_window_driver.cjs");
 const { searchObservationEvidence } = require("./wechat_search_result_resolver.cjs");
 
+// WeChat 4's own result rows (mmui::SearchContentCellView, named by the display name): 47d2578f on 1.3.71
+// still skipped people the old search_item_function_ ids never matched. One row named exactly this person
+// is clicked; a namesake, a chat-history row of the same name, or none leaves it to the old rules.
+{
+  const { resolveWechatSearchResultObservation: resolve } = require('./wechat_search_result_resolver.cjs');
+  const row = (name, top) => ({ name, left: 70, top, right: 400, bottom: top + 60, x: 235, y: top + 30 });
+  const byId = resolve({ cellCandidates: [row("测试客户甲", 120)], ocrOk: false }, { query: "abc123", queryType: "wechat_id", expectedName: "测试客户甲" });
+  assert.equal(byId.status, "selected"); assert.equal(byId.mode, "unique_local_wechat_id_cell"); assert.equal(byId.candidate.y, 150);
+  const byName = resolve({ cellCandidates: [row("测试客户甲", 120), row("测试客户甲乙", 180)], ocrOk: false }, { query: "测试客户甲", queryType: "name_fallback", expectedName: "测试客户甲" });
+  assert.equal(byName.mode, "exact_name_cell", "a longer name is not this person");
+  const twins = resolve({ cellCandidates: [row("测试客户甲", 120), row("测试客户甲", 180)], ocrOk: false }, { query: "测试客户甲", queryType: "name", expectedName: "测试客户甲" });
+  assert.notEqual(twins.status, "selected", "two rows of the same name: never guessed");
+  const other = resolve({ cellCandidates: [row("测试客户乙", 120)], ocrOk: false }, { query: "abc123", queryType: "wechat_id", expectedName: "测试客户甲" });
+  assert.notEqual(other.mode, "unique_local_wechat_id_cell", "a row of another name is never taken");
+  const { isVerifiedWechatSearchResultMode } = require('./wechat_search_result_resolver.cjs');
+  assert.ok(isVerifiedWechatSearchResultMode("unique_local_wechat_id_cell") && isVerifiedWechatSearchResultMode("exact_name_cell"));
+}
+
 // Anonymous text on the four failure-package geometries (1809, 125% DPI).
 {
   const { resolveWechatSearchResultObservation: resolve } = require('./wechat_search_result_resolver.cjs');
@@ -497,7 +515,7 @@ ${script.slice(start, end)}
     const replay = `$ErrorActionPreference='Stop'\n$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8\n`
       + `$query='offline123'; $ocrScale=3; $script:inputLeaseTick=1; $script:searchPopupCandidateCount=0\n`
       + `$matched=@{title='offline';focused=$true;processName='Weixin';pid=11;hWnd=22;x=200;y=100;width=800;height=600}\n`
-      + `$uiaCandidates=New-Object System.Collections.Generic.List[object]\n$visualCandidates=New-Object System.Collections.Generic.List[object]\n`
+      + `$uiaCandidates=New-Object System.Collections.Generic.List[object]\n$cellCandidates=New-Object System.Collections.Generic.List[object]\n$visualCandidates=New-Object System.Collections.Generic.List[object]\n`
       + `$webSearchCandidates=New-Object System.Collections.Generic.List[object]\n$webSearchTop=$null;$webSearchVisible=$false;$ocrOk=$false\n`
       + `$cropBounds=$null;$popupBounds=$null;$popupDpi=$null;$captureSource='formula_crop'\n`
       + `$compactQuery='offline123';$networkSearchPattern=@('搜索网络结果','搜一搜')\n`
