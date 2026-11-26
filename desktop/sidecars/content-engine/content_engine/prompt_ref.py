@@ -70,3 +70,26 @@ def prompt_bytes(text: str) -> int:
         total += len(library[key].encode("utf-8")) if library is not None else SIZES[key]
         last = match.end()
     return total + len(text[last:].encode("utf-8"))
+
+
+def _known_keys() -> set:
+    library = _library()
+    if library is not None:
+        return set(library)
+    try:
+        from prompt_sizes import SIZES  # type: ignore
+    except ImportError:
+        from .prompt_sizes import SIZES  # type: ignore
+    return set(SIZES)
+
+
+def prompt_variant(text: str, suffix: str) -> str:
+    """Swaps each token for its ``<id>.<suffix>`` variant where one is stored. A variant holds the wording as the app
+    would adjust it (e.g. compact categories' screen counts), so token and wording runs send the same text."""
+    known = _known_keys()
+
+    def swap(match):
+        key = f"{match.group(1)}.{suffix}"
+        return f"⟦xiaoxi-prompt:{key}@{match.group(2)}⟧" if f"{key}@{match.group(2)}" in known else match.group(0)
+
+    return _TOKEN.sub(swap, text)

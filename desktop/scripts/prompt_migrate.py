@@ -93,20 +93,28 @@ def rewrite_constant(node, entry, library):
 
 
 def rewrite_fstring(node, entry, library, data, offsets):
-    start, _end = span(node, offsets)
-    opener = re.match(rb"[rRbBfFuU]*(\"\"\"|'''|\"|')", data[start:start + 6]).group(1)
-    quote = "'" if opener.startswith(b'"') else '"'
-    edits, n = [], 0
+    """The whole f-string is written again as one: fixed runs become {prompt_ref('…')} or escaped text, and each
+    expression is copied from the source as it was. (Editing pieces in place breaks implicitly joined literals.)"""
+    source = data.decode("utf-8")
+    parts, n = [], 0
     for value in node.values:
-        if isinstance(value, ast.Constant) and significant(value.value):
-            n += 1
-            key = f"{entry['id']}.p{n}"
-            store(library, f"{key}@1", value.value)
-            a, b = span(value, offsets)
-            edits.append((a, b, "{" + call(key, quote=quote) + "}"))
+        if isinstance(value, ast.Constant):
+            if significant(value.value):
+                n += 1
+                key = f"{entry['id']}.p{n}"
+                store(library, f"{key}@1", value.value)
+                parts.append("{" + call(key, quote="'") + "}")
+            else:
+                parts.append(json.dumps(value.value, ensure_ascii=False)[1:-1].replace("{", "{{").replace("}", "}}"))
+        else:
+            segment = ast.get_source_segment(source, value)
+            if not segment or not segment.startswith("{"):
+                raise SystemExit(f"{entry['id']}: cannot copy an expression of the f-string on line {node.lineno}")
+            parts.append(segment)
     if not n:
         raise SystemExit(f"{entry['id']}: no fixed text long enough to move")
-    return edits
+    start, end = span(node, offsets)
+    return [(start, end, 'f"' + "".join(parts) + '"')]
 
 
 def normalized(node, library):
