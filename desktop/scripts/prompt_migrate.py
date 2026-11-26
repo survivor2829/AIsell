@@ -71,6 +71,12 @@ def call(key_id: str, formatted=False, quote='"') -> str:
 
 def rewrite_constant(node, entry, library):
     text = node.value
+    if entry.get("split_at"):
+        # Code slices the prompt from a marker on: store the two halves so the slice can name the second one.
+        index = text.index(entry["split_at"])
+        store(library, f"{entry['id']}.head@1", text[:index])
+        store(library, f"{entry['id']}.tail@1", text[index:])
+        return f"({call(entry['id'] + '.head')} + {call(entry['id'] + '.tail')})", [("plain", entry["id"], text)]
     if not entry.get("formatted"):
         store(library, f"{entry['id']}@1", text)
         return call(entry["id"]), [("plain", entry["id"], text)]

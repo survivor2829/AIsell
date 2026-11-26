@@ -31,6 +31,10 @@ def builders():
     out["planner.user_v1"] = lambda: planner.USER_PROMPT_TEMPLATE.format(
         product_text='"资料"', product_image_hint="无", force_vs="否", force_scenes="否", force_specs="是")
     out["planner.system_v2"] = lambda: planner.SYSTEM_PROMPT_V2
+    from ai_refine_v2 import buyer_strategy, demand_first
+    out["strategy.system"] = lambda: buyer_strategy.SYSTEM_PROMPT
+    out["strategy.demand_first"] = buyer_strategy.demand_first_prompt  # used to slice SYSTEM_PROMPT at "JSON格式"
+    out["demand.review"] = lambda: demand_first.REVIEW_PROMPT
     return out
 
 
