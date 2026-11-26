@@ -79,6 +79,19 @@ def same_pass(a, b):
     return a["asset_id"] == b["asset_id"] and (a.get("replay_round") or 0) == (b.get("replay_round") or 0)
 
 
+def whole_shots(shots):
+    """Join the pieces of a shot that carried two phrases back into that shot."""
+    joined = []
+    for shot in shots:
+        previous = joined[-1] if joined else None
+        if (shot.get("split_part") or 0) > 1 and previous and previous.get("segment_id") == shot.get("segment_id"):
+            previous.update(source_end_ms=shot["source_end_ms"], target_duration_ms=int(previous["target_duration_ms"]) + int(shot["target_duration_ms"]),
+                            **({"timeline_end_ms": shot["timeline_end_ms"]} if "timeline_end_ms" in shot else {}))
+            continue
+        joined.append({key: value for key, value in shot.items() if key != "split_part"})
+    return joined
+
+
 def near_duplicate(shots, previous):
     keys = [visual_key(s) for s in shots]
     old = [visual_key(s) for s in previous]
@@ -4774,13 +4787,14 @@ class NarratedBatchDomain:
     def validate_actual_timeline(self, state, timeline):
         b = self._load(state["narrated_batch_id"])
         c = next(x for x in b["candidates"] if x["candidate_id"] == state["narrated_candidate_id"])
-        actual = timeline["selected_segments"]
+        pieces = timeline["selected_segments"]
+        actual = whole_shots(pieces)
         require([s["evidence_ref"] for s in actual] == [s["evidence_ref"] for s in c["shots"]],
                 "narrated_actual_shots_changed", "实际配音未能保留全部镜头，请调整解说后重做这一条。")
-        by_id = {s.get("segment_id", s["evidence_ref"]): s for s in actual}
         for anchor in c.get("_reviewed_frame_anchors", []):
-            shot = by_id.get(anchor["shot_id"])
-            require(shot and shot["source_start_ms"] <= anchor["source_ms"] < shot["source_end_ms"],
+            # A shot split between two phrases keeps the frame if one of its pieces does.
+            require(any(s.get("segment_id", s["evidence_ref"]) == anchor["shot_id"]
+                        and s["source_start_ms"] <= anchor["source_ms"] < s["source_end_ms"] for s in pieces),
                     "narrated_actual_evidence_missing", "实际剪辑没有保留已核验的画面，请调整本段镜头。")
         previous = self._history(b["batch_id"]) + [x.get("actual_shots", x["shots"]) for x in b["candidates"]
                                                     if x["candidate_id"] != c["candidate_id"] and x["status"] == "completed"]
@@ -4826,7 +4840,7 @@ class NarratedBatchDomain:
                 generated = self.d._generated_row(run["generated_video_id"])
                 c["duration_ms"] = generated["duration_ms"]
                 private = self.d._json_object(run["private_state_json"])
-                c["actual_shots"] = (private.get("material_timeline") or {}).get("selected_segments") or c["shots"]
+                c["actual_shots"] = whole_shots((private.get("material_timeline") or {}).get("selected_segments") or c["shots"])
                 public = self.d._json_object(run["public_plan_json"])
                 selection = public.get("music") or public.get("musicSelection") or private.get("music_selection") or {}
                 if selection.get("mode") == "none" and selection.get("message"):

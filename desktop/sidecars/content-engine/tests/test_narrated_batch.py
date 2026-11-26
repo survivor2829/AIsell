@@ -210,6 +210,56 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertEqual(rendered["candidates"][0]["narration"], "".join(c["text"] for c in recipe["captions"]))
         self.assertLess(actual_duration, sum(shot["target_duration_ms"] for shot in planned["candidates"][0]["shots"]))
 
+    def test_a_shot_split_between_two_phrases_renders_as_one_shot(self):
+        # Field 2026-11-24/26: whole 5 s shots per phrase could not fit although the
+        # footage outlasted the voice. The production path must carry a split shot
+        # through timing, the actual-shot check and the stored history.
+        from content_engine import creative_domain
+        original_complete, original_rebalance = self.complete, creative_domain.rebalance_narrated_phrase_refs
+        def complete(*, messages, **kwargs):
+            payload = json.loads(messages[-1]["content"])
+            if "available_asset_ids" not in payload:
+                return original_complete(messages=messages, **kwargs)
+            keys = [s["segment_id"] for s in payload["shots"]
+                    if s["asset_id"] == payload["available_asset_ids"][0]][:3]
+            return {"candidates": [{"title": "不同现场的清洁展示", "angle": "场景选择", "shot_ids": keys, "phrases": [
+                {"text": "先看现场地面。", "shot_ids": keys[:1]},
+                {"text": "不同场景需求不同，要结合实际判断，这句也要完整显示。", "shot_ids": keys[1:]}]}]}
+        self.analyzer.cloud_client._structured_completion = complete
+        grounding = patch.object(NarratedBatchDomain, "_ground_shots",
+            lambda self, task, batch, shots, snapshots, versions:
+                [{**shot, "content_signature": shot["segment_id"]} for shot in shots])
+        grounding.start()
+        self.addCleanup(grounding.stop)
+        splits = []
+        def forced(phrases, audio, segments, *, pause_ms=160):
+            required = [int(a["duration_ms"]) + (pause_ms if i < len(audio) - 1 else 0) for i, a in enumerate(audio)]
+            if creative_domain.split_narrated_shots(phrases, required, segments):
+                splits.append([s.get("split_part") for s in segments])
+                return phrases
+            return original_rebalance(phrases, audio, segments, pause_ms=pause_ms)
+        with patch.object(creative_domain, "rebalance_narrated_phrase_refs", forced):
+            batch = self.s.save_narrated_batch({"groups": {"opening": self.ids[:3], "middle": [], "ending": []}, "target_count": 1})
+            rendered = self.run_samples(batch)
+        self.assertTrue(splits and any(splits[-1]), "the test must reach a split shot")
+        candidate = rendered["candidates"][0]
+        self.assertEqual("completed", candidate["status"], candidate)
+        self.assertEqual([s["evidence_ref"] for s in candidate["shots"]], [s["evidence_ref"] for s in candidate["actual_shots"]])
+        self.assertFalse(any("split_part" in s for s in candidate["actual_shots"]))
+        recipe = json.loads(self.s.connection.execute("SELECT recipe_json FROM generated_videos WHERE id=?",
+                                                      (candidate["generated_video_id"],)).fetchone()[0])
+        segments = [s for s in recipe["visual_segments"] if s.get("media_kind") != "image"]
+        joins = [index for index, (a, b) in enumerate(zip(segments, segments[1:]), 1)
+                 if a["segment_id"] == b["segment_id"] and a["end_ms"] == b["start_ms"]]
+        self.assertEqual(1, len(joins), "the split shot plays on unbroken")
+        join_ms = sum(s["target_duration_ms"] for s in segments[:joins[0]])
+        self.assertEqual(recipe["captions"][1]["start_ms"], join_ms, "the second phrase starts on the second piece")
+        run = self.s.connection.execute("SELECT public_plan_json FROM auto_mix_runs_v2 WHERE generated_video_id=?",
+                                        (candidate["generated_video_id"],)).fetchone()
+        points = json.loads(run[0])["musicBrief"]["transitionPointsMs"]
+        self.assertTrue(points)
+        self.assertNotIn(join_ms, points, "no music accent where the shot plays on")
+
     def test_new_story_can_select_materials_and_exceed_sixty_seconds(self):
         original = self.complete
         def complete(*, messages, **kwargs):

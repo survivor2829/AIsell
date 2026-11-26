@@ -169,6 +169,73 @@ def voice_footage_details(reason, speech_ms, footage_ms, *, pause_ms=0, **extra)
             "phrase_speech_ms": speech_ms[:40], "segment_ms": footage_ms[:80], **extra}
 
 
+# Shortest piece a split leaves on screen; the second try only when the first
+# cannot fit (500 ms is also the shortest shot batches accept).
+SPLIT_SHOT_MIN_MS = (1_000, 500)
+
+
+def split_narrated_shots(phrases, required, segments):
+    return any(_split_narrated_shots(phrases, required, segments, minimum) for minimum in SPLIT_SHOT_MIN_MS)
+
+
+def _split_narrated_shots(phrases, required, segments, minimum):
+    """Let one shot carry the end of a phrase and the start of the next.
+
+    Whole shots per phrase can fail although the footage outlasts the voice
+    (field 2026-11-24/26: 2.3 s and 13 s to spare, 5 s shots). The shot is cut
+    into consecutive pieces of the same source, so it plays on unbroken; every
+    piece keeps the shot's evidence_ref and segment_id and carries split_part.
+    Rewrites segments in place and returns True, or returns False untouched.
+    """
+    durations = [int(segment["target_duration_ms"]) for segment in segments]
+    if sum(required) > sum(durations):
+        return False
+    cuts = [[] for _ in segments]
+    starts, position, offset = [], 0, 0
+    for phrase_index, need in enumerate(required):
+        if position >= len(segments):
+            return False
+        starts.append((position, offset))
+        if phrase_index == len(required) - 1:
+            if sum(durations[position:]) - offset < need:
+                return False
+            break
+        while need > 0:
+            if position >= len(segments):
+                return False
+            left = durations[position] - offset
+            take = max(need, min(minimum, left))
+            if take < left and left - take >= minimum:
+                offset += take
+                cuts[position].append(offset)
+                need = 0
+            else:
+                # The phrase needs the rest, or the rest would flash by alone.
+                need -= left
+                position, offset = position + 1, 0
+    pieces, piece_at = [], {}
+    for index, segment in enumerate(segments):
+        start = 0
+        for part, end in enumerate(cuts[index] + [durations[index]], 1):
+            piece = dict(segment, target_duration_ms=end - start)
+            if cuts[index]:
+                source = int(segment.get("source_start_ms") or 0)
+                piece.update(source_start_ms=source + start, source_end_ms=source + end, split_part=part)
+            piece_at[(index, start)] = len(pieces)
+            pieces.append(piece)
+            start = end
+    bounds = [piece_at[start] for start in starts] + [len(pieces)]
+    if any(end <= begin for begin, end in zip(bounds, bounds[1:])):
+        return False
+    for phrase, begin, end in zip(phrases, bounds, bounds[1:]):
+        refs = [piece["evidence_ref"] for piece in pieces[begin:end]]
+        if refs != phrase.get("evidenceRefs"):
+            phrase.pop("sentenceBindings", None)
+        phrase["evidenceRefs"] = refs
+    segments[:] = pieces
+    return True
+
+
 def rebalance_narrated_phrase_refs(phrases, phrase_audio, segments, *, pause_ms=160):
     """Move only phrase boundaries so measured speech fits the ordered shots."""
     if not phrases or len(phrases) != len(phrase_audio) or len(segments) < len(phrases):
@@ -209,6 +276,8 @@ def rebalance_narrated_phrase_refs(phrases, phrase_audio, segments, *, pause_ms=
                 if previous is None or score[:2] < previous[:2]:
                     next_states[end] = score
         states = next_states
+        if not states and split_narrated_shots(phrases, required, segments):
+            return phrases
         if not states:
             # Field evidence (2026-11-13 had none): how far the measured voice
             # outran the footage decides between replaying shots and planning slower.
@@ -3733,6 +3802,7 @@ class CreativeDomain:
         final_transitions = [
             item.get("timeline_start_ms")
             for item in voice_bundle["timeline"].get("selected_segments") or []
+            if (item.get("split_part") or 0) <= 1  # a split shot plays on: no cut there
         ]
         public_plan["musicBrief"] = build_music_brief(
             title=row["title"],
@@ -4810,8 +4880,10 @@ class CreativeDomain:
                     if duration <= 0 or duration > original:
                         raise ContentEngineError("narrated_voice_mapping", "口播过短，无法完整展示选定镜头。")
                     # Keep a real central interval at normal playback speed;
-                    # narration sets the edit length, not silence padding.
-                    s["source_start_ms"] += (original - duration) // 2
+                    # narration sets the edit length, not silence padding. Pieces
+                    # of a split shot trim away from their join so it stays seamless.
+                    part = s.get("split_part") or 0
+                    s["source_start_ms"] += (original - duration) if part == 1 else 0 if part > 1 else (original - duration) // 2
                     s["source_end_ms"] = s["source_start_ms"] + duration
                     s.update(target_duration_ms=duration, timeline_start_ms=cursor,
                              timeline_end_ms=cursor + duration)
