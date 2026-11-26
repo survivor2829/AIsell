@@ -9,6 +9,13 @@
 // pressed, then the card and the confirm must be gone. Every press first checks nobody else used the mouse or
 // keyboard since our own last input. Anything that does not match closes what we opened (WM_CLOSE, never Esc:
 // Esc hides WeChat 4) and stops.
+//
+// 1.3.76 (b070e34b field run on 1.3.75, user: "我们的AI呢？"): Windows' OCR joined a label with its neighbour into one
+// line (the member's name and 添加 read as "钱总一添加") and cannot read emoji in a name (秋🌸花姐 in the confirm), and
+// every whole-line comparison then missed. Labels are now found by their own characters inside a line (Find-Label),
+// names are compared by their letters and digits only (Core), and when the screen still cannot be read the picture
+// goes to the same vision model touch uses (Ask-Eyes → wechat-vision-check.cjs deleteStep). The model only lists what
+// it sees; the code picks the one element and every identity check stays as it is.
 const { WECHAT_SCREEN_PIXELS_POWERSHELL } = require("./wechat_screen_pixels.cjs");
 const { WECHAT_SCREEN_OCR_POWERSHELL } = require("./wechat_screen_ocr.cjs");
 
@@ -34,6 +41,11 @@ public static class XiaoxiVisualDelete {
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
+  [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vk);
+  public static int[] Cursor() { POINT p; return GetCursorPos(out p) ? new[] { p.X, p.Y } : new[] { int.MinValue, int.MinValue }; }
+  // A key or mouse button held right now.
+  public static bool AnyKeyDown() { for (int vk = 1; vk < 255; vk++) { if ((GetAsyncKeyState(vk) & 0x8000) != 0) return true; } return false; }
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, UIntPtr e);
   [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
@@ -103,6 +115,67 @@ public static class XiaoxiVisualDelete {
   }
   static bool Dark(Color c) { return c.R < 140 && c.G < 140 && c.B < 140 && Math.Abs(c.R - c.G) < 30 && Math.Abs(c.G - c.B) < 30; }
 }
+// Every mouse or keyboard event while a delete runs, except our own marked presses (see Lease-Broken). Counts only:
+// no key, text or point is kept. Unattended runs (XIAOXI_UNATTENDED_INPUT=1) never count anything.
+public static class XiaoxiDeleteInputGuard {
+  delegate IntPtr HookProc(int code, IntPtr message, IntPtr data);
+  [StructLayout(LayoutKind.Sequential)] struct MouseData { public int X, Y; public uint MouseInfo, Flags, Time; public UIntPtr Extra; }
+  [StructLayout(LayoutKind.Sequential)] struct Msg { public IntPtr Hwnd; public uint Message; public IntPtr W, L; public uint Time; public int X, Y; }
+  [DllImport("user32.dll", SetLastError = true)] static extern IntPtr SetWindowsHookEx(int hook, HookProc callback, IntPtr module, uint thread);
+  [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr message, IntPtr data);
+  [DllImport("user32.dll")] static extern int GetMessage(out Msg message, IntPtr hwnd, uint min, uint max);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern IntPtr GetModuleHandle(string name);
+  public static readonly UIntPtr Marker = new UIntPtr(0x58564445u);
+  static readonly bool Unattended = Environment.GetEnvironmentVariable("XIAOXI_UNATTENDED_INPUT") == "1";
+  static readonly HookProc mouse = OnMouse, keyboard = OnKeyboard;
+  static readonly System.Threading.ManualResetEventSlim ready = new System.Threading.ManualResetEventSlim(false);
+  static System.Threading.Thread worker;
+  static volatile bool started;
+  static int external, ignored;
+  public static int Ignored { get { return System.Threading.Volatile.Read(ref ignored); } }
+  // The first such event, by kind only (mouse_move / mouse_0x201 / key), and whether software injected it.
+  public static volatile string First = "";
+  public static int External { get { return System.Threading.Volatile.Read(ref external); } }
+  public static bool Available { get { return started && worker != null && worker.IsAlive; } }
+  public static bool Start() {
+    if (worker != null) return Available;
+    worker = new System.Threading.Thread(Run) { IsBackground = true };
+    worker.Start();
+    ready.Wait(3000);
+    return Available;
+  }
+  static void Run() {
+    IntPtr module = GetModuleHandle(null);
+    IntPtr m = SetWindowsHookEx(14, mouse, module, 0), k = SetWindowsHookEx(13, keyboard, module, 0);
+    started = m != IntPtr.Zero && k != IntPtr.Zero;
+    ready.Set();
+    if (!started) return;
+    Msg msg; while (GetMessage(out msg, IntPtr.Zero, 0, 0) > 0) { }
+  }
+  // Never throws: an exception on this thread would end the whole delete without a result.
+  static IntPtr OnMouse(int code, IntPtr message, IntPtr data) {
+    try {
+      if (code >= 0 && !Unattended) {
+        var e = (MouseData)Marshal.PtrToStructure(data, typeof(MouseData)); uint flags = e.Flags; UIntPtr extra = e.Extra;
+        if (!((flags & 1u) != 0 && extra == Marker)) {
+          if (System.Threading.Interlocked.Increment(ref external) == 1) First = (message.ToInt32() == 0x200 ? "mouse_move" : "mouse_0x" + message.ToInt32().ToString("x")) + ((flags & 1u) != 0 ? "_injected" : "");
+        }
+      }
+    } catch { System.Threading.Interlocked.Increment(ref external); }
+    return CallNextHookEx(IntPtr.Zero, code, message, data);
+  }
+  static IntPtr OnKeyboard(int code, IntPtr message, IntPtr data) {
+    try { if (code >= 0 && !Unattended) {
+      int vk = Marshal.ReadInt32(data, 0); bool injected = (Marshal.ReadInt32(data, 8) & 0x10) != 0;
+      bool down = message.ToInt32() == 0x100 || message.ToInt32() == 0x104;
+      // VK_NONAME (0xFC) sent by software is no key at all: 微信输入法 (WeType) sends it when a card or menu takes the
+      // focus (dev machine, 2026-11-26, every run at the same step). It types nothing, so it is only counted.
+      if (injected && vk == 0xFC) { if (down) System.Threading.Interlocked.Increment(ref ignored); }
+      else if (System.Threading.Interlocked.Increment(ref external) == 1) First = "key" + (injected ? "_injected_0x" + vk.ToString("x") : "");
+    } } catch { System.Threading.Interlocked.Increment(ref external); }
+    return CallNextHookEx(IntPtr.Zero, code, message, data);
+  }
+}
 "@
 }
 [void][XiaoxiVisualDelete]::SetProcessDPIAware()
@@ -121,6 +194,10 @@ function Out-Result($ok, $stage, $reason, $extra = @{}) {
   # Every stop on commit before the press: 删除 was certainly not pressed, so it may be tried again.
   if (-not $ok -and $phase -eq "commit" -and -not $script:pressedCommit -and -not $extra.outcomeUnknown) { $result.notClicked = $true }
   foreach ($key in $extra.Keys) { $result[$key] = $extra[$key] }
+  if (@($script:eyes).Count) { $result.eyes = @($script:eyes) }
+  if ($script:quietTicks) { $result.input_ticks_ignored = [int]$script:quietTicks }
+  if ($script:guard -and [XiaoxiDeleteInputGuard]::Ignored) { $result.input_noname_keys = [int][XiaoxiDeleteInputGuard]::Ignored }
+  if ($script:inputReason) { $result.input_reason = [string]$script:inputReason }
   $result | ConvertTo-Json -Compress -Depth 5
   exit 0
 }
@@ -136,6 +213,10 @@ function Like([string]$text, [string]$target, [int]$slack = 2) {
 }
 function Fold([string]$text) { ([string]$text).Normalize([Text.NormalizationForm]::FormKC) -replace '[\s​-‏﻿]', '' }
 $plainName = Fold ($name -replace '\[[^\[\]]{1,12}\]', '')
+# A name by its letters and digits: OCR cannot read emoji or symbols (秋🌸花姐 read without the flower), so both sides
+# drop them before comparing. A name with fewer than two such characters is never confirmed by its text alone.
+function Core([string]$text) { (Fold ($text -replace '\[[^\[\]]{1,12}\]', '')) -replace '[^\p{L}\p{N}]', '' }
+$coreName = Core $name
 function Rect([int64]$h) { $r = New-Object XiaoxiVisualDelete+RECT; [void][XiaoxiVisualDelete]::GetWindowRect([IntPtr]$h, [ref]$r); $r }
 # OCR lines of a screen rectangle, in screen coordinates: @{ text; left; top; right; bottom; x; y }.
 function Read-Lines([int]$left, [int]$top, [int]$width, [int]$height, [int]$scale = 3) {
@@ -154,7 +235,9 @@ function Read-Lines([int]$left, [int]$top, [int]$width, [int]$height, [int]$scal
       $t = ($words | ForEach-Object { $_.BoundingRect.Y } | Measure-Object -Minimum).Minimum / $scale + $top
       $r = ($words | ForEach-Object { $_.BoundingRect.X + $_.BoundingRect.Width } | Measure-Object -Maximum).Maximum / $scale + $left
       $b = ($words | ForEach-Object { $_.BoundingRect.Y + $_.BoundingRect.Height } | Measure-Object -Maximum).Maximum / $scale + $top
-      @{ text = (Fold (($words | ForEach-Object { $_.Text }) -join "")); left = $l; top = $t; right = $r; bottom = $b; x = ($l + $r) / 2; y = ($t + $b) / 2 }
+      $parts = @($words | ForEach-Object { $box = $_.BoundingRect; @{ t = (Fold $_.Text); l = $box.X / $scale + $left; r = ($box.X + $box.Width) / $scale + $left;
+        top = $box.Y / $scale + $top; b = ($box.Y + $box.Height) / $scale + $top } })
+      @{ text = (Fold (($words | ForEach-Object { $_.Text }) -join "")); left = $l; top = $t; right = $r; bottom = $b; x = ($l + $r) / 2; y = ($t + $b) / 2; words = $parts }
     })
   } finally { $bitmap.Dispose(); if ($big) { $big.Dispose() } }
 }
@@ -168,8 +251,102 @@ function Find-Dots([int]$left, [int]$top, [int]$width, [int]$height) {
       Where-Object { [XiaoxiVisualDelete]::OwnerAt([int]$_.x, [int]$_.y) -eq $pid0 })
   } finally { $bitmap.Dispose() }
 }
-# Our own input only: nobody else may have touched the mouse or keyboard since our last press.
+# A label by its own characters inside an OCR line, at its own place: Windows' OCR joins a label with its neighbour
+# (b070e34b, 2026-11-26: "钱总一添加" for the member's name and 添加), so a whole-line comparison misses it. Lines
+# longer than maxLine are sentences, not labels.
+function Find-Label($lines, [string]$target, [int]$maxLine = 0) {
+  foreach ($line in @($lines)) {
+    if (-not $line -or ($maxLine -gt 0 -and $line.text.Length -gt $maxLine)) { continue }
+    $chars = New-Object System.Collections.ArrayList
+    foreach ($w in @($line.words)) { $n = ([string]$w.t).Length; for ($k = 0; $k -lt $n; $k++) {
+      [void]$chars.Add(@{ c = $w.t[$k]; l = $w.l + ($w.r - $w.l) * $k / $n; r = $w.l + ($w.r - $w.l) * ($k + 1) / $n; t = $w.top; b = $w.b }) } }
+    $text = -join @($chars | ForEach-Object { $_.c })
+    $i = $text.IndexOf($target, [StringComparison]::Ordinal)
+    if ($i -lt 0) { continue }
+    $span = @($chars[$i..($i + $target.Length - 1)])
+    $l = ($span | ForEach-Object { $_.l } | Measure-Object -Minimum).Minimum; $r = ($span | ForEach-Object { $_.r } | Measure-Object -Maximum).Maximum
+    $t = ($span | ForEach-Object { $_.t } | Measure-Object -Minimum).Minimum; $b = ($span | ForEach-Object { $_.b } | Measure-Object -Maximum).Maximum
+    return @{ text = $target; left = $l; top = $t; right = $r; bottom = $b; x = ($l + $r) / 2; y = ($t + $b) / 2; line = $line.text }
+  }
+  return $null
+}
+# AI 看图 (微信之眼), as touch: the picture of one screen area is handed to the desktop app through a folder it watches
+# (XIAOXI_VDEL_ASK_DIR); the app asks the vision model and answers with the points it picked, as fractions of the
+# picture. Without the folder, or without an answer in time, the step stops as before.
+$askDir = [string]$env:XIAOXI_VDEL_ASK_DIR
+# Development only: these steps go to the vision model even when the screen reading found them (to test that path live).
+$forcedEyes = @(([string]$env:XIAOXI_VDEL_FORCE_EYES) -split ',' | Where-Object { $_ })
+function Forced([string]$kind) { $askDir -and $forcedEyes -contains $kind }
+$script:eyes = @()
+function Ask-Eyes([string]$kind, [int]$left, [int]$top, [int]$width, [int]$height) {
+  if (-not $askDir -or -not (Test-Path -LiteralPath $askDir) -or $width -lt 20 -or $height -lt 20) { return $null }
+  $id = "$phase-$kind-$($script:eyes.Count + 1)"
+  $file = Join-Path $askDir "$id.png"
+  $bitmap = New-Object System.Drawing.Bitmap $width, $height
+  $big = $null
+  try {
+    if (-not [XiaoxiScreenPixels]::Copy($bitmap, $left, $top)) { return $null }
+    # Small text is enlarged first: at 100% the model read 城胜 as 戚胜 on the confirm (dev machine, 2026-11-26). The
+    # answer is in fractions of the picture, so the size does not change where anything is pressed.
+    # Bounded: a full-height panel on a 200% screen is not doubled into a multi-megabyte picture.
+    $zoom = if ($width -lt 900 -and ($width * $height * 4) -le 2500000) { 2 } else { 1 }
+    if ($zoom -gt 1) {
+      $big = New-Object System.Drawing.Bitmap ($width * $zoom), ($height * $zoom)
+      $g = [System.Drawing.Graphics]::FromImage($big); $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+      $g.DrawImage($bitmap, 0, 0, $width * $zoom, $height * $zoom); $g.Dispose()
+      $big.Save($file, [System.Drawing.Imaging.ImageFormat]::Png)
+    } else { $bitmap.Save($file, [System.Drawing.Imaging.ImageFormat]::Png) }
+  } finally { $bitmap.Dispose(); if ($big) { $big.Dispose() } }
+  $request = @{ id = $id; kind = $kind; file = $file } | ConvertTo-Json -Compress
+  [IO.File]::WriteAllText((Join-Path $askDir "$id.req.tmp"), $request, (New-Object Text.UTF8Encoding $false))
+  Move-Item -LiteralPath (Join-Path $askDir "$id.req.tmp") -Destination (Join-Path $askDir "$id.req.json") -Force
+  $answerFile = Join-Path $askDir "$id.res.json"
+  $stop = [Environment]::TickCount + 40000
+  $answer = $null
+  while ([Environment]::TickCount -lt $stop) {
+    if (Test-Path -LiteralPath $answerFile) { $answer = [IO.File]::ReadAllText($answerFile, [Text.Encoding]::UTF8) | ConvertFrom-Json; break }
+    Start-Sleep -Milliseconds 200
+  }
+  $script:eyes += "$($kind):$(if ($answer -and $answer.ok) { 'found' } elseif ($answer) { [string]$answer.reason } else { 'no_answer' })"
+  if (-not $answer) { return $null }
+  # 停止 pressed while the model looked: stop here, close what was opened.
+  if ([string]$answer.reason -eq "stopped") { Close-Opened; Out-Result $false $kind "stopped_by_user" }
+  # Points in screen pixels; only points inside the picture.
+  $points = @{}
+  if ($answer.points) { foreach ($p in $answer.points.PSObject.Properties) {
+    $fx = [double]$p.Value.x; $fy = [double]$p.Value.y
+    if ($fx -gt 0 -and $fx -lt 1 -and $fy -gt 0 -and $fy -lt 1) { $points[$p.Name] = @{ x = $left + $fx * $width; y = $top + $fy * $height } } } }
+  return @{ ok = [bool]$answer.ok; group = [bool]$answer.group; reason = [string]$answer.reason; points = $points }
+}
+# Our own input only: nobody else may use the mouse or keyboard while a delete runs. Read from the input events themselves,
+# as touch's search does (wechat_search_input.cjs): a low-level hook on its own thread counts every mouse or keyboard
+# event that is not our own press (ours carry Marker as their extra info). The last-input time alone is not proof: on
+# the dev machine it moved every 30 s with no input event at all (2026-11-26), and stopped runs for nobody. Only when the
+# hook cannot start does that time decide, as before.
+$script:guard = $false
+try { $script:guard = [XiaoxiDeleteInputGuard]::Start() } catch { $script:guard = $false }
 $script:lease = [XiaoxiVisualDelete]::LastInput()
+$script:cursor = [XiaoxiVisualDelete]::Cursor()
+$script:quietTicks = 0
+function Lease-Broken {
+  if ($script:guard) {
+    if ([XiaoxiDeleteInputGuard]::External -gt 0) { $script:inputReason = "input_event_" + [XiaoxiDeleteInputGuard]::First; return $true }
+    if (-not [XiaoxiDeleteInputGuard]::Available) { $script:inputReason = "input_guard_lost"; return $true }
+    $now = [XiaoxiVisualDelete]::LastInput()
+    if ($now -ne $script:lease) {
+      # A second check in case Windows dropped the hook without a word (a callback past its time limit): with the time
+      # moved, the cursor away from where we left it or a key or button held is a person all the same.
+      $c = [XiaoxiVisualDelete]::Cursor()
+      if ($c[0] -ne [int]::MinValue -and $script:cursor[0] -ne [int]::MinValue -and ([Math]::Abs($c[0] - $script:cursor[0]) -gt 2 -or [Math]::Abs($c[1] - $script:cursor[1]) -gt 2)) { $script:inputReason = "input_time_cursor_moved"; return $true }
+      if ([XiaoxiVisualDelete]::AnyKeyDown()) { $script:inputReason = "input_time_key_held"; return $true }
+      # Otherwise the time moved with no event: counted for the report, never a reason to stop.
+      $script:quietTicks++; $script:lease = $now
+    }
+    return $false
+  }
+  if ([XiaoxiVisualDelete]::LastInput() -ne $script:lease) { $script:inputReason = "input_time"; return $true }
+  return $false
+}
 function Press($x, $y, [string]$stage) {
   # Only a real point inside one of WeChat's windows is ever pressed (a lost value once made it (0, 0)).
   if ($null -eq $x -or $null -eq $y -or [double]::IsNaN([double]$x) -or [double]::IsNaN([double]$y)) { Close-Opened; Out-Result $false $stage "visual_point_invalid" }
@@ -177,7 +354,7 @@ function Press($x, $y, [string]$stage) {
   foreach ($h in @($mainHwnd) + @(Get-Popups)) { $r = Rect $h; if ($x -gt $r.Left + 2 -and $x -lt $r.Right - 2 -and $y -gt $r.Top + 2 -and $y -lt $r.Bottom - 2) { $inside = $true } }
   if (-not $inside) { Close-Opened; Out-Result $false $stage "visual_point_invalid" }
   $x = [double]$x; $y = [double]$y
-  if ([XiaoxiVisualDelete]::LastInput() -ne $script:lease) { Close-Opened; Out-Result $false $stage "wechat_external_input_detected" }
+  if (Lease-Broken) { Close-Opened; Out-Result $false $stage $(if ($script:inputReason -eq "input_guard_lost") { "wechat_input_lease_unavailable" } else { "wechat_external_input_detected" }) }
   $ours = { $front = [XiaoxiVisualDelete]::GetForegroundWindow().ToInt64(); $front -eq $mainHwnd -or @(Get-Popups) -contains $front }
   # On commit nothing is brought to the front: a switch can close the confirm and the press would land in the chat.
   if (-not (& $ours) -and $stage -ne "commit") { [void][XiaoxiVisualDelete]::SetForegroundWindow([IntPtr]$mainHwnd); Start-Sleep -Milliseconds 250 }
@@ -185,14 +362,16 @@ function Press($x, $y, [string]$stage) {
   if (-not (& $ours)) { Close-Opened; Out-Result $false $stage "wechat_window_not_foreground" }
   # The point itself must be on a WeChat window, not on something drawn over it.
   if ([XiaoxiVisualDelete]::OwnerAt([int]$x, [int]$y) -ne $pid0) { Close-Opened; Out-Result $false $stage "wechat_target_changed" }
-  if ([XiaoxiVisualDelete]::LastInput() -ne $script:lease) { Close-Opened; Out-Result $false $stage "wechat_external_input_detected" }
+  if (Lease-Broken) { Close-Opened; Out-Result $false $stage $(if ($script:inputReason -eq "input_guard_lost") { "wechat_input_lease_unavailable" } else { "wechat_external_input_detected" }) }
   [void][XiaoxiVisualDelete]::SetCursorPos([int]$x, [int]$y); Start-Sleep -Milliseconds 90
   # Development only: every check of the commit press ran; stop just before it and close what was opened.
   if ($stage -eq "commit" -and $env:XIAOXI_VDEL_NO_PRESS -eq "1") { Close-Opened; Out-Result $false "commit" "dry_commit_reached" }
   if ($stage -eq "commit") { $script:pressedCommit = $true }
-  [XiaoxiVisualDelete]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 50; [XiaoxiVisualDelete]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+  # Marked as ours, so the input guard does not take our own press for someone else's.
+  [XiaoxiVisualDelete]::mouse_event(2, 0, 0, 0, [XiaoxiDeleteInputGuard]::Marker); Start-Sleep -Milliseconds 50; [XiaoxiVisualDelete]::mouse_event(4, 0, 0, 0, [XiaoxiDeleteInputGuard]::Marker)
   Start-Sleep -Milliseconds 120
   $script:lease = [XiaoxiVisualDelete]::LastInput()
+  $script:cursor = [XiaoxiVisualDelete]::Cursor()
 }
 # WeChat's windows other than the chat window (card, menu, confirm).
 # Only windows that appeared after this delete began: the user's own detached chats or image viewers are never taken
@@ -211,7 +390,8 @@ trap {
     foreach ($h in @(Get-Popups)) { try { [void][XiaoxiVisualDelete]::SendMessage([IntPtr]$h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) } catch { } }
   }
   if ($script:pressedCommit) { @{ ok = $false; stage = "commit"; reason = "delete_outcome_unknown"; outcomeUnknown = $true; visual = $true } | ConvertTo-Json -Compress; exit 0 }
-  @{ ok = $false; stage = $(if ($phase -eq "commit") { "commit" } else { "script" }); reason = "visual_script_failed"; notClicked = ($phase -eq "commit"); visual = $true } | ConvertTo-Json -Compress
+  @{ ok = $false; stage = $(if ($phase -eq "commit") { "commit" } else { "script" }); reason = "visual_script_failed"; notClicked = ($phase -eq "commit"); visual = $true;
+    script_line = [int]$_.InvocationInfo.ScriptLineNumber; error_type = [string]$_.Exception.GetType().Name; error_text = ([string]$_.Exception.Message).Substring(0, [Math]::Min(200, ([string]$_.Exception.Message).Length)) } | ConvertTo-Json -Compress
   exit 0
 }
 function Close-Opened { foreach ($h in @(Get-Popups)) { [void][XiaoxiVisualDelete]::SendMessage([IntPtr]$h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) } }
@@ -223,23 +403,51 @@ function Wait-For([scriptblock]$probe, [int]$ms = 3000) {
 # The confirm: a line naming this person with 删除, and a separate 删除 button, on any WeChat window.
 function Read-Confirm {
   foreach ($h in @(Get-Popups) + @($mainHwnd)) {
-    $r = Rect $h; $lines = @(Read-Lines $r.Left $r.Top ($r.Right - $r.Left) ($r.Bottom - $r.Top))
-    $question = $lines | Where-Object { $_.text -match '删除' -and $_.text -ne '删除联系人' -and (($plainName.Length -ge 2 -and $_.text.Contains($plainName)) -or $_.text.Contains((Fold $name))) } | Select-Object -First 1
+    if ($coreName.Length -lt 2) { return $null }
+    $r = Rect $h; $lines = @(Read-Lines $r.Left $r.Top ($r.Right - $r.Left) ($r.Bottom - $r.Top) | Sort-Object { $_.top })
+    # The question may wrap onto a second line (a long name), so a line with 删除 and the one below are read together.
+    $question = $null
+    for ($i = 0; $i -lt $lines.Count -and -not $question; $i++) {
+      $text = $lines[$i].text
+      if ($text -notmatch '删除' -or $text -eq '删除联系人' -or $text -eq '删除') { continue }
+      $next = if ($i + 1 -lt $lines.Count) { $lines[$i + 1].text } else { "" }
+      if ((Core ($text + $next)).Contains($coreName)) { $question = $lines[$i] }
+    }
     if (-not $question) { continue }
-    $button = $lines | Where-Object { $_.text -eq '删除' -and $_.top -gt $question.top } | Select-Object -First 1
-    $cancel = $lines | Where-Object { $_.text -eq '取消' -and $_.top -gt $question.top } | Select-Object -First 1
-    return @{ hwnd = $h; button = $button; cancel = $cancel }
+    # The buttons may be read as one line (取消删除).
+    $below = @($lines | Where-Object { $_.top -gt $question.bottom })
+    # A line reading exactly 删除 first; else the lowest short line holding it (the buttons sit at the bottom).
+    $button = $below | Where-Object { $_.text -eq '删除' } | Select-Object -Last 1
+    if (-not $button) { $button = Find-Label @($below | Sort-Object { $_.top } -Descending) '删除' 6 }
+    $cancel = $below | Where-Object { $_.text -eq '取消' } | Select-Object -Last 1
+    if (-not $cancel) { $cancel = Find-Label @($below | Sort-Object { $_.top } -Descending) '取消' 6 }
+    return @{ hwnd = $h; button = $button; cancel = $cancel; by = "ocr" }
   }
   return $null
 }
 
+# The confirm read from the screen, else by the vision model on the topmost window this run opened, never the chat window (the app checks that
+# its question names this person with 删除). An AI-found 删除 must lie inside that window.
+function Find-Confirm([int]$ms) {
+  $dialog = Wait-For { Read-Confirm } $ms
+  if ($dialog -and $dialog.button -and -not (Forced "confirm")) { return $dialog }
+  $h = if ($dialog) { $dialog.hwnd } else { @(Get-Popups) | Select-Object -First 1 }
+  # Only a window this run opened: a 删除 on the chat window itself (multi-select bar, a message) is never asked about.
+  if (-not $h -or $h -eq $mainHwnd) { return $dialog }
+  $r = Rect $h
+  $ai = Ask-Eyes "confirm" $r.Left $r.Top ($r.Right - $r.Left) ($r.Bottom - $r.Top)
+  if (-not $ai -or -not $ai.ok -or -not $ai.points.delete) { return $dialog }
+  $b = $ai.points.delete
+  if ($b.x -le $r.Left -or $b.x -ge $r.Right -or $b.y -le $r.Top -or $b.y -ge $r.Bottom) { return $dialog }
+  return @{ hwnd = $h; button = $b; cancel = $ai.points.cancel; by = "ai" }
+}
 $main = Rect $mainHwnd
 $mw = $main.Right - $main.Left; $mh = $main.Bottom - $main.Top
 if (-not $engine) { if ($phase -eq "commit") { Close-Opened }; Out-Result $false "visual" "ocr_unavailable" }
 if ($mw -lt 300 -or $mh -lt 300) { if ($phase -eq "commit") { Close-Opened }; Out-Result $false "window" "wechat_main_window_not_found" }
 
 if ($phase -eq "commit") {
-  $dialog = Read-Confirm
+  $dialog = Find-Confirm 1500
   if (-not $dialog -or -not $dialog.button) { Close-Opened; Out-Result $false "commit" "confirm_dialog_gone" @{ notClicked = $true } }
   Press $dialog.button.x $dialog.button.y "commit"
   # Deleted when the confirm and the card are gone and the chat of this person is closed (its title no longer shown).
@@ -247,9 +455,10 @@ if ($phase -eq "commit") {
   if ($gone) {
     $head = @(Read-Lines ($main.Left + [int]($mw * 0.25)) $main.Top ([int]($mw * 0.75)) ([Math]::Max(40, [int]($mh * 0.1))))
     # Tolerant on purpose (a title can lose a character): a doubtful title makes it unknown, never "deleted".
-    $stillOpen = $head | Where-Object { $t = $_.text; $cut = $t -replace '(…|\.{2,})$', ''
-      @((Fold $name), $plainName) | Where-Object { $_.Length -ge 1 -and ($t -eq $_ -or ($_.Length -ge 3 -and (Like $t $_ 1)) -or ($cut.Length -ge 2 -and $cut -ne $t -and $_.StartsWith($cut))) } }
-    if (-not $stillOpen) { Out-Result $true "commit" "" @{ deleted = $true } }
+    $stillOpen = $head | Where-Object { $t = Core $_.text; $cut = $_.text -match '(…|\.{2,})$'
+      $t -eq $coreName -or ($coreName.Length -ge 3 -and (Like $t $coreName 1)) -or ($cut -and $t.Length -ge 2 -and $coreName.StartsWith($t)) }
+    # A name without two readable letters cannot be looked for in the title: unknown, never "deleted".
+    if (-not $stillOpen -and $coreName.Length -ge 2) { Out-Result $true "commit" "" @{ deleted = $true } }
   }
   Out-Result $false "verify" "delete_outcome_unknown" @{ outcomeUnknown = $true }
 }
@@ -293,20 +502,30 @@ if (-not $panel) { Close-Opened; Out-Result $false "member" "chat_info_panel_not
 $lines = @(Read-Lines ([int]$panel.left - 30) $main.Top ($main.Right - [int]$panel.left + 30) ($main.Bottom - $main.Top))
 $groupLabels = @(@('群聊名称', '群公告', '我在本群的昵称', '显示群成员昵称') | Where-Object { $label = $_; $lines | Where-Object { Like $_.text $label 1 } })
 if ($groupLabels.Count -ge 2) { Close-Opened; Out-Result $false "member" "chat_member_mismatch" @{ group = $true } }
-$add = $lines | Where-Object { $_.text -eq '添加' -or $_.text -eq '添 加' } | Select-Object -First 1
-if (-not $add) { Close-Opened; Out-Result $false "member" "chat_member_not_found" }
-$addHeight = $add.bottom - $add.top
-$rowTop = [int]($add.top - 5 * $addHeight); $rowBottom = [int]$add.top - 2
-# Start left of the 添加 box, which is wider than its label (about 2.8 label heights across).
-$scanRight = [int]($add.x - 2 * $addHeight)
-if (($scanRight - $panel.left + 30) -lt 8 -or ($rowBottom - $rowTop) -lt 8) { Close-Opened; Out-Result $false "member" "chat_member_not_found" }
-$shot = New-Object System.Drawing.Bitmap ([int]($scanRight - $panel.left + 30)), ([int]($rowBottom - $rowTop))
-try {
-  [void][XiaoxiScreenPixels]::Copy($shot, [int]$panel.left - 30, $rowTop)
-  $block = [XiaoxiVisualDelete]::BlockLeftOf($shot, $shot.Width - 2, 0, $shot.Height - 1)
-} finally { $shot.Dispose() }
-if (-not $block) { Close-Opened; Out-Result $false "member" "chat_member_not_found" }
-$avatarX = [int]$panel.left - 30 + ($block[0] + $block[2]) / 2; $avatarY = $rowTop + ($block[1] + $block[3]) / 2
+# 添加 sits above the panel's labels, under its box; it may be read in one line with the member's name.
+$add = Find-Label @($lines | Where-Object { $_.top -lt $panel.top }) '添加' 26
+$block = $null
+if ($add) {
+  $addHeight = $add.bottom - $add.top
+  $rowTop = [int]($add.top - 5 * $addHeight); $rowBottom = [int]$add.top - 2
+  # Start left of the 添加 box, which is wider than its label (about 2.8 label heights across).
+  $scanRight = [int]($add.x - 2 * $addHeight)
+  if (($scanRight - $panel.left + 30) -ge 8 -and ($rowBottom - $rowTop) -ge 8) {
+    $shot = New-Object System.Drawing.Bitmap ([int]($scanRight - $panel.left + 30)), ([int]($rowBottom - $rowTop))
+    try {
+      [void][XiaoxiScreenPixels]::Copy($shot, [int]$panel.left - 30, $rowTop)
+      $block = [XiaoxiVisualDelete]::BlockLeftOf($shot, $shot.Width - 2, 0, $shot.Height - 1)
+    } finally { $shot.Dispose() }
+  }
+}
+if ($block -and -not (Forced "member")) { $avatarX = [int]$panel.left - 30 + ($block[0] + $block[2]) / 2; $avatarY = $rowTop + ($block[1] + $block[3]) / 2 }
+else {
+  # The vision model on the panel: one member's avatar, not a group. Who it is is still checked on the card.
+  $ai = Ask-Eyes "member" ([int]$panel.left - 30) $main.Top ($main.Right - [int]$panel.left + 30) ($main.Bottom - $main.Top)
+  if ($ai -and $ai.group) { Close-Opened; Out-Result $false "member" "chat_member_mismatch" @{ group = $true } }
+  if (-not $ai -or -not $ai.ok -or -not $ai.points.main) { Close-Opened; Out-Result $false "member" "chat_member_not_found" @{ add_found = [bool]$add; line_count = $lines.Count } }
+  $avatarX = $ai.points.main.x; $avatarY = $ai.points.main.y
+}
 Press $avatarX $avatarY "profile"
 
 # 3. The profile card: a new WeChat window showing this name, and the same 微信号 when the list has one.
@@ -316,7 +535,7 @@ Start-Sleep -Milliseconds 400
 $cr = Rect $card; $cw = $cr.Right - $cr.Left; $ch = $cr.Bottom - $cr.Top
 $cardLines = @(Read-Lines $cr.Left $cr.Top $cw $ch)
 # The whole line, or the line with one extra character (the card's small person icon read as a character).
-$nameShown = [bool]($cardLines | Where-Object { $t = $_.text; @((Fold $name), $plainName) | Where-Object { $_.Length -ge 2 -and ($t -eq $_ -or ($t.StartsWith($_) -and $t.Length -eq $_.Length + 1)) } })
+$nameShown = $coreName.Length -ge 2 -and [bool]($cardLines | Where-Object { $t = Core $_.text; $t -eq $coreName -or ($t.StartsWith($coreName) -and $t.Length -eq $coreName.Length + 1) })
 $idLine = $cardLines | Where-Object { $_.text -match '^微信号[:：]?(.+)$' } | Select-Object -First 1
 $shownId = if ($idLine) { [regex]::Match($idLine.text, '^微信号[:：]?(.+)$').Groups[1].Value } else { "" }
 $normal = { param($text) ([string]$text -replace '[\s​-‏﻿]', '').ToLowerInvariant() }
@@ -359,19 +578,32 @@ if ($requireId -and $idCheck.id_check_state -ne "matched") { Close-Opened; Out-R
 $more = @(Find-Dots ($cr.Left + [int]($cw * 0.5)) $cr.Top ([int]($cw * 0.5)) ([int]($ch * 0.3))) | Sort-Object { $_.x } -Descending | Select-Object -First 1
 # No "…": not a friend any more only when the card shows 发消息 without 语音聊天/视频聊天 (dev machine 2026-11-26);
 # otherwise the dots were just not seen (dark mode, animation) and the person may be tried again.
+if (Forced "card_more") { $more = $null }
 if (-not $more) {
   $notFriend = ($cardLines | Where-Object { Like $_.text '发消息' 0 }) -and -not ($cardLines | Where-Object { (Like $_.text '语音聊天' 1) -or (Like $_.text '视频聊天' 1) })
-  Close-Opened; Out-Result $false "menu" $(if ($notFriend) { "contact_not_friend" } else { "profile_more_not_found" }) @{ id_check = $idCheck }
+  if ($notFriend) { Close-Opened; Out-Result $false "menu" "contact_not_friend" @{ id_check = $idCheck } }
+  $ai = Ask-Eyes "card_more" $cr.Left $cr.Top $cw ([int]($ch * 0.4))
+  if (-not $ai -or -not $ai.ok -or -not $ai.points.main) { Close-Opened; Out-Result $false "menu" "profile_more_not_found" @{ id_check = $idCheck } }
+  $more = $ai.points.main
 }
 Press $more.x $more.y "menu"
 $item = Wait-For {
-  foreach ($h in @(Get-Popups)) { $r = Rect $h; $hit = @(Read-Lines $r.Left $r.Top ($r.Right - $r.Left) ($r.Bottom - $r.Top)) | Where-Object { $_.text -eq '删除联系人' } | Select-Object -First 1; if ($hit) { return $hit } }
+  foreach ($h in @(Get-Popups)) { $r = Rect $h; $hit = Find-Label @(Read-Lines $r.Left $r.Top ($r.Right - $r.Left) ($r.Bottom - $r.Top)) '删除联系人' 10; if ($hit) { return $hit } }
 } 3000
-if (-not $item) { Close-Opened; Out-Result $false "menu" "delete_menu_item_not_found" @{ id_check = $idCheck } }
+if (Forced "menu_item") { $item = $null }
+if (-not $item) {
+  # The menu is the topmost window this run opened other than the card (or drawn on the card itself).
+  $menuWindow = @(Get-Popups | Where-Object { $_ -ne $card }) | Select-Object -First 1
+  if (-not $menuWindow) { $menuWindow = $card }
+  $r = Rect $menuWindow
+  $ai = Ask-Eyes "menu_item" $r.Left $r.Top ($r.Right - $r.Left) ($r.Bottom - $r.Top)
+  if (-not $ai -or -not $ai.ok -or -not $ai.points.main) { Close-Opened; Out-Result $false "menu" "delete_menu_item_not_found" @{ id_check = $idCheck } }
+  $item = $ai.points.main
+}
 Press $item.x $item.y "confirm"
 
 # 5. The confirm names this person; it is left open for commit (or cancelled on a look-only run).
-$dialog = Wait-For { Read-Confirm } 4000
+$dialog = Find-Confirm 4000
 if (-not $dialog) { Close-Opened; Out-Result $false "confirm" "confirm_dialog_not_shown" @{ id_check = $idCheck } }
 if (-not $dialog.button) { if ($dialog.cancel) { Press $dialog.cancel.x $dialog.cancel.y "confirm" }; Close-Opened; Out-Result $false "confirm" "confirm_button_not_found" @{ id_check = $idCheck } }
 if (-not $confirm) {

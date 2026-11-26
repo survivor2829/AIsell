@@ -1066,6 +1066,9 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     // Checked once soon after launch, so a reader that cannot start is reported even before any
     // touch run (and the customer never has to do anything for it).
     if (app.isPackaged) setTimeout(() => { require("./line-ocr-service.cjs").lineOcrService()?.probe().catch(() => {}); }, 45_000).unref?.();
+    // AI 看图兜底 (微信之眼): what the rules could not read goes to the vision model through the account's gateway.
+    // One for touch and 清理好友 alike (user 2026-11-26: reuse touch's AI, do not build another).
+    const wechatEyes = require("./wechat-vision-check.cjs").createWechatEyes({ gatewayClient: providerGatewayClient, logger });
     touchTaskController = registerTouchTaskIpc({
       getMainWindow: () => mainWindow,
       dataDir: runtime.activeTouchDir,
@@ -1076,8 +1079,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       buildCommit: build.buildCommit || process.env.XIAOXI_BUILD_COMMIT || "",
       executionMode: "real_send",
       realSendExecutor: internalRealSend.executeVerifiedContactSend,
-      // AI 看图兜底 (微信之眼): what the rules could not read goes to the vision model through the account's gateway.
-      wechatEyes: require("./wechat-vision-check.cjs").createWechatEyes({ gatewayClient: providerGatewayClient, logger }),
+      wechatEyes,
       verifyRealSendSession: internalRealSend.refreshRealSendSession,
       verifyMessageBubble: internalRealSend.verifyMessageBubble,
       detectDeliveryNotice: internalRealSend ? require("../../rpa/active_touch/wechat_delivery_notice.cjs").detectWechatDeliveryNoticeAsync : undefined,
@@ -1119,6 +1121,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       },
       // Deleting a friend in WeChat is a real WeChat write: shipped where the other real operations are.
       deleteWechatContact: internalRealSend ? require("../../rpa/active_touch/wechat_delete_contact.cjs").deleteWechatContact : undefined,
+      wechatEyes,
       verifyLiveAccount: internalRealSend ? (accountId) => {
         let wechatRoot = "";
         try { wechatRoot = String(JSON.parse(fs.readFileSync(path.join(runtime.contactSyncDir, "state.json"), "utf8")).wechat_root || ""); } catch {}

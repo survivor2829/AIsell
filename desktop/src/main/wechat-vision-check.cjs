@@ -27,6 +27,21 @@ function titleMessages({ image }) {
     { role: 'user', content: [{ type: 'image_url', image_url: { url: image } }, { type: 'text', text: '现在打开的是谁的聊天？' }] }];
 }
 
+// 清理好友 on a WeChat read from the screen (wechat_delete_contact_visual.cjs, 1.3.76): one area of a delete step whose
+// element the OCR could not find. The model lists what it sees (avatars, the 添加 box, "…" buttons, buttons, text lines)
+// with their boxes; pickDeleteStep decides which one, if any, may be pressed.
+const DELETE_AREAS = Object.freeze({
+  member: '这是微信聊天窗口右侧的“聊天信息”面板。',
+  card_more: '这是微信联系人资料卡的上部。',
+  menu_item: '这是在资料卡上点“…”后弹出的菜单。',
+  confirm: '这是删除联系人时弹出的确认框。'
+});
+function deleteMessages({ image, kind }) {
+  const system = promptRef("wechat.vision.delete_step");
+  return [{ role: 'system', content: system },
+    { role: 'user', content: [{ type: 'image_url', image_url: { url: image } }, { type: 'text', text: DELETE_AREAS[kind] || DELETE_AREAS.member }] }];
+}
+
 function jsonOf(content) {
   const text = String(content || '').replace(/```(?:json)?/giu, '');
   const start = text.indexOf('{'), end = text.lastIndexOf('}');
@@ -76,6 +91,39 @@ function pickTitle(answer, expectedName) {
   return { ok: true, read: true, box: { left: box[0] / 1000, top: box[1] / 1000, right: box[2] / 1000, bottom: box[3] / 1000 } };
 }
 
+// A name by its letters and digits, as the screen script compares it (emoji and symbols are not read reliably).
+const core = (value) => fold(String(value ?? '').replace(/\[[^\[\]]{1,12}\]/gu, '')).replace(/[^\p{L}\p{N}]/gu, '');
+// The one element of a delete step the code may press, as fractions of the picture. Anything else is refused:
+// member — exactly one avatar and not a group (who it is is still checked on the card);
+// card_more / menu_item — exactly one "…" button / one line reading exactly 删除联系人;
+// confirm — read surely, a line with 删除 naming this person, and exactly one 删除 button.
+function pickDeleteStep(answer, { kind, name }) {
+  const items = Array.isArray(answer?.items) ? answer.items : [];
+  const boxOf = (item) => { const box = Array.isArray(item?.box) ? item.box.map(Number) : [];
+    return box.length === 4 && box.every((value) => Number.isFinite(value) && value >= 0 && value <= 1000) && box[0] < box[2] && box[1] < box[3] ? box : null; };
+  const centre = (item) => { const box = boxOf(item); return box ? { x: (box[0] + box[2]) / 2000, y: (box[1] + box[3]) / 2000 } : null; };
+  const role = (wanted) => items.filter((item) => String(item?.role || '') === wanted && boxOf(item));
+  const one = (list, reason) => list.length === 1 ? { ok: true, points: { main: centre(list[0]) }, seen: items.length } : { ok: false, reason: list.length ? 'vision_ambiguous' : reason, seen: items.length };
+  if (kind === 'member') {
+    if (answer?.group === true) return { ok: false, group: true, reason: 'vision_group', seen: items.length };
+    return one(role('avatar'), 'vision_not_found');
+  }
+  if (kind === 'card_more') return one(role('more_button'), 'vision_not_found');
+  if (kind === 'menu_item') return one(items.filter((item) => fold(item?.text) === '删除联系人' && boxOf(item)), 'vision_not_found');
+  if (kind === 'confirm') {
+    const wanted = core(name);
+    if (answer?.unsure === true) return { ok: false, reason: 'vision_unsure', seen: items.length };
+    if (wanted.length < 2 || !items.some((item) => String(item?.role || '') !== 'button' && String(item?.text || '').includes('删除') && core(item.text).includes(wanted))) {
+      return { ok: false, reason: 'vision_confirm_other', seen: items.length };
+    }
+    const buttons = role('button');
+    const remove = buttons.filter((item) => fold(item.text) === '删除'), cancel = buttons.filter((item) => fold(item.text) === '取消');
+    if (remove.length !== 1) return { ok: false, reason: remove.length ? 'vision_ambiguous' : 'vision_not_found', seen: items.length };
+    return { ok: true, points: { delete: centre(remove[0]), ...(cancel.length === 1 ? { cancel: centre(cancel[0]) } : {}) }, seen: items.length };
+  }
+  return { ok: false, reason: 'vision_kind_unknown', seen: items.length };
+}
+
 function createWechatVisionCheck({ gatewayClient, fetchTimeoutMs = TIMEOUT_MS, model = MODEL } = {}) {
   const ready = () => Boolean(gatewayClient?.isReady?.() && typeof gatewayClient.fetch === 'function');
   async function ask(messages) {
@@ -102,6 +150,10 @@ function createWechatVisionCheck({ gatewayClient, fetchTimeoutMs = TIMEOUT_MS, m
       const { answer, usage } = await ask(searchMessages({ image, query }));
       return { ...pickSearchRow(answer, { query, queryType, expectedName }), usage, rows: Array.isArray(answer?.rows) ? answer.rows.length : 0 };
     },
+    async readDeleteStep({ image, kind, name }) {
+      const { answer, usage } = await ask(deleteMessages({ image, kind }));
+      return { ...pickDeleteStep(answer, { kind, name }), usage, rows: Array.isArray(answer?.items) ? answer.items.length : 0 };
+    },
     async confirmTitle({ image, expectedName }) {
       const { answer, usage } = await ask(titleMessages({ image }));
       return { ...pickTitle(answer, expectedName), usage };
@@ -127,8 +179,11 @@ function createWechatEyes({ gatewayClient, logger, readFile = require('node:fs')
     searchRow: ({ file, query, queryType, expectedName }) => look('vision_rescue', 'vision_row_found',
       () => vision.findSearchRow({ image: image(file), query, queryType, expectedName })),
     chatTitle: ({ file, expectedName }) => look('vision_title', 'vision_title_confirmed',
-      () => vision.confirmTitle({ image: image(file), expectedName }))
+      () => vision.confirmTitle({ image: image(file), expectedName })),
+    // 清理好友: one delete step the screen reading could not find (logged under its kind, never the name).
+    deleteStep: ({ file, kind, name }) => look(`vision_delete_${DELETE_AREAS[kind] ? kind : 'unknown'}`, 'vision_delete_found',
+      () => vision.readDeleteStep({ image: image(file), kind, name }))
   };
 }
 
-module.exports = { ROUTE, MODEL, searchMessages, titleMessages, pickSearchRow, pickTitle, jsonOf, createWechatVisionCheck, createWechatEyes };
+module.exports = { ROUTE, MODEL, searchMessages, titleMessages, deleteMessages, pickSearchRow, pickTitle, pickDeleteStep, DELETE_AREAS, jsonOf, createWechatVisionCheck, createWechatEyes };

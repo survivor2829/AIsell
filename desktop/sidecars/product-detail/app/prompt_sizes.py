@@ -508,6 +508,7 @@ SIZES = {
  "wechat.reply.system.p2@1": 1547,
  "wechat.touch.polish@1": 1013,
  "wechat.touch.salutation@1": 1139,
+ "wechat.vision.delete_step@1": 1109,
  "wechat.vision.header_title@1": 1229,
  "wechat.vision.search_dropdown@1": 1694
 }

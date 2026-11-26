@@ -143,6 +143,20 @@ async function checkWechatDelete(base) {
   await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: live, coordinator, wait: async () => {},
     deleteContact: async () => { tries += 1; return { ok: false, stage: "menu", reason: "wechat_external_input_detected" }; } });
   assert.equal(tries, 1, "someone using the mouse is not fought for it");
+  // 1.3.76: a reading step the vision model already looked at is not read again; without that look (UIA path, no
+  // model) WeChat may just have been slow and the one retry stays.
+  tries = 0;
+  await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: live, coordinator, wait: async () => {},
+    deleteContact: async () => { tries += 1; return { ok: false, stage: "member", reason: "chat_member_not_found", eyes: ["member:vision_not_found"] }; } });
+  assert.equal(tries, 1, "the model looked at the member step: not repeated");
+  tries = 0;
+  await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: live, coordinator, wait: async () => {},
+    deleteContact: async () => { tries += 1; return { ok: false, stage: "confirm", reason: "confirm_dialog_not_shown", eyes: ["member:found"] }; } });
+  assert.equal(tries, 2, "the model looked at another step, not the confirm: one more try");
+  tries = 0;
+  await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: live, coordinator, wait: async () => {},
+    deleteContact: async () => { tries += 1; return { ok: false, stage: "confirm", reason: "confirm_dialog_not_shown" }; } });
+  assert.equal(tries, 2, "a slow confirm on the UIA path keeps its retry");
 
   // Busy WeChat, a switched account, or an account that cannot be checked: nothing is pressed.
   let pressed = 0;
@@ -240,6 +254,127 @@ async function checkDeleteModule() {
   assert.match(DELETE_SCRIPT, /if \(-not \(Get-WxWindow "mmui::ProfileUniquePop"\)\) \{ break \}\s*\[XiaoxiDel\]::keybd_event\(0x1B/u);
 }
 
+// 1.3.76: what the screen script cannot find goes to the vision model; labels and names are read the way the field
+// showed they must be (b070e34b: "钱总一添加" in one OCR line; an emoji in a name never read).
+async function checkVisualEyes(person, focus) {
+  const fs = require("node:fs"), path = require("node:path");
+  const { pickDeleteStep } = require("./wechat-vision-check.cjs");
+  const { deleteWechatContact } = require("../../rpa/active_touch/wechat_delete_contact.cjs");
+  const box = (l, t, r, b) => [l, t, r, b];
+  // member: one avatar, not a group; the 添加 box never counts.
+  assert.deepEqual(pickDeleteStep({ items: [{ role: "avatar", box: box(100, 100, 200, 200) }, { role: "add_button", box: box(300, 100, 400, 200) }] }, { kind: "member" }).points.main, { x: 0.15, y: 0.15 });
+  assert.equal(pickDeleteStep({ items: [{ role: "avatar", box: box(0, 0, 10, 10) }, { role: "avatar", box: box(20, 0, 30, 10) }] }, { kind: "member" }).ok, false, "two avatars: a group or unclear");
+  assert.equal(pickDeleteStep({ group: true, items: [{ role: "avatar", box: box(0, 0, 10, 10) }] }, { kind: "member" }).group, true);
+  assert.equal(pickDeleteStep({ items: [{ role: "avatar", box: box(0, 0, 1200, 10) }] }, { kind: "member" }).ok, false, "a box off the picture");
+  // menu: exactly 删除联系人.
+  assert.equal(pickDeleteStep({ items: [{ role: "text", text: "删除联系人", box: box(0, 0, 100, 50) }] }, { kind: "menu_item" }).ok, true);
+  assert.equal(pickDeleteStep({ items: [{ role: "text", text: "删除聊天记录", box: box(0, 0, 100, 50) }] }, { kind: "menu_item" }).ok, false);
+  // confirm: names this person by letters (the flower dropped), read surely, one 删除 button.
+  const dialog = (question, extra = {}) => ({ items: [{ role: "text", text: question, box: box(0, 0, 900, 200) },
+    { role: "button", text: "取消", box: box(100, 700, 400, 900) }, { role: "button", text: "删除", box: box(600, 700, 900, 900) }], ...extra });
+  assert.deepEqual(pickDeleteStep(dialog("删除联系人“测试🌸客户”"), { kind: "confirm", name: "测试🌸客户" }).points, { delete: { x: 0.75, y: 0.8 }, cancel: { x: 0.25, y: 0.8 } });
+  assert.equal(pickDeleteStep(dialog("删除联系人“另一个人”"), { kind: "confirm", name: "测试🌸客户" }).reason, "vision_confirm_other");
+  assert.equal(pickDeleteStep(dialog("删除联系人“测试客户”", { unsure: true }), { kind: "confirm", name: "测试🌸客户" }).ok, false);
+  assert.equal(pickDeleteStep(dialog("删除联系人“🌸”"), { kind: "confirm", name: "🌸" }).ok, false, "no letters to compare: never by text");
+
+  // The folder handshake: the script asks, the app answers once per request with the picked point, then cleans up.
+  let folderSeen = "";
+  const asked = [], ais = [];
+  const eyes = { ready: () => true, deleteStep: async ({ kind, name }) => { asked.push([kind, name]); return { ok: true, points: { main: { x: 0.5, y: 0.25 } } }; } };
+  const result = await deleteWechatContact(person, { confirm: false, uniqueName: true, focus, visualOnly: true, eyes, onAi: (kind) => ais.push(kind),
+    opener: async () => ({ ok: true }), titleCheck: async () => ({ ok: true }),
+    runner: async (_script, env) => {
+      folderSeen = env.XIAOXI_VDEL_ASK_DIR;
+      fs.writeFileSync(path.join(folderSeen, "prepare-member-1.png"), "png");
+      fs.writeFileSync(path.join(folderSeen, "prepare-member-1.req.json"), JSON.stringify({ id: "prepare-member-1", kind: "member", file: path.join(folderSeen, "prepare-member-1.png") }));
+      const answerFile = path.join(folderSeen, "prepare-member-1.res.json");
+      for (let i = 0; i < 100 && !fs.existsSync(answerFile); i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.deepEqual(JSON.parse(fs.readFileSync(answerFile, "utf8")).points.main, { x: 0.5, y: 0.25 });
+      return { ok: false, stage: "confirm", reason: "dry_run_stopped_before_delete", dryRun: true, eyes: ["member:found"] };
+    } });
+  assert.deepEqual(asked, [["member", person.remark]]);
+  assert.deepEqual(ais, ["member"]);
+  assert.deepEqual(result.eyes, ["member:found"]);
+  assert.ok(folderSeen && !fs.existsSync(folderSeen), "the picture folder is removed after the person");
+  // Without the model (not signed in, gateway down) no folder is handed over: the screen reading alone, as before.
+  let noFolder = "unset";
+  await deleteWechatContact(person, { confirm: false, uniqueName: true, focus, visualOnly: true, eyes: { ready: () => false, deleteStep: async () => ({}) },
+    opener: async () => ({ ok: true }), titleCheck: async () => ({ ok: true }), runner: async (_s, env) => { noFolder = env.XIAOXI_VDEL_ASK_DIR; return { ok: false, stage: "member", reason: "chat_member_not_found" }; } });
+  assert.equal(noFolder, undefined);
+
+  const { VISUAL_DELETE_SCRIPT: script } = require("../../rpa/active_touch/wechat_delete_contact_visual.cjs");
+  assert.ok(script.includes("Find-Label @($lines | Where-Object { $_.top -lt $panel.top }) '添加' 26"), "添加 found inside a line");
+  assert.ok(!script.includes("$_.text -eq '添加'") && !script.includes("$_.text -eq '删除联系人' }"), "no whole-line label comparison left");
+  for (const kind of ["member", "card_more", "menu_item", "confirm"]) assert.ok(script.includes(`Ask-Eyes "${kind}"`), `AI fallback for ${kind}`);
+  assert.ok(script.includes("if (-not $h -or $h -eq $mainHwnd) { return $dialog }"), "the model never looks for 删除 on the chat window itself");
+  assert.ok(script.includes('if ([string]$answer.reason -eq "stopped")'), "停止 while the model looks stops at once");
+  // Someone at the computer is read from the input events (a low-level hook, as touch's search), our own presses carry
+  // the marker, and 微信输入法's injected VK_NONAME is no key; the last-input time decides only without the hook.
+  assert.ok(script.includes("[XiaoxiDeleteInputGuard]::Start()") && script.includes("mouse_event(2, 0, 0, 0, [XiaoxiDeleteInputGuard]::Marker)")
+    && script.includes("mouse_event(4, 0, 0, 0, [XiaoxiDeleteInputGuard]::Marker)"), "our presses are marked for the input guard");
+  assert.ok(script.includes("if (injected && vk == 0xFC)"), "an injected VK_NONAME is counted, not taken for a person");
+  assert.ok(!script.includes("UIntPtr]::Zero)") || !/mouse_event\([24], 0, 0, 0, \[UIntPtr\]::Zero\)/u.test(script), "no unmarked press left");
+  checkLabelReading(script);
+  checkVisualTypeCompiles(script);
+  await checkCoreUniqueName();
+}
+
+// Two friends whose names differ only by an emoji are the same name to the card check, so neither counts as unique.
+async function checkCoreUniqueName() {
+  const os = require("node:os");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-core-unique-"));
+  try {
+    const row = (wxid, name) => ({ id: `w-${wxid}`, name, remark: name, wxid, wechatId: `wxid_${wxid}`, wechatAccountId: "当前号" });
+    fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([row("a1", "测试🌸客户"), row("a2", "测试客户"), row("a3", "测试客户乙")]));
+    const registry = createUnreachableRegistry(dir);
+    registry.record(row("a1", "测试🌸客户"), "deleted");
+    registry.record(row("a3", "测试客户乙"), "deleted");
+    const cleanup = createTouchCleanup(dir);
+    const wanted = [{ accountId: "当前号", key: "a1" }, { accountId: "当前号", key: "a3" }];
+    cleanup.remove(wanted);
+    const seen = [];
+    await cleanup.deleteInWechat(cleanup.planWechatDelete(wanted, { currentAccount: "当前号" }).wanted, { currentAccount: "当前号", verifyLiveAccount: async () => ({ ok: true }),
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "o" } }), release() {} }, wait: async () => {},
+      deleteContact: async (contact, options) => { seen.push([contact.name, options.uniqueName]); return { ok: true, deleted: true }; } });
+    assert.deepEqual(seen, [["测试🌸客户", false], ["测试客户乙", true]]);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+// The C# inside the script is compiled for real: the PowerShell parse check cannot see it (a second POINT once broke
+// every run with "visual_script_failed" while every parse check passed).
+function checkVisualTypeCompiles(script) {
+  const { spawnSync } = require("node:child_process");
+  const start = script.indexOf('if (-not ("XiaoxiVisualDelete" -as [type]))');
+  const open = script.indexOf('-TypeDefinition @"', start) + '-TypeDefinition @"'.length, close = script.indexOf('"@', open);
+  assert.ok(start >= 0 && open > start && close > open, "the XiaoxiVisualDelete type is found");
+  // Double-quoted, as the script itself passes it (PowerShell expands $ there).
+  const code = `$code = @"${script.slice(open, close)}"@\ntry { Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition $code; "compiled" } catch { "failed: " + $_.Exception.Message }`;
+  // Encoded: a here-string piped through stdin is not run as one statement.
+  const run = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(code, "utf16le").toString("base64")],
+    { encoding: "utf8", windowsHide: true, timeout: 90000 });
+  assert.equal(String(run.stdout).trim().split(/\r?\n/u).pop(), "compiled", String(run.stdout).slice(0, 400));
+}
+
+// Find-Label and Core run in PowerShell on lines shaped as Windows' OCR gives them (no screen, no OCR).
+function checkLabelReading(script) {
+  const { spawnSync } = require("node:child_process");
+  const pick = (start, end) => { const i = script.indexOf(start), j = script.indexOf(end, i); assert.ok(i >= 0 && j > i, start); return script.slice(i, j); };
+  const code = [pick("function Fold", "$plainName ="), pick("function Core", "$coreName ="), pick("function Find-Label", "# AI 看图"),
+    // "钱总一添加" as one line of single-character words, 10 px each from x = 100.
+    "$words = @(); $i = 0; foreach ($c in '钱总一添加'.ToCharArray()) { $words += @{ t = [string]$c; l = 100 + 10 * $i; r = 110 + 10 * $i; top = 50; b = 62 }; $i++ }",
+    "$lines = @(@{ text = '钱总一添加'; words = $words }, @{ text = '取消删除'; words = @(@{ t = '取消删除'; l = 0; r = 80; top = 90; b = 100 }) })",
+    "$a = Find-Label $lines '添加' 12; $d = Find-Label $lines '删除' 6; $n = Find-Label $lines '添加' 3",
+    "@{ add = $a.x; del = $d.x; short = [bool]$n; core = (Core '测试🌸客户[呲牙]') } | ConvertTo-Json -Compress"].join("\n");
+  // Encoded and UTF-8 out: piped through stdin, the Chinese text was garbled on the CI runner (another code page).
+  const run = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+    Buffer.from(`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n${code}`, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true, timeout: 60000 });
+  const answer = JSON.parse(String(run.stdout).trim().split(/\r?\n/u).pop());
+  assert.equal(answer.add, 140, "添加 at its own characters, not the line's middle");
+  assert.equal(answer.del, 60, "删除 inside one word 取消删除");
+  assert.equal(answer.short, false, "a line longer than maxLine is not a label");
+  assert.equal(answer.core, "测试客户");
+}
+
 // A WeChat with no UI Automation tree (b070e34b, 2026-11-26) is deleted by looking at the screen: the chat opened
 // with touch's search and its title checked, then prepare and commit of the visual script. Synthetic person only.
 (async () => {
@@ -298,5 +433,6 @@ async function checkDeleteModule() {
   const { VISUAL_DELETE_SCRIPT } = require("../../rpa/active_touch/wechat_delete_contact_visual.cjs");
   assert.ok(!/SendWait\("\{ESC\}"\)|keybd_event\(0x1B/u.test(VISUAL_DELETE_SCRIPT), "never Esc on the visual path: it hides WeChat 4");
   assert.ok(VISUAL_DELETE_SCRIPT.includes("visual_point_invalid") && VISUAL_DELETE_SCRIPT.includes("OwnerAt"), "a press only on a real point inside WeChat");
+  await checkVisualEyes(person, focus);
   console.log("visual delete routing self-check passed");
 })().catch((error) => { console.error(error); process.exit(1); });
