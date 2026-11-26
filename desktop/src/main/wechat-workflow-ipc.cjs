@@ -353,7 +353,7 @@ function registerWechatWorkflowIpc(options) {
       currentAccount,
       verifyLiveAccount: options.verifyLiveAccount,
       onProgress: (progress) => setExternalActivity("contactCleanup", progress.finished ? null : {
-        title: "正在微信里删除无效好友", step: progress.current ? `删除 ${progress.current}` : "准备中",
+        title: "正在删除无效好友", step: progress.current ? `删除 ${progress.current}` : "准备中",
         done: progress.done, total: progress.total, pausable: true, spacePause: Boolean(spaceHotkey.ready?.()) }),
       // Each miss is logged (step and reason, no names) so a failure report shows where deleting stops.
       onFailure: (failure) => options.logger?.event?.("wechat_workflow", failure.retrying ? "contact_cleanup.retry" : failure.degraded ? "contact_cleanup.id_check_degraded" : "contact_cleanup.person_failed", failure,

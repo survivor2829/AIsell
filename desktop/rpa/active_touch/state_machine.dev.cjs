@@ -48,8 +48,9 @@ async function visionRescueSearch(options, baseDir, opened, windowArgs) {
   const note = (outcome) => ({ ...opened, diagnostics: { ...opened.diagnostics, vision_outcome: outcome, vision_ms: Date.now() - started } });
   let answer;
   try {
-    answer = await options.visionRescue({ file, query: String(state.search_query || ""),
-      queryType: state.search_query_type === "wechat_id" ? "wechat_id" : "name", expectedName: String(state.selected_customer?.name || "") });
+    // Its own stage, so 小玺 shows that the AI is looking (user 2026-11-26: make the AI visible).
+    answer = await observeSendStage(options, "vision_search", () => options.visionRescue({ file, query: String(state.search_query || ""),
+      queryType: state.search_query_type === "wechat_id" ? "wechat_id" : "name", expectedName: String(state.selected_customer?.name || "") }));
   } catch (error) { answer = { ok: false, reason: String(error?.code || "vision_failed") }; }
   if (!answer?.ok) return note(String(answer?.reason || "vision_not_found"));
   const capture = searchCaptureSha256(file);
@@ -93,7 +94,7 @@ async function visionRescueTitle(options, baseDir, opened, windowArgs) {
   const note = (outcome) => ({ ...opened, diagnostics: { ...opened.diagnostics, vision_title_outcome: outcome, vision_title_ms: Date.now() - started } });
   let answer;
   try {
-    answer = await options.visionTitle({ file, expectedName: String(loadState(baseDir).selected_customer?.name || "") });
+    answer = await observeSendStage(options, "vision_title", () => options.visionTitle({ file, expectedName: String(loadState(baseDir).selected_customer?.name || "") }));
   } catch (error) { answer = { ok: false, reason: String(error?.code || "vision_failed") }; }
   if (!answer?.ok) return note(String(answer?.reason || "vision_title_mismatch"));
   const capture = titleCaptureSha256(file);

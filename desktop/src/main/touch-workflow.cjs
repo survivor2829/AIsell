@@ -491,6 +491,7 @@ function createTouchWorkflow(options = {}) {
           partTotal: 1 + imageIds.length + (link ? 1 : 0),
           verifiedParts: row?.message_parts?.filter((part) => part.status === "sent_verified").length || 0,
           textSent: row?.message_parts?.some((part) => part.kind === "text" && part.status === "sent_verified") === true,
+          aiFound: Array.isArray(task?.ai_found_contacts) ? task.ai_found_contacts.length : 0,
           ...detail });
       } catch { /* Display updates must never affect a send decision. */ }
     };
@@ -1022,6 +1023,9 @@ function createTouchWorkflow(options = {}) {
               { trace: true, level: "warn", code: "session_reuse_flags_invalid" });
           }
         }
+        // A contact the rules could not find or confirm and the AI looked at, then sent: counted for 小玺
+        // ("AI 帮忙找到 N 位", user 2026-11-26), once per contact.
+        let aiAskedFor = "";
         const executePart = async (part, partIndex, onPartTransition) => {
           const partProgress = { partKind: part.kind, partIndex: partIndex + 1 };
           reportProgress({ ...partProgress, stage: "prepare_contact" });
@@ -1068,6 +1072,7 @@ function createTouchWorkflow(options = {}) {
             ...(multipart ? { captureSessionAnchor: true, now,
               ...(partIndex > 0 ? { reuseSession: { partIndex, sourcePartIndex, anchor: sessionAnchor, disabled: !reuseEnabled } } : {}) } : {}),
             onDiagnostic: (detail) => {
+              if (detail.phase === "start" && /^vision_/.test(String(detail.stage || ""))) aiAskedFor = current.id;
               if (detail.phase === "start") reportProgress({ ...partProgress, stage: detail.stage,
                 readAttempt: detail.clipboard_read_attempts, retryAttempt: detail.retry_index, waitUntil: detail.wait_until });
               diagnostics().event("active_touch", "send_stage", detail, {
@@ -1094,6 +1099,9 @@ function createTouchWorkflow(options = {}) {
               currentIndex: index
             }),
             onTransition: (status, executionState = {}) => {
+              if (status === "sent_verified" && aiAskedFor === current.id) {
+                task.ai_found_contacts = [...new Set([...(task.ai_found_contacts || []), current.id])];
+              }
               if (status === "sent_verified") chatSurfaceSettled = { taskId: id, at: Date.now() };
               else if (status !== "sending") chatSurfaceSettled = { taskId: "", at: 0 };
               if (multipart) {

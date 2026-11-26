@@ -11,6 +11,9 @@ const CONFIRM = new Set(["after_send_confirmation", "part_complete", "post_confi
 
 export function touchPhase({ stage, partKind, partIndex }: TouchStep): string {
   if (WRITE.has(stage)) return "准备文字";
+  // The rules could not read it, so the AI looks at the picture (user 2026-11-26: make the AI visible).
+  if (stage === "vision_search") return "AI 看图找这位客户";
+  if (stage === "vision_title") return "AI 核对聊天对象";
   // partIndex counts the text as part 1, so the first picture is part 2 (same rule as the page's detail line).
   if (partKind === "image") return `发第 ${Math.max(1, (partIndex || 2) - 1)} 张图片`;
   if (partKind === "link") return "发网址";
