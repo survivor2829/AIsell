@@ -13,7 +13,10 @@ const PY_ROOTS = ["sidecars/content-engine/content_engine", "sidecars/product-de
 const SKIP = /(self_check|\.test\.|[\\/]tests?[\\/]|[\\/]test_|[\\/]scripts[\\/]|[\\/]docs[\\/]|[\\/]node_modules[\\/]|[\\/]__pycache__[\\/]|\.dev\.cjs$)/u;
 const INSTRUCTION = /(你是|请(根据|输出|生成|按|只|用)|只输出|输出\s*JSON|JSON\s*格式|不要输出|严格|要求[:：]|规则[:：]|返回\s*JSON)/u;
 const han = (text) => (String(text).match(/\p{Script=Han}/gu) || []).length;
-const counts = (text) => han(text) >= 30 || (han(text) >= 15 && INSTRUCTION.test(text));
+// English image/model instructions count too (gpt-image, Seedance prompts are written in English).
+const ENGLISH = /(do not|must|photorealistic|the product|Image d|composition|lighting|background|render|camera|close-?up|scene|shot)/iu;
+const english = (text) => String(text).length >= 140 && han(text) < 5 && ENGLISH.test(text) && (String(text).match(/ /gu) || []).length >= 15;
+const counts = (text) => han(text) >= 30 || (han(text) >= 15 && INSTRUCTION.test(text)) || english(text);
 
 function walk(dir, ext, out = []) {
   if (!fs.existsSync(dir)) return out;

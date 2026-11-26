@@ -38,7 +38,7 @@ assert.deepEqual(missing, [], `prompt tokens not in server/provider-gateway/prom
 
 // 2. The size tables shipped with the app match the library.
 for (const [file, text] of Object.entries(outputs())) {
-  assert.equal(fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "", text, `${path.relative(desktop, file)} is out of date: run node scripts/prompt-library-sync.cjs`);
+  assert.equal((fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "").replace(/\r\n/gu, "\n"), text, `${path.relative(desktop, file)} is out of date: run node scripts/prompt-library-sync.cjs`);
 }
 
 // 3. No moved wording is left behind in shipped code (a long stored passage found verbatim means a copy remains).

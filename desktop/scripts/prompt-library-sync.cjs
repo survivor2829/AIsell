@@ -28,7 +28,8 @@ module.exports = { sizes, outputs, LIBRARY };
 if (require.main === module) {
   const stale = [];
   for (const [file, text] of Object.entries(outputs())) {
-    const current = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+    // Line endings may differ after a Windows checkout; the content is what counts.
+    const current = (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "").replace(/\r\n/gu, "\n");
     if (current === text) continue;
     if (process.argv.includes("--check")) stale.push(path.relative(desktop, file));
     else fs.writeFileSync(file, text);
