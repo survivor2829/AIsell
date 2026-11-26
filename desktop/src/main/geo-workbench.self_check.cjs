@@ -2,11 +2,11 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { createGeoWorkbench, classifyVisibility, AI_DAILY_LIMIT, PUBLISH_DAILY_LIMIT } = require("./geo-workbench.cjs");
+const { createGeoWorkbench, classifyVisibility, computeStats, groupOf, AI_DAILY_LIMIT, PUBLISH_DAILY_LIMIT } = require("./geo-workbench.cjs");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const CHANNELS = [{ id: "toutiao", name: "今日头条", available: true, titleLimit: 30 }, { id: "zhihu", name: "知乎", available: false, reason: "待开放" }];
-function world({ publish, ask, generate } = {}) {
+function world({ publish, ask, generate, options = {} } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "geo-check-"));
   const log = { published: [], asked: [], ai: [], leases: 0, released: 0, signedOut: [], failures: [] };
   const list = [{ id: "tt1", platform: "toutiao", label: "头条号", status: "active" }, { id: "db1", platform: "doubao", label: "豆包号", status: "active" }, { id: "tt2", platform: "toutiao", label: "没登录", status: "login_required" }];
@@ -20,10 +20,11 @@ function world({ publish, ask, generate } = {}) {
     return { usage: {}, content: kind === "geo-questions" ? JSON.stringify({ questions: ["成都洗地机哪家好", "商用洗地机多少钱", 7] }) : JSON.stringify({ title: `洗地机怎么选${log.ai.length}`, body: "第一段。\n第二段。" }) };
   });
   const dataDir = path.join(root, "data");
-  const make = () => createGeoWorkbench({ dataDir, adapter, accounts, generateText, channels: CHANNELS, onFailure: (failure) => log.failures.push(failure) });
+  const make = () => createGeoWorkbench({ dataDir, adapter, accounts, generateText, channels: CHANNELS, onFailure: (failure) => log.failures.push(failure), ...options });
   const idle = async (geo) => { for (let i = 0; i < 400; i++) { await sleep(5); if (!geo.isBusy() && !geo.snapshot().publications.some((item) => item.status === "queued")) return geo.snapshot(); } throw new Error("still busy"); };
-  return { root, log, make, idle, dataDir };
+  return { root, log, make, idle, dataDir, list };
 }
+const local = (day, hour, minute = 0) => new Date(2026, 10, day, hour, minute).getTime();
 const brand = { name: "示例清洁", aliases: "示例", regions: "成都", services: "商用洗地机销售", cases: "", restrictions: "" };
 const code = (expected) => (error) => { assert.equal(error.code, expected, error.message); return true; };
 
@@ -203,7 +204,7 @@ const code = (expected) => (error) => { assert.equal(error.code, expected, error
     let fails = 1;
     const w = world({ generate: async ({ prompt }) => { w.log.ai.push(prompt); if (fails-- > 0) throw new Error("network"); return { content: JSON.stringify({ title: `标题${w.log.ai.length}`, body: "正文" }) }; } }), geo = w.make();
     await geo.dispatch("save-brand", brand);
-    await geo.dispatch("add-questions", { text: ["问题一", "问题二", "问题三", "问题四", "问题五", "问题六", "问题七"] });
+    await geo.dispatch("add-questions", { text: Array.from({ length: AI_DAILY_LIMIT + 1 }, (_, index) => `问题${index + 1}`) });
     const [first, ...rest] = geo.snapshot().questions;
     await assert.rejects(geo.dispatch("write-article", { questionId: first.id }));
     await assert.rejects(geo.dispatch("write-article", { questionId: first.id }), code("GEO_AI_PENDING"));
@@ -313,16 +314,155 @@ const code = (expected) => (error) => { assert.equal(error.code, expected, error
     // 软件中断：点过的变结果不明，没点的算没发出；损坏的记录保留原样。
     const w = world(), geo = w.make(); geo.dispose();
     const file = path.join(w.dataDir, "state.json"), saved = JSON.parse(fs.readFileSync(file, "utf8"));
-    saved.publications = [{ id: "p1", status: "running", clickedAt: "2026-11-01T00:00:00Z", accountId: "tt1" }, { id: "p2", status: "running", clickedAt: "", accountId: "tt1" }, { id: "p3", status: "queued", clickedAt: "", accountId: "tt1" }];
+    saved.publications = [{ id: "p1", status: "running", clickedAt: "2026-11-01T00:00:00Z", accountId: "tt1" }, { id: "p2", status: "running", clickedAt: "", accountId: "tt1" }, { id: "p3", status: "queued", clickedAt: "", accountId: "tt1" },
+      { id: "p4", status: "queued", clickedAt: "", accountId: "tt1", dueAt: "2026-11-01T01:30:00Z" }, { id: "p5", status: "scheduled", clickedAt: "", accountId: "tt1", dueAt: "2026-11-02T01:30:00Z" }];
     saved.ledger = [{ id: "l1", status: "executing", startedAt: "2026-11-01T00:00:00Z", requestHash: "x" }];
     saved.visibilityRuns = [{ id: "r1", status: "running" }];
+    saved.plan = { id: "pl", status: "writing", total: 3, items: [{ id: "i1", articleId: "gone", accountId: "", platform: "", due: "" }] };
     fs.writeFileSync(file, JSON.stringify(saved));
     const state = w.make().snapshot();
-    assert.deepEqual(state.publications.map((item) => item.status), ["unknown", "failed", "cancelled"], "重启后排队的取消，不会过几天悄悄发出");
+    assert.deepEqual(state.publications.map((item) => item.status), ["unknown", "failed", "cancelled", "scheduled", "scheduled"], "重启后临时排队的取消；按周确认过的回到计划里，按天再发");
+    assert.equal(state.plan.status, "ready", "写到一半中断：写好的留着等确认，不自动接着写");
     assert.equal(state.aiPending.length, 1); assert.equal(state.visibilityRuns[0].status, "failed");
     fs.writeFileSync(file, "{broken");
     assert.throws(() => w.make(), code("GEO_STATE_INVALID"));
     assert.equal(fs.readFileSync(file, "utf8"), "{broken");
+  }
+  {
+    // 问题分组：先打“地区 + 产品”这类容易赢的，“哪个牌子好”这种大词放后面。
+    assert.equal(groupOf("成都商用洗地机哪家好", ["成都"]), "本地");
+    assert.equal(groupOf("商用洗地机哪个牌子好", ["成都"]), "大词");
+    assert.equal(groupOf("洗地机坏了去哪修"), "售后");
+    assert.equal(groupOf("商用洗地机多少钱"), "价格");
+    assert.equal(groupOf("洗地机和扫地车哪个好"), "选购");
+    // 排第一：只认推荐列表的第一项；引用的网页认出是哪个平台。
+    const named = (answer) => classifyVisibility({ answer, references: [{ title: "x", url: "https://www.toutiao.com/article/1/" }], brand: { name: "示例清洁" }, articles: [], publications: [] });
+    assert.equal(named("可以看看这几家：\n1. 示例清洁：做洗地机\n2. 别家").rank, "top");
+    assert.equal(named("1. 别家\n2. 示例清洁").rank, "mention");
+    assert.equal(named("10. 示例清洁").rank, "mention", "第 10 项不是第 1 项");
+    assert.equal(named("别家").rank, "none");
+    assert.equal(named("别家").references[0].source, "今日头条");
+  }
+  {
+    // 首页的数：最近 7 天按 AI 分开算；每周的比例连成线；自己的文章被引用几篇；AI 常看哪些平台；本月询盘。
+    const now = local(26, 12), ago = (days) => new Date(now - days * 86_400_000).toISOString();
+    const stats = computeStats({ questions: [{ id: "q1", text: "一" }, { id: "q2", text: "二" }], inquiries: [{ at: ago(1), from: "豆包" }, { at: new Date(2026, 9, 3).toISOString(), from: "千问" }], visibilityRuns: [
+      { status: "completed", engine: "doubao", questionId: "q1", mentioned: true, rank: "top", finishedAt: ago(1), references: [{ source: "今日头条", association: "confirmed", articleId: "a1" }] },
+      { status: "completed", engine: "doubao", questionId: "q2", mentioned: false, rank: "none", finishedAt: ago(2), references: [{ source: "知乎", association: "unmatched" }, { source: "今日头条", association: "unmatched" }] },
+      { status: "completed", engine: "doubao", questionId: "q1", mentioned: true, rank: "mention", finishedAt: ago(20), references: [] },
+      { status: "failed", engine: "doubao", questionId: "q2", finishedAt: ago(1) }] }, now);
+    assert.deepEqual([stats.asked, stats.mentioned, stats.top], [2, 1, 1], "没查成的不算");
+    assert.deepEqual(stats.engines.map((item) => item.asked), [2, 0, 0, 0]);
+    assert.equal(stats.trend.at(-1), 50); assert.equal(stats.trend.at(-3), 100); assert.equal(stats.trend.at(-2), null, "那一周没查就空着");
+    assert.equal(stats.cited, 1);
+    assert.deepEqual(stats.sources.map((item) => item.name), ["今日头条", "知乎"]);
+    assert.deepEqual(stats.questions.q1, ["top", "", "", ""], "每个问题看最近一次的结果");
+    assert.deepEqual([stats.inquiriesThisMonth, stats.inquiriesFromAi], [1, 1]);
+  }
+  {
+    // 一周内容：AI 写好按天排开；确认前一篇不发；确认后到了那天、白天、软件开着才发，一次只交出一篇。
+    let now = local(26, 9);
+    const w = world({ options: { clock: () => now, scheduleEveryMs: 0 } }), geo = w.make();
+    await assert.rejects(geo.dispatch("plan-week"), code("GEO_BRAND_REQUIRED"));
+    await geo.dispatch("save-brand", brand);
+    await geo.dispatch("add-questions", { text: ["成都洗地机哪家好", "商用洗地机哪个牌子好", "洗地机怎么选"] });
+    await geo.dispatch("plan-week");
+    let state = await w.idle(geo);
+    assert.equal(state.plan.status, "ready"); assert.equal(state.plan.items.length, 6, "三个问题各写两版");
+    assert.deepEqual(state.plan.items.slice(0, 3).map((item) => item.question), ["成都洗地机哪家好", "洗地机怎么选", "商用洗地机哪个牌子好"], "先写容易赢的，大词放最后");
+    assert.ok(state.plan.items.every((item) => item.accountId === "tt1"), "只排给登录了的、开放的平台");
+    assert.equal(new Set(state.plan.items.map((item) => new Date(item.due).getDate())).size, 6, "一天一篇");
+    assert.match(w.log.ai[0], /当前年月：2026 年 11 月/); assert.match(w.log.ai[0], /常见问题/); assert.match(w.log.ai[0], /不要出现电话/);
+    assert.match(w.log.ai[3], /第 2 版/, "同一个问题的第二篇换角度");
+    await assert.rejects(geo.dispatch("plan-week"), code("GEO_PLAN_OPEN"), "上一批没确认不能再排");
+    geo.tick(); await sleep(5);
+    assert.equal(w.log.published.length, 0, "确认前一篇都不发");
+    await geo.dispatch("confirm-plan");
+    assert.equal(geo.snapshot().publications.filter((item) => item.status === "scheduled").length, 6);
+    geo.tick(); await sleep(5);
+    assert.equal(w.log.published.length, 0, "没到点不发");
+    now = local(26, 9, 40); geo.tick(); await w.idle(geo);
+    assert.equal(w.log.published.length, 1, "到点了只发当天这一篇");
+    geo.tick(); await w.idle(geo);
+    assert.equal(w.log.published.length, 1, "明天的不提前发");
+    now = local(27, 23); geo.tick(); await sleep(5);
+    assert.equal(w.log.published.length, 1, "晚上不发");
+    now = local(28, 10);
+    for (let i = 0; i < 3; i++) { geo.tick(); await w.idle(geo); }
+    assert.equal(w.log.published.length, 3, "前一天软件没开：第二天补上，按天的顺序一篇一篇来");
+    // 账号掉线：轮到它的那篇等着，扫码回来接着发。
+    now = local(29, 10); w.list[0].status = "login_required"; geo.tick(); await sleep(5);
+    assert.equal(w.log.published.length, 3);
+    w.list[0].status = "active"; geo.tick(); await w.idle(geo);
+    assert.equal(w.log.published.length, 4);
+    // 改过的文章不按旧的确认发。
+    const pending = geo.snapshot().publications.find((item) => item.status === "scheduled");
+    await geo.dispatch("save-article", { id: pending.articleId, title: "改过的标题", body: "改过的正文" });
+    assert.equal(geo.snapshot().publications.find((item) => item.id === pending.id).status, "cancelled");
+    geo.dispose();
+    // 重新打开：计划还在；过了一周还没发的取消，不会隔很久悄悄发出。
+    const again = w.make();
+    assert.equal(again.snapshot().publications.filter((item) => item.status === "scheduled").length, 1);
+    now = new Date(2026, 11, 20, 10).getTime(); again.tick();
+    assert.equal(again.snapshot().publications.filter((item) => item.status === "scheduled").length, 0);
+    assert.equal(w.log.published.length, 4);
+    again.dispose();
+  }
+  {
+    // 按计划发的时候点停下：这篇回到计划里，今天不再发；点“继续”才接着发。
+    let now = local(26, 9), hold = true, release;
+    const w = world({ publish: (job) => new Promise((resolve, reject) => {
+      if (!hold) { job.beforeClick(); w.log.published.push(job.title); resolve({ status: "public" }); return; }
+      release = () => reject(Object.assign(new Error("已停下"), { code: "GEO_STOPPED" }));
+    }), options: { clock: () => now, scheduleEveryMs: 0 } }), geo = w.make();
+    await geo.dispatch("save-brand", brand); await geo.dispatch("add-questions", { text: "成都洗地机哪家好" });
+    await geo.dispatch("plan-week"); await w.idle(geo);
+    await geo.dispatch("confirm-plan");
+    now = local(26, 10); geo.tick(); await sleep(10);
+    assert.equal(geo.snapshot().busy, "publish");
+    await geo.dispatch("stop"); release();
+    let state = await w.idle(geo);
+    const first = state.publications.find((item) => item.planItemId === state.plan.items[0].id);
+    assert.equal(first.status, "scheduled", "没点到发布就停下，确认还在"); assert.equal(state.pausedToday, true);
+    hold = false; geo.tick(); await sleep(10);
+    assert.equal(w.log.published.length, 0, "停下以后今天不再发");
+    await geo.dispatch("resume-schedule"); await sleep(5); await w.idle(geo);
+    assert.equal(w.log.published.length, 1, "点继续接着发");
+    geo.dispose();
+  }
+  {
+    // 发布时段可以调（真实验收时调成全天）：晚上也按计划发，记下的仍是真实时间。
+    let now = local(26, 23);
+    const w = world({ options: { clock: () => now, scheduleEveryMs: 0, publishHours: [0, 24] } }), geo = w.make();
+    await geo.dispatch("save-brand", brand); await geo.dispatch("add-questions", { text: "成都洗地机哪家好" });
+    await geo.dispatch("plan-week"); await w.idle(geo); await geo.dispatch("confirm-plan");
+    now = local(27, 23, 30); geo.tick(); const state = await w.idle(geo);
+    assert.equal(w.log.published.length, 1);
+    assert.equal(new Date(state.publications[0].clickedAt).getHours(), 23);
+    geo.dispose();
+  }
+  {
+    // 询盘：三下点完；不认识的来源记成“其他/不记得”；首页数本月的、说是在 AI 里看到的。
+    const w = world(), geo = w.make();
+    await geo.dispatch("add-inquiry", { via: "电话", from: "豆包", note: "想租两台，地库用" });
+    await geo.dispatch("add-inquiry", { via: "飞鸽", from: "火星" });
+    const state = geo.snapshot();
+    assert.deepEqual(state.inquiries.map((item) => [item.via, item.from]), [["电话", "豆包"], ["其他", "不记得"]]);
+    assert.deepEqual([state.stats.inquiriesThisMonth, state.stats.inquiriesFromAi], [2, 1]);
+    await geo.dispatch("remove-inquiry", { id: state.inquiries[0].id });
+    assert.equal(geo.snapshot().inquiries.length, 1);
+    geo.dispose();
+  }
+  {
+    // 不指定问题：把所有问题在每个登录了的 AI 里问一遍，记下是哪个 AI、排第几。
+    const w = world({ ask: async ({ engine, question }) => { w.log.asked.push(`${engine}:${question}`); return { answer: "1. 示例清洁：推荐\n2. 别家", references: [] }; } }), geo = w.make();
+    await geo.dispatch("save-brand", brand); await geo.dispatch("add-questions", { text: ["问题一", "问题二"] });
+    await geo.dispatch("check-visibility", {});
+    const state = await w.idle(geo);
+    assert.deepEqual(w.log.asked, ["doubao:问题一", "doubao:问题二"]);
+    assert.ok(state.visibilityRuns.every((run) => run.engine === "doubao" && run.rank === "top"));
+    assert.deepEqual([state.stats.asked, state.stats.top], [2, 2]);
+    geo.dispose();
   }
   console.log("geo workbench self-check passed");
 })().catch((error) => { console.error(error); process.exit(1); });

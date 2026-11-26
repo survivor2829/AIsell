@@ -146,6 +146,7 @@ SIZES = {
  "geo.article@1": 264,
  "geo.article_request.p1@1": 42,
  "geo.article_request.p2@1": 1101,
+ "geo.article_request.p2@2": 1921,
  "geo.questions.p1@1": 248,
  "publish.copy.body_rules@1": 292,
  "publish.copy.facts@1": 202,

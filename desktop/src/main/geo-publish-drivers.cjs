@@ -342,6 +342,8 @@ const GEO_CHANNELS = [
   // Confirmed by a real article on 2026-11-02.
   { id: "zhihu", name: "知乎", available: true, titleLimit: ZHIHU.titleLimit }
 ];
+// Assistants the software can ask today. 千问, DeepSeek and 元宝 are added once each was asked on a real account.
+const GEO_ENGINES = ["doubao"];
 const GEO_ACCOUNT_PLATFORMS = {
   zhihu: { name: "知乎", home: ZHIHU.home, hosts: ZHIHU.hosts, loginCookies: ZHIHU.loginCookies },
   toutiao: { name: "今日头条", home: TOUTIAO.home, hosts: TOUTIAO.hosts, loginCookies: TOUTIAO.loginCookies },
@@ -456,7 +458,8 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
   }
   // The page first shows a placeholder textarea and swaps in a rich-text box a few seconds later. Enter sends
   // (the send button does not answer mouse events from here); the box emptying is what proves it went out.
-  async function ask({ profileDir, question, shouldStop = () => false, onDetail = () => {} }) {
+  async function ask({ engine = "doubao", profileDir, question, shouldStop = () => false, onDetail = () => {} }) {
+    if (!GEO_ENGINES.includes(engine)) throw fail("GEO_CHANNEL_UNAVAILABLE", "这个 AI 还没接入。");
     return withPage(profileDir, async (page) => {
       await page.navigate(DOUBAO.url);
       const box = await waitThroughVerify(page, () => page.evaluate(`Boolean(${DOUBAO.input})`), { ms: 25_000, shouldStop, onDetail });
@@ -497,4 +500,4 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
   return { publish, ask, stop, dispose: stop };
 }
 
-module.exports = { makeCover, coverHtml, createGeoBrowserAdapter, GEO_CHANNELS, GEO_ACCOUNT_PLATFORMS, DRIVERS, DOUBAO, sameArticle, paragraphs, waitThroughVerify, findSoon, noticesOf, VERIFY };
+module.exports = { makeCover, coverHtml, createGeoBrowserAdapter, GEO_CHANNELS, GEO_ENGINES, GEO_ACCOUNT_PLATFORMS, DRIVERS, DOUBAO, sameArticle, paragraphs, waitThroughVerify, findSoon, noticesOf, VERIFY };

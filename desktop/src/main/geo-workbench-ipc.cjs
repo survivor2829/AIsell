@@ -2,7 +2,7 @@ const path = require("node:path");
 const { createSocialAccounts } = require("./social-accounts.cjs");
 const { createGeoWorkbench } = require("./geo-workbench.cjs");
 const { reportSocialFailure } = require("./social-publish-ipc.cjs");
-const { createGeoBrowserAdapter, GEO_CHANNELS, GEO_ACCOUNT_PLATFORMS } = require("./geo-publish-drivers.cjs");
+const { createGeoBrowserAdapter, GEO_CHANNELS, GEO_ENGINES, GEO_ACCOUNT_PLATFORMS } = require("./geo-publish-drivers.cjs");
 
 const ACCOUNT_ACTIONS = new Set(["account-add", "account-login", "account-refresh", "account-remove"]);
 
@@ -13,7 +13,7 @@ function registerGeoWorkbenchIpc({ ipcMain, shell, dataDir, deepSeekClient, getM
   const send = (state) => { const window = getMainWindow(); if (window && !window.isDestroyed()) window.webContents.send("geo:update", state); };
   try {
     accounts = options.accounts || createSocialAccounts({ dataDir: path.join(dataDir, "accounts"), platforms: GEO_ACCOUNT_PLATFORMS, probe: async () => false, onChange: () => geo?.emit() });
-    geo = createGeoWorkbench({ dataDir, accounts, channels: GEO_CHANNELS, adapter: options.adapter || createGeoBrowserAdapter(), onChange: send,
+    geo = createGeoWorkbench({ dataDir, accounts, channels: GEO_CHANNELS, engines: GEO_ENGINES, adapter: options.adapter || createGeoBrowserAdapter(), onChange: send,
       // Same log and screenshot folder as 一键分发, which failure capsules and the diagnostic package collect.
       onFailure: (failure) => reportSocialFailure({ logger, evidenceDir }, "geo_publish", failure),
       generateText: ({ prompt }) => deepSeekClient.geoContent({ prompt }) });
