@@ -588,7 +588,10 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
       if (!opened) return { answer: last, references: [] };
       await sleep(3000);
       const references = await page.evaluate(site.references);
-      return { answer: last, references: Array.isArray(references) ? references : null };
+      if (!Array.isArray(references)) return { answer: last, references: null };
+      // A page can list the same source twice (panel and inline); each counts once.
+      const seen = new Set();
+      return { answer: last, references: references.filter((row) => row?.url && !seen.has(row.url) && seen.add(row.url)) };
     });
   }
   // Closing the browser ends whatever step is in flight.

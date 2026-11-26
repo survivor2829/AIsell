@@ -52,7 +52,9 @@ async function platformSignedOut(browser, platformKey) {
 // Some sites keep the sign-in in the page's own storage, not in a cookie (DeepSeek: localStorage "userToken",
 // seen 2026-11-26). It is read as a stand-in cookie "storage:<key>" so the rest of this module treats it like a
 // cookie; like cookies its value is only compared, never kept. A tab already on the site is read in place; only a
-// hidden check (`open`) opens a small page of the site to read it.
+// hidden check (`open`) opens a small page of the site to read it. The visible window's tab is attached once and
+// kept (a new attachment every poll would pile up listeners on the browser).
+const storageTabs = new WeakMap();
 async function storageCookies(browser, platform, { open = false } = {}) {
   const spec = platform.loginStorage;
   if (!spec) return [];
@@ -64,14 +66,24 @@ async function storageCookies(browser, platform, { open = false } = {}) {
     let targetId = targetInfos.find((item) => item.type === "page" && hostMatches(item.url, host))?.targetId;
     if (!targetId && open) targetId = created = (await browser.send("Target.createTarget", { url: "about:blank" })).targetId;
     if (!targetId) return [];
-    const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true });
-    const page = pageFor(browser, sessionId);
+    let page;
     if (created) {
+      const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true });
+      page = pageFor(browser, sessionId);
       await page.navigate(spec.url);
-      for (let i = 0; i < 20 && !hostMatches(String(await page.url().catch(() => "")), host); i++) await sleep(250);
+      // A slow line can take a while to reach the site; reading anywhere else would look signed out.
+      for (let i = 0; i < 60 && !hostMatches(String(await page.url().catch(() => "")), host); i++) await sleep(250);
+      if (!hostMatches(String(await page.url().catch(() => "")), host)) return [];
+    } else {
+      const kept = storageTabs.get(browser);
+      if (kept?.targetId === targetId) page = kept.page;
+      else {
+        const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true });
+        page = pageFor(browser, sessionId);
+        storageTabs.set(browser, { targetId, page });
+      }
     }
     value = String(await page.evaluate(read) || "");
-    await browser.send("Target.detachFromTarget", { sessionId }).catch(() => {});
   } catch { value = ""; }
   finally { if (created) await browser.send("Target.closeTarget", { targetId: created }).catch(() => {}); }
   return value.length >= spec.minLength ? [{ name: `storage:${spec.key}`, value, domain: host, expires: -1 }] : [];
@@ -169,7 +181,9 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
     // Login cookies already in the profile may belong to a session the platform
     // ended. Only a cookie that changes while this window is open is a new login;
     // the comparison stays in memory and no value is kept.
-    const fingerprint = (cookies) => new Set(cookies.filter((cookie) => platforms[account.platform].loginCookies.includes(cookie.name))
+    // A stand-in read from page storage is not in `before` (the tab is still loading then), so it never counts as a
+    // new login: for such sites the gate (the site's own redirect to its login page) decides.
+    const fingerprint = (cookies) => new Set(cookies.filter((cookie) => platforms[account.platform].loginCookies.includes(cookie.name) && !cookie.name.startsWith("storage:"))
       .map((cookie) => crypto.createHash("sha256").update(`${cookie.name}=${cookie.value}`).digest("hex")));
     // Taken as the window opens, before the user can scan anything.
     const before = fingerprint((await browser.send("Storage.getCookies").catch(() => ({})))?.cookies || []);
