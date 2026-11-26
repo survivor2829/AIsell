@@ -161,7 +161,10 @@ function Find-Dots([int]$left, [int]$top, [int]$width, [int]$height) {
   $bitmap = New-Object System.Drawing.Bitmap ([Math]::Max(1, $width)), ([Math]::Max(1, $height))
   try {
     if (-not [XiaoxiScreenPixels]::Copy($bitmap, $left, $top)) { return @() }
-    @([XiaoxiVisualDelete]::Dots($bitmap, 0, 0, $width, $height) | ForEach-Object { @{ x = $_[0] + $left; y = $_[1] + $top } })
+    # Only dots on WeChat itself: a card's window includes a see-through shadow, and dots behind it belong to
+    # another program (dev machine 2026-11-26: a terminal's "…" behind the card's shadow).
+    @([XiaoxiVisualDelete]::Dots($bitmap, 0, 0, $width, $height) | ForEach-Object { @{ x = $_[0] + $left; y = $_[1] + $top } } |
+      Where-Object { [XiaoxiVisualDelete]::OwnerAt([int]$_.x, [int]$_.y) -eq $pid0 })
   } finally { $bitmap.Dispose() }
 }
 # Our own input only: nobody else may have touched the mouse or keyboard since our last press.
