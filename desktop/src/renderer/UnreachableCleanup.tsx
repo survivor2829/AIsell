@@ -40,6 +40,12 @@ const STOPPED: Record<string, string> = {
   chat_not_opened: "点开搜索结果后没进到这个人的聊天，已停下",
   search_box_not_found: "没找到微信的搜索框，已停下",
   wechat_main_window_not_found: "没找到微信聊天主窗口，整轮已停下",
+  contact_not_friend: "对方已不是好友，微信里没有删除入口",
+  ocr_unavailable: "这台电脑不能识别屏幕文字，整轮已停下",
+  chat_info_panel_not_shown: "没打开聊天信息，请稍后再删一次",
+  chat_member_not_found: "没找到这个人的头像，请稍后再删一次",
+  visual_point_invalid: "没找准要点的位置，为免点错已停下",
+  wechat_target_changed: "鼠标位置上不是微信窗口，为免点错已停下",
   wechat_window_not_ready: "微信窗口还没准备好，整轮已停下",
   confirm_text_mismatch: "确认框上的名字对不上，已停下"
 };
@@ -48,7 +54,7 @@ const wechatText = (result: WechatDelete) => result.status === "deleted" ? "微�
   : `微信里没删成：${STOPPED[result.reason] || (result.stage === "open" ? "在微信里没找到这个人" : "没找到删除按钮，已停下")}`;
 // People removed from the list whose WeChat delete stopped before 删除 and may work on another try.
 // (A friend of another WeChat account is left for when that account is logged in, not counted here.)
-const PERMANENT = new Set(["contact_name_not_unique", "delete_name_missing", "contact_not_saved", "wechat_version_unsupported", "wechat_account_mismatch"]);
+const PERMANENT = new Set(["contact_name_not_unique", "delete_name_missing", "contact_not_saved", "wechat_version_unsupported", "wechat_account_mismatch", "contact_not_friend"]);
 const retryable = (entry: UnreachableEntry) => entry.removed && entry.wechatDelete?.status === "failed" && !PERMANENT.has(entry.wechatDelete.reason);
 // What the touch page entry counts: people to clear plus people to try deleting in WeChat again.
 export const cleanupCount = (list: UnreachableList | null | undefined) => (list?.entries || []).filter((entry) => !entry.removed || retryable(entry)).length;

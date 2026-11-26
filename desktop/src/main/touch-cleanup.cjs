@@ -26,11 +26,13 @@ const NO_RETRY = new Set(["contact_name_not_unique", "delete_name_missing", "con
   "wechat_external_input_detected",
   // Same answer every time: WeChat shows no such person, or the person in front is not this one.
   "search_result_not_found", "search_input_failed", "search_box_not_found", "profile_wechat_id_mismatch", "profile_wechat_id_unreadable",
-  "chat_member_mismatch", "chat_title_mismatch", "confirm_text_mismatch"]);
+  "chat_member_mismatch", "chat_title_mismatch", "confirm_text_mismatch",
+  // Read from the screen (1.3.75): the card has no "…" because the person is no longer a friend; a point off WeChat.
+  "contact_not_friend", "visual_point_invalid", "wechat_target_changed"]);
 
 // Not about this person: WeChat itself cannot be read. Every next person would fail the same way, so the run stops
 // and says why (b070e34b, 2026-11-26: no chat window found, all 36 people skipped one by one, nothing deleted).
-const WHOLE_RUN = new Set(["wechat_main_window_not_found", "search_box_not_found", "wechat_version_unsupported", "wechat_window_not_ready"]);
+const WHOLE_RUN = new Set(["wechat_main_window_not_found", "search_box_not_found", "wechat_version_unsupported", "wechat_window_not_ready", "ocr_unavailable"]);
 
 function createTouchCleanup(activeTouchDir) {
   const registry = createUnreachableRegistry(activeTouchDir);

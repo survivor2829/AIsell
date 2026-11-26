@@ -348,7 +348,15 @@ function registerWechatWorkflowIpc(options) {
     cleanupRunning = true;
     syncSpaceHotkey(controller.status());
     const run = cleanup().deleteInWechat(plan.wanted, {
-      deleteContact: options.deleteWechatContact,
+      // The PP-OCRv4 line reader is up first, as for touch (5 s at most): deleting on a WeChat without a UI
+      // Automation tree reads the card's 微信号 with it. Without it Windows' own reading is used.
+      deleteContact: async (...args) => {
+        try {
+          const ready = require("./line-ocr-service.cjs").lineOcrService()?.ensure();
+          if (ready) await Promise.race([ready, new Promise((resolve) => setTimeout(resolve, 5000).unref?.())]);
+        } catch { /* optional */ }
+        return options.deleteWechatContact(...args);
+      },
       coordinator: options.coordinator,
       currentAccount,
       verifyLiveAccount: options.verifyLiveAccount,
