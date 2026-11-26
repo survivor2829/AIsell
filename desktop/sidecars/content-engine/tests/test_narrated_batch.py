@@ -224,7 +224,8 @@ class NarratedBatchTests(unittest.TestCase):
                     if s["asset_id"] == payload["available_asset_ids"][0]][:3]
             return {"candidates": [{"title": "不同现场的清洁展示", "angle": "场景选择", "shot_ids": keys, "phrases": [
                 {"text": "先看现场地面。", "shot_ids": keys[:1]},
-                {"text": "不同场景需求不同，要结合实际判断，这句也要完整显示。", "shot_ids": keys[1:]}]}]}
+                {"text": "再看通道。", "shot_ids": keys[1:2]},
+                {"text": "要结合实际判断。", "shot_ids": keys[2:]}]}]}
         self.analyzer.cloud_client._structured_completion = complete
         grounding = patch.object(NarratedBatchDomain, "_ground_shots",
             lambda self, task, batch, shots, snapshots, versions:
@@ -251,9 +252,11 @@ class NarratedBatchTests(unittest.TestCase):
         segments = [s for s in recipe["visual_segments"] if s.get("media_kind") != "image"]
         joins = [index for index, (a, b) in enumerate(zip(segments, segments[1:]), 1)
                  if a["segment_id"] == b["segment_id"] and a["end_ms"] == b["start_ms"]]
-        self.assertEqual(1, len(joins), "the split shot plays on unbroken")
-        join_ms = sum(s["target_duration_ms"] for s in segments[:joins[0]])
-        self.assertEqual(recipe["captions"][1]["start_ms"], join_ms, "the second phrase starts on the second piece")
+        # Short phrases cut the first shot twice: its middle piece touches a join on both sides.
+        self.assertEqual(2, len(joins), "the split shot plays on unbroken")
+        join_points = [sum(s["target_duration_ms"] for s in segments[:index]) for index in joins]
+        self.assertEqual(join_points, [c["start_ms"] for c in recipe["captions"][1:3]], "each phrase starts on its piece")
+        join_ms = join_points[0]
         run = self.s.connection.execute("SELECT public_plan_json FROM auto_mix_runs_v2 WHERE generated_video_id=?",
                                         (candidate["generated_video_id"],)).fetchone()
         points = json.loads(run[0])["musicBrief"]["transitionPointsMs"]

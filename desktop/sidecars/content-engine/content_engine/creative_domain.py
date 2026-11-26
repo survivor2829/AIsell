@@ -238,11 +238,18 @@ def _split_narrated_shots(phrases, required, segments, minimum):
 
 def rebalance_narrated_phrase_refs(phrases, phrase_audio, segments, *, pause_ms=160):
     """Move only phrase boundaries so measured speech fits the ordered shots."""
-    if not phrases or len(phrases) != len(phrase_audio) or len(segments) < len(phrases):
+    # Fewer shots than phrases is left to the split below, which can share a shot.
+    if not phrases or len(phrases) != len(phrase_audio) or not segments:
         raise ContentEngineError("narrated_voice_mapping", "口播与镜头数量不匹配。")
     segment_refs = [segment["evidence_ref"] for segment in segments]
-    original_refs = [list(phrase.get("evidenceRefs") or []) for phrase in phrases]
-    if any(not refs for refs in original_refs) or list(itertools.chain.from_iterable(original_refs)) != segment_refs:
+    saved_refs = [list(phrase.get("evidenceRefs") or []) for phrase in phrases]
+    # Phrases saved after a split repeat the shot they share; a rerun (resume,
+    # new music) starts again from the unsplit shots, so read each shot once.
+    original_refs, last = [], None
+    for refs in saved_refs:
+        original_refs.append([ref for ref in refs if ref != last])
+        last = refs[-1] if refs else last
+    if any(not refs for refs in saved_refs) or list(itertools.chain.from_iterable(original_refs)) != segment_refs:
         raise ContentEngineError("narrated_voice_mapping", "口播与镜头顺序不匹配。")
 
     durations = [int(segment["target_duration_ms"]) for segment in segments]
@@ -289,7 +296,7 @@ def rebalance_narrated_phrase_refs(phrases, phrase_audio, segments, *, pause_ms=
 
     boundaries = states[segment_count][2]
     start = 0
-    for phrase, previous_refs, end in zip(phrases, original_refs, boundaries):
+    for phrase, previous_refs, end in zip(phrases, saved_refs, boundaries):
         refs = segment_refs[start:end]
         phrase["evidenceRefs"] = refs
         if refs != previous_refs:
@@ -3799,17 +3806,15 @@ class CreativeDomain:
                 ],
             }
         )
-        final_transitions = [
-            item.get("timeline_start_ms")
-            for item in voice_bundle["timeline"].get("selected_segments") or []
-            if (item.get("split_part") or 0) <= 1  # a split shot plays on: no cut there
-        ]
+        from .narrated_batch import whole_shots
+        # A split shot plays on, so it is one cut and one signal for the music.
+        final_shots = whole_shots(voice_bundle["timeline"].get("selected_segments") or [])
+        final_transitions = [item.get("timeline_start_ms") for item in final_shots]
         public_plan["musicBrief"] = build_music_brief(
             title=row["title"],
             copy_framework=row["copy_framework"],
             transition_points_ms=final_transitions,
-            material_signals=voice_bundle["timeline"].get("selected_segments")
-            or [],
+            material_signals=final_shots,
         )
         private_state.update(
             {
@@ -3931,9 +3936,9 @@ class CreativeDomain:
                     100
                     * sum(
                         float(item.get("quality_score") or 0)
-                        for item in voice_bundle["timeline"]["selected_segments"]
+                        for item in final_shots
                     )
-                    / max(1, len(voice_bundle["timeline"]["selected_segments"])),
+                    / max(1, len(final_shots)),
                     3,
                 ),
                 "contract": "auto_mix_v2",
@@ -4862,6 +4867,11 @@ class CreativeDomain:
                         [s["target_duration_ms"] for s in segments], pause_ms=160,
                         failed_phrase_index=index, failed_speech_ms=speech, failed_group_ms=available))
                 pause = min(160, available - speech) if index < len(phrases) - 1 else 0
+                following = segments[position + len(group)] if position + len(group) < len(segments) else {}
+                if (following.get("split_part") or 0) > 1 and following.get("segment_id") == group[-1].get("segment_id"):
+                    # The phrase ends inside a split shot: trimming here would make the
+                    # shot jump, so the piece plays whole and the rest is a pause.
+                    pause = available - speech
                 budget = speech + pause
                 observed_budgets = sentence_shot_budgets(phrase, item, group, pause)
                 item["shot_timing_source"] = "asr_sentences" if observed_budgets else "phrase"
@@ -6110,8 +6120,10 @@ class CreativeDomain:
         callouts = [
             item for item in items or [] if str(item.get("type") or "") == "callout"
         ]
+        from .narrated_batch import whole_shots
         evidence_intervals = {}
-        for segment in (
+        # A callout on a split shot may use the whole shot, not just one piece.
+        for segment in whole_shots(
             timeline.get("selected_segments") or []
             if isinstance(timeline, dict)
             else []

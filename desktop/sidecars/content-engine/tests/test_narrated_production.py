@@ -66,6 +66,48 @@ class NarratedTimelineTests(unittest.TestCase):
                          [(s['source_start_ms'], s['source_end_ms'], s.get('split_part')) for s in segments])
         self.assertEqual([3_160, 1_840, 2_000], [s['target_duration_ms'] for s in segments])
 
+    def test_a_rerun_from_the_unsplit_shots_reaches_the_same_split(self):
+        # Resume and new music rebuild the shots unsplit but keep the saved phrases.
+        def shots():
+            return [{'evidence_ref': 's1', 'segment_id': 's1', 'source_start_ms': 0, 'source_end_ms': 5_000,
+                     'target_duration_ms': 5_000},
+                    {'evidence_ref': 's2', 'segment_id': 's2', 'source_start_ms': 0, 'source_end_ms': 2_000,
+                     'target_duration_ms': 2_000}]
+        phrases = [{'evidenceRefs': ['s1']}, {'evidenceRefs': ['s2']}]
+        audio = [{'duration_ms': 3_000}, {'duration_ms': 3_000}]
+        first = shots()
+        rebalance_narrated_phrase_refs(phrases, audio, first)
+        saved = [list(p['evidenceRefs']) for p in phrases]
+        self.assertEqual([['s1'], ['s1', 's2']], saved)
+        again = shots()
+        rebalance_narrated_phrase_refs(phrases, audio, again)
+        self.assertEqual(saved, [p['evidenceRefs'] for p in phrases])
+        self.assertEqual(first, again)
+
+    def test_one_shot_can_carry_more_phrases_than_there_are_shots(self):
+        phrases = [{'evidenceRefs': ['s1']}, {'evidenceRefs': ['s1']}]
+        segments = [{'evidence_ref': 's1', 'segment_id': 's1', 'source_start_ms': 0, 'source_end_ms': 12_000,
+                     'target_duration_ms': 12_000}]
+        rebalance_narrated_phrase_refs(phrases, [{'duration_ms': 4_000}, {'duration_ms': 4_000}], segments)
+        self.assertEqual([4_160, 7_840], [s['target_duration_ms'] for s in segments])
+        self.assertEqual([['s1'], ['s1']], [p['evidenceRefs'] for p in phrases])
+
+    def test_rebalancing_reports_a_split_failure_when_the_total_fits(self):
+        # Footage outlasts the voice by 40 ms: no split leaves a piece worth showing.
+        phrases = [{'evidenceRefs': ['s1']}, {'evidenceRefs': ['s2']}]
+        audio = [{'duration_ms': 4_500}, {'duration_ms': 2_300}]
+        segments = [{'evidence_ref': 's1', 'segment_id': 's1', 'source_start_ms': 0, 'source_end_ms': 5_000,
+                     'target_duration_ms': 5_000},
+                    {'evidence_ref': 's2', 'segment_id': 's2', 'source_start_ms': 0, 'source_end_ms': 2_000,
+                     'target_duration_ms': 2_000}]
+        before = copy.deepcopy((phrases, segments))
+        with self.assertRaises(ContentEngineError) as raised:
+            rebalance_narrated_phrase_refs(phrases, audio, segments)
+        details = raised.exception.details
+        self.assertEqual(('rebalance_no_fit', -40, 1),
+                         (details['reason'], details['total_overrun_ms'], details['failed_phrase_index']))
+        self.assertEqual(before, (phrases, segments), 'a failed split changes nothing')
+
     def test_split_pieces_count_as_the_planned_shot(self):
         from content_engine.narrated_batch import whole_shots
         pieces = [{'evidence_ref': 's1', 'segment_id': 's1', 'source_start_ms': 10_000, 'source_end_ms': 13_000,

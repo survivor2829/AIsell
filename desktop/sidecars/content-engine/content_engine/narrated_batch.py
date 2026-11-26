@@ -83,10 +83,13 @@ def whole_shots(shots):
     """Join the pieces of a shot that carried two phrases back into that shot."""
     joined = []
     for shot in shots:
-        previous = joined[-1] if joined else None
+        if not isinstance(shot, dict):
+            joined.append(shot)
+            continue
+        previous = joined[-1] if joined and isinstance(joined[-1], dict) else None
         if (shot.get("split_part") or 0) > 1 and previous and previous.get("segment_id") == shot.get("segment_id"):
-            previous.update(source_end_ms=shot["source_end_ms"], target_duration_ms=int(previous["target_duration_ms"]) + int(shot["target_duration_ms"]),
-                            **({"timeline_end_ms": shot["timeline_end_ms"]} if "timeline_end_ms" in shot else {}))
+            previous["target_duration_ms"] = int(previous.get("target_duration_ms") or 0) + int(shot.get("target_duration_ms") or 0)
+            previous.update({key: shot[key] for key in ("source_end_ms", "timeline_end_ms") if key in shot})
             continue
         joined.append({key: value for key, value in shot.items() if key != "split_part"})
     return joined
