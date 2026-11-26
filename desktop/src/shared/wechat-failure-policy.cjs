@@ -36,6 +36,8 @@ const workflowPolicies = Object.freeze({
   vision_failed: { classification: "recoverable", attentionScope: "task" },
   vision_kind_unknown: { classification: "blocker", attentionScope: "task" },
   vision_request_invalid: { classification: "blocker", attentionScope: "task" },
+  // 停止 pressed while the model looked: the script stops at once (the person ends as stopped_by_user).
+  stopped: { classification: "environment", attentionScope: "task" },
   search_input_failed: { classification: "blocker", attentionScope: "task" },
   confirm_dialog_not_shown: { classification: "recoverable", attentionScope: "task" },
   // The card's 微信号 could not be read and another synced friend shows the same name: never guessed.
