@@ -23,6 +23,7 @@ const evidenceOf = (result) => ({
   ...(typeof result?.inputReason === "string" ? { input_reason: result.inputReason } : {}),
   ...(Number.isFinite(result?.inputNonameKeys) ? { input_noname_keys: result.inputNonameKeys } : {}),
   ...(Number.isFinite(result?.windowsRaised) ? { windows_raised: result.windowsRaised } : {}),
+  ...(Number.isFinite(result?.windowsStillCovered) ? { windows_still_covered: result.windowsStillCovered } : {}),
   ...(Number.isFinite(result?.scriptLine) ? { script_line: result.scriptLine } : {}),
   ...(typeof result?.errorType === "string" ? { error_type: result.errorType } : {})
 });

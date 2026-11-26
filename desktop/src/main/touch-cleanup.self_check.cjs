@@ -317,9 +317,11 @@ async function checkVisualEyes(person, focus) {
   // 1.3.78 (b070e34b, 1.3.77: the chat window was raised over the card and confirm, which then could not be read and
   // whose 删除 was pressed on the chat window): only the window meant is raised, never the chat window over an open
   // card or confirm, and a press needs that very window under the point.
-  assert.ok(!script.includes("SetForegroundWindow([IntPtr]$mainHwnd)"), "the chat window is never raised on its own");
-  assert.ok(script.includes("[XiaoxiVisualDelete]::RootAt([int]$x, [int]$y) -ne $target"), "a press needs the window meant under the point");
-  for (const read of ["Uncover $card", "Uncover $menuWindow", "    Uncover $h"]) assert.ok(script.includes(read), `uncovered before reading: ${read.trim()}`);
+  assert.ok(script.includes("elseif (-not $popups.Count) { Raise-Window $mainHwnd"), "the chat window is raised only when no card, menu or confirm is open");
+  assert.ok(script.includes("if ($at -ne $h -and $ours -notcontains $at)"), "our own menu or confirm over the card is not cover");
+  assert.ok(script.includes("Read-Confirm -Still"), "the check after the press moves nothing");
+  assert.ok(script.includes("if (-not (& $onTarget))"), "a press needs the window meant under the point");
+  for (const read of ["Uncover $card", "Uncover $menuWindow", "if (-not $Still) { Uncover $h }"]) assert.ok(script.includes(read), `uncovered before reading: ${read.trim()}`);
   checkLabelReading(script);
   checkVisualTypeCompiles(script);
   await checkCoreUniqueName();

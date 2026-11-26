@@ -22,6 +22,7 @@ const { WECHAT_SCREEN_OCR_POWERSHELL } = require("./wechat_screen_ocr.cjs");
 const VISUAL_DELETE_SCRIPT = String.raw`
 $ErrorActionPreference = "Stop"
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
 ${WECHAT_SCREEN_PIXELS_POWERSHELL}
 ${WECHAT_SCREEN_OCR_POWERSHELL}
 if (-not ("XiaoxiVisualDelete" -as [type])) {
@@ -60,7 +61,12 @@ public static class XiaoxiVisualDelete {
   [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
   // Above every other window without moving it: briefly topmost, then back to normal (another program's window may not
   // be brought forward with SetForegroundWindow alone).
-  public static void Lift(IntPtr h) { SetWindowPos(h, new IntPtr(-1), 0, 0, 0, 0, 0x0013); SetWindowPos(h, new IntPtr(-2), 0, 0, 0, 0, 0x0013); }
+  [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int index);
+  // A window already always-on-top keeps that: it is only brought to the top of its layer.
+  public static void Lift(IntPtr h) {
+    if ((GetWindowLong(h, -20) & 0x8) != 0) { SetWindowPos(h, IntPtr.Zero, 0, 0, 0, 0, 0x0013); return; }
+    SetWindowPos(h, new IntPtr(-1), 0, 0, 0, 0, 0x0013); SetWindowPos(h, new IntPtr(-2), 0, 0, 0, 0, 0x0013);
+  }
   public static uint OwnerAt(int x, int y) { var p = new POINT { X = x, Y = y }; IntPtr root = GetAncestor(WindowFromPoint(p), 2); uint pid; GetWindowThreadProcessId(root, out pid); return pid; }
   public static uint LastInput() { var i = new LASTINPUTINFO(); i.cbSize = (uint)Marshal.SizeOf(i);
     if (Environment.GetEnvironmentVariable("XIAOXI_UNATTENDED_INPUT") == "1") return 1u; return GetLastInputInfo(ref i) ? i.dwTime : UInt32.MaxValue; }
@@ -373,8 +379,13 @@ function Raise-Window($h) {
 function Uncover($h) {
   if (-not $h -or $h -eq $mainHwnd) { return }
   $r = Rect $h; $w = $r.Right - $r.Left; $hh = $r.Bottom - $r.Top
-  $covered = { foreach ($p in @(@(0.5, 0.5), @(0.15, 0.15), @(0.85, 0.15), @(0.15, 0.85), @(0.85, 0.85))) {
-    if ([XiaoxiVisualDelete]::RootAt([int]($r.Left + $w * $p[0]), [int]($r.Top + $hh * $p[1])) -ne $h) { return $true } }; return $false }
+  # Our own menu or confirm over the card is expected; only the chat window or another program counts as cover, and a
+  # point off the screen (a card hanging over the edge) is not looked at.
+  $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+  $covered = { $ours = @(Get-Popups); foreach ($p in @(@(0.5, 0.5), @(0.15, 0.15), @(0.85, 0.15), @(0.15, 0.85), @(0.85, 0.85))) {
+    $px = [int]($r.Left + $w * $p[0]); $py = [int]($r.Top + $hh * $p[1])
+    if (-not $screen.Contains($px, $py)) { continue }
+    $at = [XiaoxiVisualDelete]::RootAt($px, $py); if ($at -ne $h -and $ours -notcontains $at) { return $true } }; return $false }
   if (& $covered) { Raise-Window $h; $script:raised++; if (& $covered) { $script:stillCovered++ } }
 }
 $script:raised = 0; $script:stillCovered = 0
@@ -387,16 +398,21 @@ function Press($x, $y, [string]$stage) {
   $x = [double]$x; $y = [double]$y
   if (Lease-Broken) { Close-Opened; Out-Result $false $stage $(if ($script:inputReason -eq "input_guard_lost") { "wechat_input_lease_unavailable" } else { "wechat_external_input_detected" }) }
   $target = Target-Window $x $y
+  $popups = @(Get-Popups)
   $ours = { $front = [XiaoxiVisualDelete]::GetForegroundWindow().ToInt64(); $front -eq $mainHwnd -or @(Get-Popups) -contains $front }
-  # The window meant is brought to the front when something else is, or covers the point. On commit only the confirm
-  # itself may be: bringing the chat window forward could hide or close it.
-  if (-not (& $ours) -or [XiaoxiVisualDelete]::RootAt([int]$x, [int]$y) -ne $target) {
-    if ($stage -ne "commit" -or $target -ne $mainHwnd) { Raise-Window $target; $script:raised++ }
+  # Right under the point: the chat window for a press on it, any window this run opened for a press on one of them
+  # (WeChat may draw a frame or shadow window with a card).
+  $onTarget = { $at = [XiaoxiVisualDelete]::RootAt([int]$x, [int]$y); if ($target -eq $mainHwnd) { $at -eq $mainHwnd } else { @(Get-Popups) -contains $at } }
+  # The window meant is brought to the front when something else is, or covers the point. The chat window never while a
+  # card, menu or confirm is open (it would hide them): then the press stops instead.
+  if (-not (& $ours) -or -not (& $onTarget)) {
+    if ($target -ne $mainHwnd) { Raise-Window $target; $script:raised++ }
+    elseif (-not $popups.Count) { Raise-Window $mainHwnd; $script:raised++ }
   }
   # Windows may refuse the switch (another program in front, 2026-11-26 on the dev machine): never press then.
   if (-not (& $ours)) { Close-Opened; Out-Result $false $stage "wechat_window_not_foreground" }
   # The point itself must be on the window meant, not on another window (even WeChat's own) drawn over it.
-  if ([XiaoxiVisualDelete]::RootAt([int]$x, [int]$y) -ne $target) {
+  if (-not (& $onTarget)) {
     Close-Opened; Out-Result $false $stage $(if ([XiaoxiVisualDelete]::OwnerAt([int]$x, [int]$y) -eq $pid0) { "wechat_target_covered" } else { "wechat_target_changed" })
   }
   if (Lease-Broken) { Close-Opened; Out-Result $false $stage $(if ($script:inputReason -eq "input_guard_lost") { "wechat_input_lease_unavailable" } else { "wechat_external_input_detected" }) }
@@ -438,10 +454,10 @@ function Wait-For([scriptblock]$probe, [int]$ms = 3000) {
   return $null
 }
 # The confirm: a line naming this person with 删除, and a separate 删除 button, on any WeChat window.
-function Read-Confirm {
+function Read-Confirm([switch]$Still) {
   foreach ($h in @(Get-Popups) + @($mainHwnd)) {
     if ($coreName.Length -lt 2) { return $null }
-    Uncover $h
+    if (-not $Still) { Uncover $h }
     $r = Rect $h; $lines = @(Read-Lines $r.Left $r.Top ($r.Right - $r.Left) ($r.Bottom - $r.Top) | Sort-Object { $_.top })
     # The question may wrap onto a second line (a long name), so a line with 删除 and the one below are read together.
     $question = $null
@@ -478,7 +494,9 @@ function Find-Confirm([int]$ms) {
   if (-not $ai -or -not $ai.ok -or -not $ai.points.delete) { return $dialog }
   $b = $ai.points.delete
   if ($b.x -le $r.Left -or $b.x -ge $r.Right -or $b.y -le $r.Top -or $b.y -ge $r.Bottom) { return $dialog }
-  return @{ hwnd = $h; button = $b; cancel = $ai.points.cancel; by = "ai" }
+  $c = $ai.points.cancel
+  if ($c -and ($c.x -le $r.Left -or $c.x -ge $r.Right -or $c.y -le $r.Top -or $c.y -ge $r.Bottom)) { $c = $null }
+  return @{ hwnd = $h; button = $b; cancel = $c; by = "ai" }
 }
 $main = Rect $mainHwnd
 $mw = $main.Right - $main.Left; $mh = $main.Bottom - $main.Top
@@ -491,7 +509,8 @@ if ($phase -eq "commit") {
   if (-not $dialog -or -not $dialog.button) { Close-Opened; Out-Result $false "commit" "confirm_dialog_gone" @{ notClicked = $true } }
   Press $dialog.button.x $dialog.button.y "commit"
   # Deleted when the confirm and the card are gone and the chat of this person is closed (its title no longer shown).
-  $gone = Wait-For { if (-not (Read-Confirm) -and -not @(Get-Popups).Count) { $true } } 4000
+  # After the press nothing is moved: the check only looks.
+  $gone = Wait-For { if (-not (Read-Confirm -Still) -and -not @(Get-Popups).Count) { $true } } 4000
   if ($gone) {
     $head = @(Read-Lines ($main.Left + [int]($mw * 0.25)) $main.Top ([int]($mw * 0.75)) ([Math]::Max(40, [int]($mh * 0.1))))
     # Tolerant on purpose (a title can lose a character): a doubtful title makes it unknown, never "deleted".
