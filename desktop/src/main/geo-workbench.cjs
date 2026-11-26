@@ -467,7 +467,7 @@ function createGeoWorkbench({ dataDir, adapter, accounts, generateText, channels
     if (!state.brand.name) throw fail("GEO_BRAND_REQUIRED", "请先填好公司名称。");
     const askers = p.accountId ? [accountList().find((item) => item.id === p.accountId && engines.includes(item.platform) && item.status === "active")].filter(Boolean)
       : engines.map((engine) => accountList().find((item) => item.platform === engine && item.status === "active")).filter(Boolean);
-    if (!askers.length) throw fail("GEO_ACCOUNT_REQUIRED", p.accountId ? "这个账号还没登录，请先扫码。" : "还没有登录可以查的 AI，先扫码登录豆包。");
+    if (!askers.length) throw fail("GEO_ACCOUNT_REQUIRED", p.accountId ? "这个账号还没登录，请先扫码。" : "还没有登录可以查的 AI，先扫码登录豆包、千问、DeepSeek 或元宝。");
     const questions = Array.isArray(p.questionIds) ? state.questions.filter((item) => p.questionIds.includes(item.id)) : state.questions;
     if (!questions.length) throw fail("GEO_QUESTION_REQUIRED", Array.isArray(p.questionIds) ? "请选择要查的问题。" : "还没有问题，先加几个客户会问的问题。");
     const perEngine = Math.max(1, Math.floor(MAX_ASKS / askers.length)), chosen = questions.slice(0, perEngine);

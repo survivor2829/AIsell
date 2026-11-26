@@ -222,7 +222,7 @@ function todayTask(state: GeoState, run: Run, open: Open): Task {
   const scheduled = state.publications.filter((row) => row.status === "scheduled").sort((a, b) => Date.parse(a.dueAt || "") - Date.parse(b.dueAt || ""));
   if (state.pausedToday && scheduled.length) return { title: "今天的发布暂停了", desc: `还有 ${scheduled.length} 篇按计划待发，明天自动接着发。`, primary: { label: "现在继续", onClick: () => void run("resume", "resume-schedule", {}, "好的，接着发。") } };
   if (state.plan?.status === "ready") return { title: `这一周的 ${state.plan.items.length} 篇写好了`, desc: state.plan.message || "发到哪个平台、哪天发都排好了。过目一遍，没问题就全部确认。", primary: { label: "过目并确认", onClick: () => open({ kind: "plan" }) } };
-  if (!aiReady(state)) return { title: "登录豆包，开始体检", desc: "扫一下码，软件就能去问 AI 有没有提到你。", primary: { label: "去扫码", onClick: () => open({ kind: "accounts" }) } };
+  if (!aiReady(state)) return { title: "登录 AI，开始体检", desc: "豆包、千问、DeepSeek、元宝都能查，扫码登录一个就能开始。", primary: { label: "去扫码", onClick: () => open({ kind: "accounts" }) } };
   if (!state.visibilityRuns.some((row) => row.status === "completed")) return { title: "先做第一次体检", desc: `把 ${state.questions.length} 个问题在 AI 里问一遍，看看现在推荐谁、常看哪些网站。`, primary: check };
   if (!publishingAccounts(state).length) return { title: "登录一个发文章的平台", desc: "头条、知乎、百家号、搜狐号，登录一个就能开始发。", primary: { label: "去扫码", onClick: () => open({ kind: "accounts" }) } };
   if (!scheduled.length) return { title: "写这一周的内容", desc: state.plan?.status === "stopped" && state.plan.message ? `上次没写成：${state.plan.message}` : `AI 挑还没提到你的问题写 ${state.usage.weekSize} 篇左右，排到接下来 7 天。你确认之后才会发。`, primary: { label: "开始写", onClick: () => void run("plan", "plan-week", {}, "开始写了，写完会提醒你。") }, secondary: check };
