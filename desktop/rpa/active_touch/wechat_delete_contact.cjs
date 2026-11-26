@@ -21,7 +21,7 @@ const VISION_KINDS = new Set(["member", "card_more", "menu_item", "confirm"]);
 // AI 看图 for the screen-reading delete (1.3.76): the script leaves "<id>.req.json" plus its picture in a folder of its
 // own and waits; each request is answered once through eyes.deleteStep (wechat-vision-check.cjs), and the answer is
 // written as "<id>.res.json" (via a temporary name, so the script never reads half a file). Returns a stop function.
-function answerEyes(folder, eyes, { name, onAi }) {
+function answerEyes(folder, eyes, { name, onAi, stopped }) {
   const handled = new Set();
   let busy = false;
   const timer = setInterval(async () => {
@@ -37,6 +37,8 @@ function answerEyes(folder, eyes, { name, onAi }) {
           const request = JSON.parse(fs.readFileSync(path.join(folder, file), "utf8"));
           const picture = path.join(folder, path.basename(String(request.file || "")));
           if (!VISION_KINDS.has(String(request.kind)) || !fs.existsSync(picture)) answer = { ok: false, reason: "vision_request_invalid" };
+          // 停止 pressed: answered at once, the script stops without waiting for the model.
+          else if (stopped?.()) answer = { ok: false, reason: "stopped" };
           else {
             try { onAi?.(String(request.kind)); } catch { /* display only */ }
             const read = await eyes.deleteStep({ file: picture, kind: String(request.kind), name });
@@ -431,7 +433,7 @@ async function deleteVisually(options, markCommitting) {
   // Only with the vision model at hand: a folder the script hands its pictures through, gone when this person is done.
   const eyes = typeof options.eyes?.deleteStep === "function" && options.eyes.ready?.() !== false ? options.eyes : null;
   const folder = eyes ? fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-vdel-")) : "";
-  const stop = eyes ? answerEyes(folder, eyes, { name: options.name, onAi: options.onAi }) : () => {};
+  const stop = eyes ? answerEyes(folder, eyes, { name: options.name, onAi: options.onAi, stopped: options.stopped }) : () => {};
   try { return await deleteVisuallyIn(options, markCommitting, folder); }
   finally { stop(); if (folder) fs.rmSync(folder, { recursive: true, force: true }); }
 }

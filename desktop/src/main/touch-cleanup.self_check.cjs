@@ -143,6 +143,20 @@ async function checkWechatDelete(base) {
   await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: live, coordinator, wait: async () => {},
     deleteContact: async () => { tries += 1; return { ok: false, stage: "menu", reason: "wechat_external_input_detected" }; } });
   assert.equal(tries, 1, "someone using the mouse is not fought for it");
+  // 1.3.76: a reading step the vision model already looked at is not read again; without that look (UIA path, no
+  // model) WeChat may just have been slow and the one retry stays.
+  tries = 0;
+  await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: live, coordinator, wait: async () => {},
+    deleteContact: async () => { tries += 1; return { ok: false, stage: "member", reason: "chat_member_not_found", eyes: ["member:vision_not_found"] }; } });
+  assert.equal(tries, 1, "the model looked at the member step: not repeated");
+  tries = 0;
+  await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: live, coordinator, wait: async () => {},
+    deleteContact: async () => { tries += 1; return { ok: false, stage: "confirm", reason: "confirm_dialog_not_shown", eyes: ["member:found"] }; } });
+  assert.equal(tries, 2, "the model looked at another step, not the confirm: one more try");
+  tries = 0;
+  await cleanup.deleteInWechat([plan.wanted[0]], { currentAccount: "当前号", verifyLiveAccount: live, coordinator, wait: async () => {},
+    deleteContact: async () => { tries += 1; return { ok: false, stage: "confirm", reason: "confirm_dialog_not_shown" }; } });
+  assert.equal(tries, 2, "a slow confirm on the UIA path keeps its retry");
 
   // Busy WeChat, a switched account, or an account that cannot be checked: nothing is pressed.
   let pressed = 0;
@@ -289,10 +303,34 @@ async function checkVisualEyes(person, focus) {
   assert.equal(noFolder, undefined);
 
   const { VISUAL_DELETE_SCRIPT: script } = require("../../rpa/active_touch/wechat_delete_contact_visual.cjs");
-  assert.ok(script.includes("Find-Label @($lines | Where-Object { $_.top -lt $panel.top }) '添加' 12"), "添加 found inside a line");
+  assert.ok(script.includes("Find-Label @($lines | Where-Object { $_.top -lt $panel.top }) '添加' 26"), "添加 found inside a line");
   assert.ok(!script.includes("$_.text -eq '添加'") && !script.includes("$_.text -eq '删除联系人' }"), "no whole-line label comparison left");
   for (const kind of ["member", "card_more", "menu_item", "confirm"]) assert.ok(script.includes(`Ask-Eyes "${kind}"`), `AI fallback for ${kind}`);
+  assert.ok(script.includes("if (-not $h -or $h -eq $mainHwnd) { return $dialog }"), "the model never looks for 删除 on the chat window itself");
+  assert.ok(script.includes('if ([string]$answer.reason -eq "stopped")'), "停止 while the model looks stops at once");
   checkLabelReading(script);
+  await checkCoreUniqueName();
+}
+
+// Two friends whose names differ only by an emoji are the same name to the card check, so neither counts as unique.
+async function checkCoreUniqueName() {
+  const os = require("node:os");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-core-unique-"));
+  try {
+    const row = (wxid, name) => ({ id: `w-${wxid}`, name, remark: name, wxid, wechatId: `wxid_${wxid}`, wechatAccountId: "当前号" });
+    fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([row("a1", "测试🌸客户"), row("a2", "测试客户"), row("a3", "测试客户乙")]));
+    const registry = createUnreachableRegistry(dir);
+    registry.record(row("a1", "测试🌸客户"), "deleted");
+    registry.record(row("a3", "测试客户乙"), "deleted");
+    const cleanup = createTouchCleanup(dir);
+    const wanted = [{ accountId: "当前号", key: "a1" }, { accountId: "当前号", key: "a3" }];
+    cleanup.remove(wanted);
+    const seen = [];
+    await cleanup.deleteInWechat(cleanup.planWechatDelete(wanted, { currentAccount: "当前号" }).wanted, { currentAccount: "当前号", verifyLiveAccount: async () => ({ ok: true }),
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "o" } }), release() {} }, wait: async () => {},
+      deleteContact: async (contact, options) => { seen.push([contact.name, options.uniqueName]); return { ok: true, deleted: true }; } });
+    assert.deepEqual(seen, [["测试🌸客户", false], ["测试客户乙", true]]);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
 // Find-Label and Core run in PowerShell on lines shaped as Windows' OCR gives them (no screen, no OCR).

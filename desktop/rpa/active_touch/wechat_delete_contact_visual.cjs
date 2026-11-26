@@ -227,6 +227,8 @@ function Ask-Eyes([string]$kind, [int]$left, [int]$top, [int]$width, [int]$heigh
   }
   $script:eyes += "$($kind):$(if ($answer -and $answer.ok) { 'found' } elseif ($answer) { [string]$answer.reason } else { 'no_answer' })"
   if (-not $answer) { return $null }
+  # 停止 pressed while the model looked: stop here, close what was opened.
+  if ([string]$answer.reason -eq "stopped") { Close-Opened; Out-Result $false $kind "stopped_by_user" }
   # Points in screen pixels; only points inside the picture.
   $points = @{}
   if ($answer.points) { foreach ($p in $answer.points.PSObject.Properties) {
@@ -289,8 +291,8 @@ function Wait-For([scriptblock]$probe, [int]$ms = 3000) {
 # The confirm: a line naming this person with 删除, and a separate 删除 button, on any WeChat window.
 function Read-Confirm {
   foreach ($h in @(Get-Popups) + @($mainHwnd)) {
-    $r = Rect $h; $lines = @(Read-Lines $r.Left $r.Top ($r.Right - $r.Left) ($r.Bottom - $r.Top) | Sort-Object { $_.top })
     if ($coreName.Length -lt 2) { return $null }
+    $r = Rect $h; $lines = @(Read-Lines $r.Left $r.Top ($r.Right - $r.Left) ($r.Bottom - $r.Top) | Sort-Object { $_.top })
     # The question may wrap onto a second line (a long name), so a line with 删除 and the one below are read together.
     $question = $null
     for ($i = 0; $i -lt $lines.Count -and -not $question; $i++) {
@@ -302,18 +304,24 @@ function Read-Confirm {
     if (-not $question) { continue }
     # The buttons may be read as one line (取消删除).
     $below = @($lines | Where-Object { $_.top -gt $question.bottom })
-    return @{ hwnd = $h; button = (Find-Label $below '删除' 6); cancel = (Find-Label $below '取消' 6); by = "ocr" }
+    # A line reading exactly 删除 first; else the lowest short line holding it (the buttons sit at the bottom).
+    $button = $below | Where-Object { $_.text -eq '删除' } | Select-Object -Last 1
+    if (-not $button) { $button = Find-Label @($below | Sort-Object { $_.top } -Descending) '删除' 6 }
+    $cancel = $below | Where-Object { $_.text -eq '取消' } | Select-Object -Last 1
+    if (-not $cancel) { $cancel = Find-Label @($below | Sort-Object { $_.top } -Descending) '取消' 6 }
+    return @{ hwnd = $h; button = $button; cancel = $cancel; by = "ocr" }
   }
   return $null
 }
 
-# The confirm read from the screen, else by the vision model on the topmost window this run opened (the app checks that
+# The confirm read from the screen, else by the vision model on the topmost window this run opened, never the chat window (the app checks that
 # its question names this person with 删除). An AI-found 删除 must lie inside that window.
 function Find-Confirm([int]$ms) {
   $dialog = Wait-For { Read-Confirm } $ms
   if ($dialog -and $dialog.button -and -not (Forced "confirm")) { return $dialog }
   $h = if ($dialog) { $dialog.hwnd } else { @(Get-Popups) | Select-Object -First 1 }
-  if (-not $h) { $h = $mainHwnd }
+  # Only a window this run opened: a 删除 on the chat window itself (multi-select bar, a message) is never asked about.
+  if (-not $h -or $h -eq $mainHwnd) { return $dialog }
   $r = Rect $h
   $ai = Ask-Eyes "confirm" $r.Left $r.Top ($r.Right - $r.Left) ($r.Bottom - $r.Top)
   if (-not $ai -or -not $ai.ok -or -not $ai.points.delete) { return $dialog }
@@ -383,7 +391,7 @@ $lines = @(Read-Lines ([int]$panel.left - 30) $main.Top ($main.Right - [int]$pan
 $groupLabels = @(@('群聊名称', '群公告', '我在本群的昵称', '显示群成员昵称') | Where-Object { $label = $_; $lines | Where-Object { Like $_.text $label 1 } })
 if ($groupLabels.Count -ge 2) { Close-Opened; Out-Result $false "member" "chat_member_mismatch" @{ group = $true } }
 # 添加 sits above the panel's labels, under its box; it may be read in one line with the member's name.
-$add = Find-Label @($lines | Where-Object { $_.top -lt $panel.top }) '添加' 12
+$add = Find-Label @($lines | Where-Object { $_.top -lt $panel.top }) '添加' 26
 $block = $null
 if ($add) {
   $addHeight = $add.bottom - $add.top

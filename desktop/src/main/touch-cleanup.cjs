@@ -32,9 +32,17 @@ const NO_RETRY = new Set(["contact_name_not_unique", "delete_name_missing", "con
   "chat_member_mismatch", "chat_title_mismatch", "confirm_text_mismatch",
   // Read from the screen (1.3.75): the card has no "…" because the person is no longer a friend; a point off WeChat.
   "contact_not_friend", "visual_point_invalid", "wechat_target_changed",
-  // The screen did not show it, and the vision model already looked in the same try (1.3.76; user 2026-11-26: "好多本身
-  // 失败的步骤又重复一次，还是失败"). The same picture read again gives the same answer.
-  "chat_member_not_found", "profile_more_not_found", "delete_menu_item_not_found", "confirm_dialog_not_shown", "confirm_button_not_found"]);
+]);
+// A step the screen did not show and the vision model already looked at in the same try (1.3.76; user 2026-11-26: "好多
+// 本身失败的步骤又重复一次，还是失败"): the same picture read again gives the same answer. Without that look (the UI
+// Automation path, or no model at hand) WeChat may just have been slow, and the one retry stays.
+const LOOKED_STEP = { chat_member_not_found: "member", profile_more_not_found: "card_more", delete_menu_item_not_found: "menu_item",
+  confirm_dialog_not_shown: "confirm", confirm_button_not_found: "confirm" };
+const modelLooked = (result) => { const kind = LOOKED_STEP[String(result?.reason || "")];
+  return Boolean(kind) && Array.isArray(result?.eyes) && result.eyes.some((entry) => String(entry).startsWith(`${kind}:`)); };
+// A name by its letters and digits, as the screen-reading delete compares it on the card: two friends whose names differ
+// only by an emoji or a symbol count as the same name, so neither is deleted on its name alone.
+const coreName = (value) => String(value ?? "").replace(/\[[^\[\]]{1,12}\]/gu, "").normalize("NFKC").replace(/[^\p{L}\p{N}]/gu, "");
 
 // Not about this person: WeChat itself cannot be read. Every next person would fail the same way, so the run stops
 // and says why (b070e34b, 2026-11-26: no chat window found, all 36 people skipped one by one, nothing deleted).
@@ -125,14 +133,14 @@ function createTouchCleanup(activeTouchDir) {
           wechatRun.progress.current = shown(contact);
           onProgress({ ...wechatRun.progress });
           if (!contact) { finish(entry, "failed", "input", "contact_not_saved"); continue; }
-          const uniqueName = !rows.some((row) => shown(row) === shown(contact));
+          const uniqueName = coreName(shown(contact)).length >= 2 && !rows.some((row) => coreName(shown(row)) === coreName(shown(contact)));
           // Stopped before 删除 because WeChat was not ready (a menu or panel still opening): one more try. A pressed 删除
           // without a clear answer is never retried, and neither is anything in NO_RETRY.
           let result;
           for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
             try { result = await deleteContact(contact, { confirm: true, uniqueName, stopped: () => wechatRun.stopRequested === true }); }
             catch (error) { result = { ok: false, outcomeUnknown: true, stage: "script", reason: String(error?.message || "delete_failed").slice(0, 120) }; }
-            if (result?.deleted || result?.outcomeUnknown || NO_RETRY.has(String(result?.reason || "")) || wechatRun.stopRequested || attempt === ATTEMPTS) break;
+            if (result?.deleted || result?.outcomeUnknown || NO_RETRY.has(String(result?.reason || "")) || modelLooked(result) || wechatRun.stopRequested || attempt === ATTEMPTS) break;
             onFailure({ stage: String(result?.stage || ""), reason: String(result?.reason || ""), attempt, retrying: true, ...evidenceOf(result) });
             await wait(2500);
             // 停止 pressed while waiting: no further attempt.
