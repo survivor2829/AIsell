@@ -5,6 +5,7 @@ const { createHash } = require('node:crypto');
 const { normalize, reconcileNarrationSpelling, describeNarrationMismatch } = require('./narration-transcript.cjs');
 const { fail } = require('./digital-human-provider.cjs');
 const { videoEncoderArgs } = require('./product-video-media.cjs');
+const { promptRef } = require("../shared/prompt-ref.cjs");
 
 const VOICE_IDS = Object.freeze({ natural_female: 'Cherry', steady_male: 'Ethan', lively: 'Serena' });
 const MAX_TAIL_SECONDS = .9;
@@ -238,6 +239,6 @@ async function assemble({ segments, destination, audioDestination, ffmpegPath = 
 }
 function segmentPrompt(task, segment, index) {
   const expressions = ['开口时轻微前倾、眉眼带好奇；解释时回稳，单手自然摊开。', '平稳解释，手势与语气有轻重，适当点头，手势收回。', '收尾时自然微笑、轻点头，仍保持眨眼和呼吸。'];
-  return `竖屏写实人物口播，稳定平视大半身构图，保持参考人物身份、服装、场景和产品外形。使用传入音轨作为唯一对白，嘴型、表情、肩膀和手势与该音轨节奏对应；不另读一份文案，不生成额外人声或配乐。${expressions[Math.min(index, expressions.length - 1)]}两手自然完整，不机械循环挥手；大型产品继续落地，不改变产品结构。语音结束后只保留短暂自然呼吸，不定格。不生成字幕或画内文字。本段语义仅供表演理解：${segment.text}`;
+  return `${promptRef("video.digital.speech_video.p1")}${expressions[Math.min(index, expressions.length - 1)]}${promptRef("video.digital.speech_video.p2")}${segment.text}`;
 }
 module.exports = { VOICE_IDS, splitScript, speechChunks, splitMeasuredSpeech, cutAudio, analyzePcm, measureAudio, assertSpeechCoverage, verifyTranscript, verifyRecordingTranscript, freezeAudio, createAsrCopy, assemble, segmentPrompt };
