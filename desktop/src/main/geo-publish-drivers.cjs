@@ -328,8 +328,9 @@ const DOUBAO = {
   answer: `[...document.querySelectorAll('[data-testid="receive_message"]')].at(-1)?.querySelector('[data-testid="message_text_content"]')`,
   finished: `[...document.querySelectorAll('[data-testid="receive_message"]')].at(-1)?.querySelector('[data-testid="message_action_bar"]')`,
   answers: `document.querySelectorAll('[data-testid="receive_message"]').length`,
-  // Shows once there is text; greyed while a send is under way.
-  sendButton: `(() => { const el = document.querySelector('[data-testid="chat_input_send_button"]'); if (!el || el.disabled || el.getAttribute("aria-disabled") === "true") return null; const r = el.getBoundingClientRect(); return r.width ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null; })()`,
+  // Shows once there is text and is greyed while a send is under way. Clicked from the page itself: it does not answer
+  // mouse events sent from here.
+  clickSend: `(() => { const el = document.querySelector('[data-testid="chat_input_send_button"]'); if (!el || el.disabled || el.getAttribute("aria-disabled") === "true") return false; el.click(); return true; })()`,
   referencesControl: `(() => { const all = [...document.querySelectorAll('[data-testid="receive_message"]')].at(-1)?.querySelectorAll("*") || []; const el = [...all].filter((node) => /参考|參考/.test(node.innerText || "") && (node.innerText || "").length < 30 && node.getClientRects().length).at(-1); if (!el) return null; el.scrollIntoView({ block: "center" }); const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
   // Each cited page is a numbered link inside the answer's message; the leading number is not part of its title.
   references: `[...[...document.querySelectorAll('[data-testid="receive_message"]')].at(-1).querySelectorAll('[data-testid="message_content"] a[href^="http"]')].filter((a) => /^\\s*\\d+[.、]/.test(a.innerText || "")).map((a) => ({ title: a.innerText.replace(/^\\s*\\d+[.、]\\s*/, "").replace(/\\s+/g, " ").trim().slice(0, 200), url: a.href })).slice(0, 50)`
@@ -356,20 +357,20 @@ const GEO_ACCOUNT_PLATFORMS = {
   doubao: { name: DOUBAO.name, home: DOUBAO.url, hosts: DOUBAO.hosts, loginCookies: DOUBAO.loginCookies }
 };
 
-// Seen on the real page 2026-11-26: Enter has to carry its "\r" the way a keyboard sends it, and after sending the page
-// keeps the text in the box, with the send button greyed, for several seconds. Sent means the box emptied, the page moved
-// to a conversation address, or a new answer started. Only when Enter changed nothing and the send button is clickable
-// is it pressed, once: a greyed button means a send is already under way and must not be doubled.
+// Seen on the real page 2026-11-26: Enter sends, but the page can take more than three seconds to show it (the old
+// 2.5 s check then closed the browser and cut the send off). Sent means the box emptied or went away, the page moved to
+// a conversation address (/chat/local_… or /chat/<number>), or a new answer started. Only when Enter changed nothing is
+// the page's send button clicked, once, and only while it is enabled: greyed means a send is under way.
 async function sendDoubao(page, { waitMs = 15_000, step = 500 } = {}) {
   const before = Number(await page.evaluate(DOUBAO.answers)) || 0;
-  const sent = async () => !squash(await page.evaluate(`(${DOUBAO.input})?.innerText || ""`)) || /\/chat\/\d/.test(String(await page.url())) || (Number(await page.evaluate(DOUBAO.answers)) || 0) > before;
+  const conversation = async () => { try { return /^\/chat\/[^/]+/.test(new URL(String(await page.url())).pathname); } catch { return false; } };
+  const sent = async () => !squash(await page.evaluate(`(${DOUBAO.input})?.innerText || ""`)) || await conversation() || (Number(await page.evaluate(DOUBAO.answers)) || 0) > before;
   const settle = async () => { for (let waited = 0; waited < waitMs; waited += step) { await sleep(step); if (await sent()) return true; } return false; };
-  await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: "\r", unmodifiedText: "\r" });
-  await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  // No text on the key event: with "\r" the editor types a line break instead of sending.
+  await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
   if (await settle()) return true;
-  const button = await page.evaluate(DOUBAO.sendButton);
-  if (!button) return false;
-  await page.mouse(button);
+  if (!(await page.evaluate(DOUBAO.clickSend))) return false;
   return settle();
 }
 
