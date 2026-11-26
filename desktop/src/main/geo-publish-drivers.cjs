@@ -336,6 +336,63 @@ const DOUBAO = {
   references: `[...[...document.querySelectorAll('[data-testid="receive_message"]')].at(-1).querySelectorAll('[data-testid="message_content"] a[href^="http"]')].filter((a) => /^\\s*\\d+[.、]/.test(a.innerText || "")).map((a) => ({ title: a.innerText.replace(/^\\s*\\d+[.、]\\s*/, "").replace(/\\s+/g, " ").trim().slice(0, 200), url: a.href })).slice(0, 50)`
 };
 
+DOUBAO.typed = `(${DOUBAO.input})?.innerText || ""`;
+DOUBAO.conversation = /^\/chat\/[^/]+/;
+DOUBAO.referencesBy = "mouse";
+
+// 千问, DeepSeek and 元宝: read from their real pages on 2026-11-26 (one question each, signed in with the user's
+// accounts). Each answers with web search and lists its sources behind a "N篇来源 / N 个网页 / 引用 N 篇资料" control
+// that opens a side panel; the panel gives each source's title and address.
+const LOGIN_DIALOG = `[...document.querySelectorAll('[role="dialog"], [class*="modal" i], [class*="login" i]')].some((el) => el.getClientRects().length && /扫码登录|手机号登录|验证码登录|微信登录|登录后|掃碼登入|手機號登入|驗證碼登入|登入後|掃碼登錄|登錄後/.test(el.innerText || ""))`;
+const QIANWEN = {
+  name: "千问", url: "https://www.qianwen.com/", hosts: ["qianwen.com"], loginCookies: ["tongyi_sso_ticket"],
+  loginShown: LOGIN_DIALOG,
+  // The empty box shows its hint inside its own text; it takes typed text only after being focused from the page.
+  input: `document.querySelector('[contenteditable="true"]')`,
+  typed: `String(document.querySelector('[contenteditable="true"]')?.innerText || "").replace("向千问提问", "")`,
+  focus: true, conversation: /^\/chat\/[^/]+/,
+  answers: `document.querySelectorAll('[data-chat-answers-wrap]').length`,
+  answer: `[...document.querySelectorAll('[data-chat-answers-wrap]')].at(-1)?.querySelector('.qk-markdown')`,
+  finished: `(() => { const last = [...document.querySelectorAll('[data-chat-answers-wrap]')].at(-1); return Boolean(last?.querySelector('.qk-markdown-complete') && last.querySelector('[data-answer-feedback-toolbar]')); })()`,
+  clickSend: `(() => { const el = document.querySelector('button[aria-label="发送消息"]'); if (!el || el.disabled || el.getAttribute("aria-disabled") === "true") return false; el.click(); return true; })()`,
+  referencesControl: `[...document.querySelectorAll('[data-chat-answers-wrap]')].at(-1)?.querySelector('[class*="reference-wrap-"]')`, referencesBy: "mouse",
+  references: `[...document.querySelectorAll('#qianwen-layout-right-panel [class*="source-item-"][data-click-extra]')].map((el) => { try { const x = JSON.parse(el.getAttribute("data-click-extra")); return { title: String(x.title || "").replace(/\\s+/g, " ").trim().slice(0, 200), url: String(x.url || x.ref_url || "") }; } catch { return null; } }).filter((row) => row && /^https?:\\/\\//.test(row.url)).slice(0, 50)`
+};
+const DEEPSEEK = {
+  // Signed in shows only in the page's own storage (no cookie); a signed-out visitor is sent to /sign_in.
+  name: "DeepSeek", url: "https://chat.deepseek.com/", hosts: ["chat.deepseek.com"], loginCookies: ["storage:userToken"],
+  loginStorage: { url: "https://chat.deepseek.com/favicon.svg", key: "userToken", minLength: 40 }, gate: /^\/sign_in/,
+  loginShown: `location.pathname.startsWith("/sign_in") || ${LOGIN_DIALOG}`,
+  input: `document.querySelector('textarea')`, typed: `document.querySelector('textarea')?.value || ""`,
+  conversation: /^\/a\/chat\/s\/[^/]+/,
+  // GEO needs the answer that searched the web: 智能搜索 is switched on when it is off.
+  prepare: `(() => { const el = [...document.querySelectorAll('.ds-toggle-button')].find((b) => /智能搜索|联网搜索/.test(b.innerText || "")); if (!el) return "none"; if (el.classList.contains("ds-toggle-button--selected")) return "on"; el.click(); return "switched"; })()`,
+  answers: `document.querySelectorAll('.ds-assistant-message-main-content').length`,
+  answer: `[...document.querySelectorAll('.ds-assistant-message-main-content')].at(-1)`,
+  finished: `Boolean([...document.querySelectorAll('.ds-assistant-message-main-content')].at(-1)?.closest('[data-virtual-list-item-key]')?.querySelector('[aria-label="朗读"], [aria-label="Read aloud"]'))`,
+  clickSend: "false",
+  referencesControl: `[...([...document.querySelectorAll('.ds-assistant-message-main-content')].at(-1)?.closest('[data-virtual-list-item-key]')?.querySelectorAll("span") || [])].filter((n) => /^[0-9]+ 个网页$/.test((n.innerText || "").trim())).at(-1)`, referencesBy: "mouse",
+  // The panel's cards, plus the numbered links inside the answer (the panel list can be cut short).
+  references: `(() => { const rows = [...document.querySelectorAll('a[href^="http"]')].filter((a) => a.querySelector('.search-view-card__title')).map((a) => ({ title: a.querySelector('.search-view-card__title').innerText.replace(/\\s+/g, " ").trim().slice(0, 200), url: a.href })); const seen = new Set(rows.map((row) => row.url)); for (const a of [...document.querySelectorAll('.ds-assistant-message-main-content')].at(-1)?.querySelectorAll('a[href^="http"]') || []) if (!seen.has(a.href)) { seen.add(a.href); rows.push({ title: "", url: a.href }); } return rows.slice(0, 50); })()`
+};
+const YUANBAO = {
+  name: "元宝", url: "https://yuanbao.tencent.com/chat", hosts: ["tencent.com"], loginCookies: ["hy_token"],
+  loginShown: LOGIN_DIALOG,
+  input: `document.querySelector('.ql-editor[contenteditable="true"]')`, typed: `document.querySelector('.ql-editor[contenteditable="true"]')?.innerText || ""`,
+  conversation: /^\/chat\/[^/]+\/[^/]+/,
+  answers: `document.querySelectorAll('.agent-chat__list__item--ai').length`,
+  // The answer can come in several parts, each marked done on its own while the next is still being written
+  // (2026-11-26: a run stopped at 1283 of its characters). Done means every part is marked done and the send key is
+  // no longer the stop key; the parts are read together.
+  answer: `({ innerText: [...([...document.querySelectorAll('.agent-chat__list__item--ai')].at(-1)?.querySelectorAll('.hyc-content-md') || [])].map((el) => el.innerText).join("\\n") })`,
+  finished: `(() => { const parts = [...([...document.querySelectorAll('.agent-chat__list__item--ai')].at(-1)?.querySelectorAll('.hyc-content-md') || [])]; const key = document.querySelector('#yuanbao-send-btn'); return parts.length > 0 && parts.every((el) => el.classList.contains('hyc-content-md-done')) && !(key && /sendStop/.test(key.className)); })()`,
+  clickSend: `(() => { const el = document.querySelector('#yuanbao-send-btn'); if (!el || /disabled/.test(el.className)) return false; el.click(); return true; })()`,
+  // An "install the desktop app" card can cover the control: clicked from the page itself.
+  referencesControl: `[...document.querySelectorAll('.agent-chat__list__item--ai')].at(-1)?.querySelector('#search-guide-tool, [data-toolbar-type="citation"]')`, referencesBy: "dom",
+  references: `[...document.querySelectorAll('#chatReferenceList .hyc-common-markdown__ref_card[data-url]')].map((el) => ({ title: (el.querySelector('.hyc-common-markdown__ref_card-title')?.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 200), url: el.getAttribute("data-url") || "" })).filter((row) => /^https?:\\/\\//.test(row.url)).slice(0, 50)`
+};
+const ENGINE_PAGES = { doubao: DOUBAO, qianwen: QIANWEN, deepseek: DEEPSEEK, yuanbao: YUANBAO };
+
 // Channels shown to the user. Each opens only after a real publish was confirmed on a real account.
 const GEO_CHANNELS = [
   // Confirmed by a real article on 2026-11-02.
@@ -347,35 +404,39 @@ const GEO_CHANNELS = [
   // Confirmed by a real article on 2026-11-02.
   { id: "zhihu", name: "知乎", available: true, titleLimit: ZHIHU.titleLimit }
 ];
-// Assistants the software can ask today. 千问, DeepSeek and 元宝 are added once each was asked on a real account.
-const GEO_ENGINES = ["doubao"];
+// Assistants the software can ask: each was asked on a real account (豆包 2026-11-09; 千问, DeepSeek, 元宝 2026-11-26).
+const GEO_ENGINES = ["doubao", "qianwen", "deepseek", "yuanbao"];
 const GEO_ACCOUNT_PLATFORMS = {
   zhihu: { name: "知乎", home: ZHIHU.home, hosts: ZHIHU.hosts, loginCookies: ZHIHU.loginCookies },
   toutiao: { name: "今日头条", home: TOUTIAO.home, hosts: TOUTIAO.hosts, loginCookies: TOUTIAO.loginCookies },
   sohu: { name: SOHU.name, home: SOHU.home, hosts: SOHU.hosts, loginCookies: SOHU.loginCookies },
   baijiahao: { name: BAIJIAHAO.name, home: BAIJIAHAO.home, hosts: BAIJIAHAO.hosts, loginCookies: BAIJIAHAO.loginCookies },
-  doubao: { name: DOUBAO.name, home: DOUBAO.url, hosts: DOUBAO.hosts, loginCookies: DOUBAO.loginCookies }
+  doubao: { name: DOUBAO.name, home: DOUBAO.url, hosts: DOUBAO.hosts, loginCookies: DOUBAO.loginCookies },
+  qianwen: { name: QIANWEN.name, home: QIANWEN.url, hosts: QIANWEN.hosts, loginCookies: QIANWEN.loginCookies },
+  deepseek: { name: DEEPSEEK.name, home: DEEPSEEK.url, hosts: DEEPSEEK.hosts, loginCookies: DEEPSEEK.loginCookies, loginStorage: DEEPSEEK.loginStorage, gate: DEEPSEEK.gate },
+  yuanbao: { name: YUANBAO.name, home: YUANBAO.url, hosts: YUANBAO.hosts, loginCookies: YUANBAO.loginCookies }
 };
 
 // Seen on the real page 2026-11-26: Enter sends, but the page can take more than three seconds to show it (the old
 // 2.5 s check then closed the browser and cut the send off). Sent means the box emptied or went away, the page moved to
 // a conversation address (/chat/local_… or /chat/<number>), or a new answer started. Only when Enter changed nothing is
 // the page's send button clicked, once, and only while it is enabled: greyed means a send is under way.
-async function sendDoubao(page, { waitMs = 15_000, step = 500 } = {}) {
-  const before = Number(await page.evaluate(DOUBAO.answers)) || 0;
+async function sendQuestion(page, engine, { waitMs = 15_000, step = 500 } = {}) {
+  const before = Number(await page.evaluate(engine.answers)) || 0;
   // Only a move to a conversation address counts: a page that opened on an old conversation proves nothing.
   const where = async () => { try { return new URL(String(await page.url())).pathname; } catch { return ""; } };
   const start = await where();
-  const conversation = async () => { const now = await where(); return now !== start && /^\/chat\/[^/]+/.test(now); };
-  const sent = async () => !squash(await page.evaluate(`(${DOUBAO.input})?.innerText || ""`)) || await conversation() || (Number(await page.evaluate(DOUBAO.answers)) || 0) > before;
+  const conversation = async () => { const now = await where(); return now !== start && engine.conversation.test(now); };
+  const sent = async () => !squash(await page.evaluate(engine.typed)) || await conversation() || (Number(await page.evaluate(engine.answers)) || 0) > before;
   const settle = async () => { for (let waited = 0; waited < waitMs; waited += step) { await sleep(step); if (await sent()) return true; } return false; };
   // No text on the key event: with "\r" the editor types a line break instead of sending.
   await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
   await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
   if (await settle()) return true;
-  if (!(await page.evaluate(DOUBAO.clickSend))) return false;
+  if (!(await page.evaluate(engine.clickSend))) return false;
   return settle();
 }
+const sendDoubao = (page, options) => sendQuestion(page, DOUBAO, options);
 
 const coverHtml = (title) => `<!doctype html><meta charset="utf-8"><body style="margin:0;width:800px;height:600px;display:flex;align-items:center;padding:0 70px;box-sizing:border-box;background:linear-gradient(135deg,#fff5f6,#ffe3e6);font-family:'Microsoft YaHei',sans-serif"><h1 style="margin:0;font-size:50px;line-height:1.4;color:#1f2937">${String(title).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`)}</h1></body>`;
 async function makeCover(page, title) {
@@ -484,35 +545,49 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
   // The page first shows a placeholder textarea and swaps in a rich-text box a few seconds later. Enter sends
   // (the send button does not answer mouse events from here); the box emptying is what proves it went out.
   async function ask({ engine = "doubao", profileDir, question, shouldStop = () => false, onDetail = () => {} }) {
-    if (!GEO_ENGINES.includes(engine)) throw fail("GEO_CHANNEL_UNAVAILABLE", "这个 AI 还没接入。");
+    const site = ENGINE_PAGES[engine];
+    if (!GEO_ENGINES.includes(engine) || !site) throw fail("GEO_CHANNEL_UNAVAILABLE", "这个 AI 还没接入。");
+    const signedOut = async (page) => engine === "doubao" ? DOUBAO.loginRequired(String(await page.url()), await shownText(page)) : Boolean(await page.evaluate(site.loginShown));
+    const needLogin = () => fail("GEO_LOGIN_REQUIRED", `${site.name}需要重新扫码登录。`);
     return withPage(profileDir, async (page) => {
-      await page.navigate(DOUBAO.url);
-      const box = await waitThroughVerify(page, () => page.evaluate(`Boolean(${DOUBAO.input})`), { ms: 25_000, shouldStop, onDetail });
-      if (DOUBAO.loginRequired(String(await page.url()), await shownText(page))) throw fail("GEO_LOGIN_REQUIRED", "豆包需要重新扫码登录。");
-      if (!box) throw fail("GEO_FORM_CHANGED", "没有找到豆包的输入框，平台页面可能改版了。");
+      await page.navigate(site.url);
+      const box = await waitThroughVerify(page, () => page.evaluate(`Boolean(${site.input})`), { ms: 40_000, shouldStop, onDetail });
+      if (await signedOut(page)) throw needLogin();
+      if (!box) throw fail("GEO_FORM_CHANGED", `没有找到${site.name}的输入框，平台页面可能改版了。`);
       await sleep(1500);
-      const spot = await page.evaluate(`(() => { const r = (${DOUBAO.input}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      if (site.prepare) { await page.evaluate(site.prepare); await sleep(500); }
+      const spot = await page.evaluate(`(() => { const r = (${site.input}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
       await page.mouse(spot);
       await sleep(400);
+      if (site.focus) { await page.evaluate(`(${site.input}).focus()`); await sleep(300); }
       await page.send("Input.insertText", { text: question });
       await sleep(1200);
-      const typed = String(await page.evaluate(`(${DOUBAO.input}).innerText`) || "");
-      if (squash(typed) !== squash(question)) throw fail("GEO_FORM_MISMATCH", "豆包输入框里的问题和要问的不一致，没有发送。");
-      if (!(await sendDoubao(page))) throw fail("GEO_NOT_SENT", "问题没有发出去，可以再查一次。");
-      // Finished when the answer stops growing and its action bar appears.
+      const typed = String(await page.evaluate(site.typed) || "");
+      if (squash(typed) !== squash(question)) throw fail("GEO_FORM_MISMATCH", `${site.name}输入框里的问题和要问的不一致，没有发送。`);
+      if (!(await sendQuestion(page, site))) {
+        if (await signedOut(page)) throw needLogin();
+        throw fail("GEO_NOT_SENT", "问题没有发出去，可以再查一次。");
+      }
+      // Finished when the answer stops growing and the page marks it done (its action bar appears).
       let last = "", still = 0;
       const answered = await waitThroughVerify(page, async () => {
-        const now = String(await page.evaluate(`(${DOUBAO.answer})?.innerText || ""`) || "");
+        const now = String(await page.evaluate(`(${site.answer})?.innerText || ""`) || "");
         still = now && now === last ? still + 1 : 0; last = now;
-        return still >= 3 && await page.evaluate(`Boolean(${DOUBAO.finished})`);
+        return still >= 3 && await page.evaluate(`Boolean(${site.finished})`);
       }, { ms: 180_000, shouldStop, onDetail });
-      if (!answered) throw fail("GEO_ANSWER_EMPTY", "豆包长时间没有答完，可以再查一次。");
-      // Cited pages are behind 参考 N 篇资料; expanding them asks nothing new. No such line means no search was used.
-      const control = await page.evaluate(DOUBAO.referencesControl);
-      if (!control) return { answer: last, references: [] };
-      await page.mouse(control);
+      if (!answered) throw fail("GEO_ANSWER_EMPTY", `${site.name}长时间没有答完，可以再查一次。`);
+      // Cited pages sit behind the sources control; opening it asks nothing new. No control means no search was used.
+      let opened;
+      if (site.referencesBy === "dom") opened = await page.evaluate(`(() => { const el = ${site.referencesControl}; if (!el) return false; el.click(); return true; })()`);
+      else {
+        const control = engine === "doubao" ? await page.evaluate(DOUBAO.referencesControl)
+          : await page.evaluate(`(() => { const el = ${site.referencesControl}; if (!el) return null; el.scrollIntoView({ block: "center" }); const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+        if (control) await page.mouse(control);
+        opened = Boolean(control);
+      }
+      if (!opened) return { answer: last, references: [] };
       await sleep(3000);
-      const references = await page.evaluate(DOUBAO.references);
+      const references = await page.evaluate(site.references);
       return { answer: last, references: Array.isArray(references) ? references : null };
     });
   }
@@ -521,4 +596,4 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
   return { publish, ask, stop, dispose: stop };
 }
 
-module.exports = { makeCover, coverHtml, createGeoBrowserAdapter, sendDoubao, GEO_CHANNELS, GEO_ENGINES, GEO_ACCOUNT_PLATFORMS, DRIVERS, DOUBAO, sameArticle, paragraphs, waitThroughVerify, findSoon, noticesOf, VERIFY };
+module.exports = { makeCover, coverHtml, createGeoBrowserAdapter, sendDoubao, sendQuestion, GEO_CHANNELS, GEO_ENGINES, GEO_ACCOUNT_PLATFORMS, DRIVERS, DOUBAO, ENGINE_PAGES, sameArticle, paragraphs, waitThroughVerify, findSoon, noticesOf, VERIFY };

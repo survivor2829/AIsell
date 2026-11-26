@@ -49,6 +49,33 @@ async function platformSignedOut(browser, platformKey) {
   await sleep(3000);
   return drivers.signedOut(page, driver);
 }
+// Some sites keep the sign-in in the page's own storage, not in a cookie (DeepSeek: localStorage "userToken",
+// seen 2026-11-26). It is read as a stand-in cookie "storage:<key>" so the rest of this module treats it like a
+// cookie; like cookies its value is only compared, never kept. A tab already on the site is read in place; only a
+// hidden check (`open`) opens a small page of the site to read it.
+async function storageCookies(browser, platform, { open = false } = {}) {
+  const spec = platform.loginStorage;
+  if (!spec) return [];
+  const host = new URL(spec.url).hostname;
+  const read = `(() => { try { return String(localStorage.getItem(${JSON.stringify(spec.key)}) || ""); } catch { return ""; } })()`;
+  let value = "", created = "";
+  try {
+    const { targetInfos = [] } = await browser.send("Target.getTargets");
+    let targetId = targetInfos.find((item) => item.type === "page" && hostMatches(item.url, host))?.targetId;
+    if (!targetId && open) targetId = created = (await browser.send("Target.createTarget", { url: "about:blank" })).targetId;
+    if (!targetId) return [];
+    const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true });
+    const page = pageFor(browser, sessionId);
+    if (created) {
+      await page.navigate(spec.url);
+      for (let i = 0; i < 20 && !hostMatches(String(await page.url().catch(() => "")), host); i++) await sleep(250);
+    }
+    value = String(await page.evaluate(read) || "");
+    await browser.send("Target.detachFromTarget", { sessionId }).catch(() => {});
+  } catch { value = ""; }
+  finally { if (created) await browser.send("Target.closeTarget", { targetId: created }).catch(() => {}); }
+  return value.length >= spec.minLength ? [{ name: `storage:${spec.key}`, value, domain: host, expires: -1 }] : [];
+}
 // The login page of a gated site, judged on the path only (a query such as ?from=login is not it).
 const atGatePath = (gate, url) => { try { return gate.test(new URL(url).pathname); } catch { return false; } };
 function cleanLabel(value, platformKey, count, table = PLATFORMS) {
@@ -87,12 +114,12 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
   // platform's own page in that headless window.
   async function cookiesOf(account, { verify = false } = {}) {
     const running = open.get(account.id);
-    if (running) return { cookies: (await running.send("Storage.getCookies")).cookies || [], signedOut: false };
+    if (running) return { cookies: [...(await running.send("Storage.getCookies")).cookies || [], ...await storageCookies(running, platforms[account.platform])], signedOut: false };
     if (reading.has(account.id)) return reading.get(account.id);
     const task = (async () => {
       const browser = launch({ executable, profileDir: profileOf(account), headless: true });
       try {
-        const cookies = (await browser.send("Storage.getCookies")).cookies || [];
+        const cookies = [...(await browser.send("Storage.getCookies")).cookies || [], ...await storageCookies(browser, platforms[account.platform], { open: true })];
         let signedOut = false;
         if (verify && loggedIn(account.platform, cookies, Date.now(), platforms)) { try { signedOut = await probe(browser, account.platform); } catch { /* Unclear: the cookie verdict stands. */ } }
         return { cookies, signedOut };
@@ -169,7 +196,8 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
       // One poll at a time: a slow browser must not count one observation twice.
       if (closing || polling || browser.isClosed()) return;
       polling = true;
-      void browser.send("Storage.getCookies").then(async ({ cookies = [] }) => {
+      void browser.send("Storage.getCookies").then(async ({ cookies: found = [] }) => {
+        const cookies = [...found, ...await storageCookies(browser, platforms[account.platform])];
         if (closing || !loggedIn(account.platform, cookies, Date.now(), platforms)) { onSite = 0; onGate = 0; return; }
         const renewed = [...fingerprint(cookies)].some((value) => !before.has(value));
         if (renewed) {

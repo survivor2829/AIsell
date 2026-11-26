@@ -188,6 +188,37 @@ assert.equal(findBrowser(env, () => false), "");
     tabs.clear(); await gated.dispose(); fs.rmSync(dir, { recursive: true, force: true });
   }
 
+  {
+    // 登录状态只存在网页自己存储里的平台（DeepSeek 2026-11-26）：后台检查时打开一个该站的小页面读一下，读完关掉；
+    // 值够长才算登录，短的（游客的空记录）不算。
+    const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), "social-accounts-storage-"));
+    const site = { token: "x".repeat(92), opened: [], closed: [] };
+    const storageLaunch = ({ profileDir, headless }) => {
+      let pageUrl = "about:blank";
+      return { profileDir, headless, closed: new Promise(() => {}), isClosed: () => false, close: async () => {},
+        send: async (method, params = {}) => {
+          if (method === "Storage.getCookies") return { cookies: [] };
+          if (method === "Target.getTargets") return { targetInfos: [] };
+          if (method === "Target.createTarget") { site.opened.push(params.url); return { targetId: "t1" }; }
+          if (method === "Target.attachToTarget") return { sessionId: "s1" };
+          if (method === "Page.navigate") { pageUrl = params.url; return {}; }
+          if (method === "Runtime.evaluate") return { result: { value: params.expression === "location.href" ? pageUrl : site.token } };
+          if (method === "Target.closeTarget") { site.closed.push(params.targetId); return {}; }
+          return {};
+        } };
+    };
+    const platforms = { ds: { name: "DeepSeek", home: "https://chat.deepseek.com/", hosts: ["chat.deepseek.com"], loginCookies: ["storage:userToken"], loginStorage: { url: "https://chat.deepseek.com/favicon.svg", key: "userToken", minLength: 40 } } };
+    fs.mkdirSync(storageDir, { recursive: true });
+    fs.writeFileSync(path.join(storageDir, "state.json"), JSON.stringify({ version: 1, accounts: [{ id: "11111111-1111-1111-1111-111111111111", platform: "ds", label: "DeepSeek账号1", status: "login_required", createdAt: "", lastLoginAt: "", checkedAt: "" }] }));
+    const store = createSocialAccounts({ dataDir: storageDir, launch: storageLaunch, executable: "chrome.exe", platforms, probe: async () => false });
+    assert.equal((await store.refresh()).accounts[0].status, "active", "网页存储里有登录记录就算已登录");
+    assert.deepEqual(site.closed, ["t1"], "读完把小页面关掉");
+    site.token = "{\"value\":null}";
+    assert.notEqual((await store.refresh()).accounts[0].status, "active", "游客的空记录不算登录");
+    await store.dispose();
+    fs.rmSync(storageDir, { recursive: true, force: true });
+  }
+
   // 没装浏览器时界面能提示。
   assert.equal(createSocialAccounts({ dataDir, launch, executable: "" }).snapshot().browserReady, false);
 

@@ -1,5 +1,5 @@
 const assert = require("node:assert/strict");
-const { coverHtml, createGeoBrowserAdapter, sendDoubao, GEO_CHANNELS, GEO_ACCOUNT_PLATFORMS, DRIVERS, DOUBAO, sameArticle, paragraphs } = require("./geo-publish-drivers.cjs");
+const { coverHtml, createGeoBrowserAdapter, sendDoubao, sendQuestion, ENGINE_PAGES, GEO_ENGINES, GEO_CHANNELS, GEO_ACCOUNT_PLATFORMS, DRIVERS, DOUBAO, sameArticle, paragraphs } = require("./geo-publish-drivers.cjs");
 
 // 文字比对：空白和编辑器插入的零宽字符不算差别；少一段、改一个字都算不一致。
 const job = { title: "洗地机怎么选", body: "第一段。\n\n第二段。\n" };
@@ -257,6 +257,27 @@ global.setTimeout = (fn, ms, ...rest) => realTimeout(fn, Math.min(ms, 1), ...res
     // 繁体页面的登录提示也认得出来。
     assert.equal(DOUBAO.loginRequired("https://www.doubao.com/chat/", "掃碼登入 手機號登入"), true);
     assert.equal(DOUBAO.loginRequired("https://www.doubao.com/chat/", "新對話 用户123297"), false);
+  }
+  {
+    // 千问、DeepSeek、元宝（2026-11-26 真实页面）：四家都能问；每段页面脚本都是能运行的表达式。
+    assert.deepEqual(GEO_ENGINES, ["doubao", "qianwen", "deepseek", "yuanbao"]);
+    for (const id of GEO_ENGINES) {
+      const site = ENGINE_PAGES[id];
+      for (const key of ["input", "typed", "answers", "answer", "finished", "clickSend", "references", ...(id === "doubao" ? [] : ["loginShown", "referencesControl"]), ...(site.prepare ? ["prepare"] : [])]) {
+        assert.doesNotThrow(() => new Function(`return (${site[key]});`), `${id}.${key}`);
+      }
+      assert.ok(GEO_ACCOUNT_PLATFORMS[id].loginCookies.length, `${id} 能判断登录`);
+    }
+    assert.deepEqual(GEO_ACCOUNT_PLATFORMS.deepseek.loginStorage, { url: "https://chat.deepseek.com/favicon.svg", key: "userToken", minLength: 40 }, "DeepSeek 的登录只在网页存储里");
+    // 千问空输入框里显示提示字，那不是没发出去的问题。
+    const qianwenPage = (shown) => ({ send: async () => ({}), url: async () => "https://www.qianwen.com/",
+      evaluate: async (expression) => expression === ENGINE_PAGES.qianwen.answers ? 0 : expression === ENGINE_PAGES.qianwen.typed ? shown : null });
+    assert.equal(await sendQuestion(qianwenPage("﻿\n\n"), ENGINE_PAGES.qianwen, { waitMs: 20, step: 5 }), true, "只剩提示字就是发出去了");
+    assert.equal(await sendQuestion(qianwenPage("清洁设备渠道商怎么判断"), ENGINE_PAGES.qianwen, { waitMs: 20, step: 5 }), false);
+    // 跳到各家自己的对话地址算发出；还在首页不算。
+    assert.ok(ENGINE_PAGES.deepseek.conversation.test("/a/chat/s/31183524-8d43-4b29-be2e-c3cde104c1b0"));
+    assert.ok(ENGINE_PAGES.yuanbao.conversation.test("/chat/naQivTmsDa/0SOFFwEEPsO") && !ENGINE_PAGES.yuanbao.conversation.test("/chat/naQivTmsDa"), "元宝打开就在 /chat/<助手>，要多一段才是新对话");
+    assert.ok(ENGINE_PAGES.qianwen.conversation.test("/chat/9e2a53a7dbca453394c66e487790b019") && !ENGINE_PAGES.qianwen.conversation.test("/"));
   }
   console.log("geo publish drivers self-check passed");
   process.exit(0);
