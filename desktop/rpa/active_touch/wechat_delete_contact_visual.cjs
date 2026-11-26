@@ -43,7 +43,8 @@ public static class XiaoxiVisualDelete {
   [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
   // Which process owns the top-level window under a screen point.
   public static uint OwnerAt(int x, int y) { var p = new POINT { X = x, Y = y }; IntPtr root = GetAncestor(WindowFromPoint(p), 2); uint pid; GetWindowThreadProcessId(root, out pid); return pid; }
-  public static uint LastInput() { var i = new LASTINPUTINFO(); i.cbSize = (uint)Marshal.SizeOf(i); GetLastInputInfo(ref i); return i.dwTime; }
+  public static uint LastInput() { var i = new LASTINPUTINFO(); i.cbSize = (uint)Marshal.SizeOf(i);
+    if (Environment.GetEnvironmentVariable("XIAOXI_UNATTENDED_INPUT") == "1") return 1u; return GetLastInputInfo(ref i) ? i.dwTime : UInt32.MaxValue; }
   public static List<long> Windows(uint pid) {
     var list = new List<long>();
     EnumWindows((h, l) => { uint p; GetWindowThreadProcessId(h, out p); if (p == pid && IsWindowVisible(h)) list.Add(h.ToInt64()); return true; }, IntPtr.Zero);
