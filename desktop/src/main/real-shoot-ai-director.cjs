@@ -354,9 +354,10 @@ function applyDirection(plan, direction) {
 // every finished shot next to the product photos and says which shot has a visible problem. The
 // customer decides whether to spend on redoing that one shot.
 function reviewRequest({ plan, images, sheets, crew = '' }) {
-  const list = plan.shots.map((shot) => `第${shot.index + 1}镜「${shot.title}」`).join('\n');
+  // real-4: the check knows each shot's planned move (2026-11-27 实测：按计划的 90 度转弯被报成「原地转」).
+  const list = plan.shots.map((shot) => `第${shot.index + 1}镜「${shot.title}」${plan.realScene && shot.timeline ? `：计划动作：${shot.timeline}` : ''}`).join('\n');
   const system = `${promptRef("video.realshoot.qc.p1")}${images.length}${promptRef("video.realshoot.qc.p2")}${plan.operator === 'none' ? '画面里出现人、人手，或有人坐在机器上' : '画面里的人露脸，或人和机器融在一起'}${promptRef("video.realshoot.qc.p3")}${plan.wet ? '（这台是冲洗设备，干净的清水除外）' : ''}${promptRef("video.realshoot.qc.p4", plan.storyboard ? 2 : 1)}${crew ? `${promptRef("video.realshoot.qc_parts.p1")}${crew}
-` : ''}${promptRef("video.realshoot.qc.p5", plan.storyboard ? 2 : 1)}`;
+` : ''}${plan.realScene ? promptRef("video.realshoot.v4.qc_plan") : ''}${promptRef("video.realshoot.qc.p5", plan.storyboard ? 2 : 1)}`;
   return { model: DIRECTOR_MODEL, temperature: 0.2, max_tokens: 1500, messages: [{ role: 'system', content: system },
     { role: 'user', content: [...[...images, ...sheets].map((url) => ({ type: 'image_url', image_url: { url } })), { type: 'text', text: `镜头列表：\n${list}` }] }] };
 }

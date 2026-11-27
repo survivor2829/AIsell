@@ -439,6 +439,7 @@ SIZES = {
  "video.realshoot.v4.keyframe.p2@1": 670,
  "video.realshoot.v4.motion@1": 384,
  "video.realshoot.v4.negative@1": 237,
+ "video.realshoot.v4.qc_plan@1": 283,
  "video.realshoot.v4.real_look@1": 264,
  "video.realshoot.v4.scene_plate.p1@1": 103,
  "video.realshoot.v4.scene_plate.p2@1": 10,
