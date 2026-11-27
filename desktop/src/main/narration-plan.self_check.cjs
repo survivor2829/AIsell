@@ -21,7 +21,7 @@ assert.ok(plan.pages([cue('我们这款七十公分刷头，三十五升垃圾�
 // 没有可靠的逐字时间时，不编造时间，整句一页
 assert.equal(plan.pages([{ text: '凌晨两点，一万平车间没一个人。', startMs: 0, endMs: 3000, words: [{ text: '凌晨', startMs: 0, endMs: 400 }] }], 9, []).length, 1);
 
-// 2. 包装轮换：连续五条，相邻两条版式不同、最近三条配色不同、相邻转场不同、镜头节奏交替
+// 2. 包装轮换：连续五条都用红条标题（复刻的样式整个系列不换），转场固定是圆形框，最近三条配色不同、镜头节奏交替
 const script = '选清洁设备，先看续航能不能干满八小时，再看清扫宽度。别光听我说，按这三点去比。';
 const visual = { status: 'measured', version: 'test', union: { x: .3, right: .7, y: .12, bottom: .6 } };
 const cues = [cue(script.slice(0, 26)), cue(script.slice(26), 8000)];
@@ -29,11 +29,10 @@ const recent = [];
 for (let n = 0; n < 5; n += 1) {
   const built = plan.buildPlan({ id: `rh_${n}`, script, emphasisPhrases: ['干满八小时', '按这三点去比'] }, visual, cues, false, recent.slice());
   plan.validatePlan(built, built.templateId);
-  if (recent[0]) {
-    assert.notEqual(built.templateId, recent[0].templateId, `第 ${n + 1} 条和上一条版式不同`);
-    assert.notEqual(built.variant.transition, recent[0].variant.transition, '转场不同');
-    assert.notEqual(built.variant.rhythm, recent[0].variant.rhythm, '镜头节奏交替');
-  }
+  assert.equal(built.templateId, 'redbar_v5', `第 ${n + 1} 条仍是红条标题`);
+  assert.equal(built.variant.transition, 'circle');
+  assert.equal(built.layout.showTitle, true, '红条标题撑满全片，可以压在头发上');
+  if (recent[0]) assert.notEqual(built.variant.rhythm, recent[0].variant.rhythm, '镜头节奏交替');
   assert.ok(!recent.slice(0, 3).some((r) => r.variant.palette === built.variant.palette), '最近三条配色不重复');
   recent.unshift({ templateId: built.templateId, variant: built.variant });
 }

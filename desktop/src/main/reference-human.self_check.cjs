@@ -15,11 +15,12 @@ const packaging = require('../../remotion-packaging/narration-plan.cjs');
 
 async function main() {
   const text = '先了解地面，再查看通道。', visual = { status: 'measured', union: { y: .2, bottom: .6 }, busy: false };
-  assert.equal(packaging.choose({ script: '首先了解地面，然后检查通道，最后现场测试。' }).templateId, 'rise_v5');
-  assert.equal(packaging.choose({ script: '先别比价格，不是越贵越好，而是看实际效果。' }).templateId, 'kinetic_v5');
-  assert.equal(packaging.choose({ script: '这台机器很安静。' }).templateId, 'glow_v5', 'plain talk defaults to glow');
-  // 人物动作多不再退回最素的版式（重点词和花字照常显示），只把动效放慢
-  assert.equal(packaging.choose({ script: '首先了解地面，然后检查通道，最后现场测试。' }, { busy: true }).templateId, 'rise_v5');
+  // 2026-11-26：数字人一律用复刻本人爆款的红条标题，不再按稿件内容换版式
+  for (const script of ['首先了解地面，然后检查通道，最后现场测试。', '先别比价格，不是越贵越好，而是看实际效果。', '这台机器很安静。']) {
+    assert.equal(packaging.choose({ script }).templateId, 'redbar_v5');
+    assert.equal(packaging.choose({ script }, { busy: true }).templateId, 'redbar_v5');
+  }
+  assert.equal(packaging.choose({ script: '这台机器很安静。', packagingMode: 'manual', captionStyleId: 'songti_v5' }).templateId, 'songti_v5', 'a manual choice is kept');
   assert.equal(packaging.buildPlan({ script: text }, { ...visual, busy: true }).motion, 'quiet');
   const crowded = packaging.buildPlan({ script: text }, { ...visual, union: { y: .1, bottom: .84 } });
   assert.equal(crowded.blocked, true);
@@ -131,7 +132,7 @@ async function main() {
     },
     analyzeNarration: async () => ({ status: 'measured', coverage: 1, union: { y: .2, bottom: .6 }, busy: false }),
     selectMusic: async () => musicAvailable ? { trackId: 'music_track_owned' } : { status: 'unavailable' },
-    packageVideo: async (payload) => { counts.package++; assert.ok(['moving_pill', 'layered_v1', 'layered_v2', 'layered_v3', 'layered_v4', 'impact_v4', 'minimal_v4', 'rise_v5', 'kinetic_v5', 'glow_v5'].includes(payload.caption_style_id)); assert.equal(payload.audio_profile, 'narration_v2'); assert.ok(['ai_design', 'local_frame'].includes(payload.cover_mode)); packageModes.push(payload.cover_mode); assert.equal(payload.music_track_id, 'music_track_owned'); return { task_id: 'packaging-1' }; },
+    packageVideo: async (payload) => { counts.package++; assert.ok(['moving_pill', 'layered_v1', 'layered_v2', 'layered_v3', 'layered_v4', 'impact_v4', 'minimal_v4', 'rise_v5', 'kinetic_v5', 'glow_v5', 'redbar_v5', 'tagline_v5', 'songti_v5'].includes(payload.caption_style_id)); assert.equal(payload.audio_profile, 'narration_v2'); assert.ok(['ai_design', 'local_frame'].includes(payload.cover_mode)); packageModes.push(payload.cover_mode); assert.equal(payload.music_track_id, 'music_track_owned'); return { task_id: 'packaging-1' }; },
     queryPackaging: async () => ({ status: 'completed', result: { generated_video_id: 'generated_video_test' } }),
   };
   try {
@@ -222,7 +223,7 @@ async function main() {
     assert.equal(service.get(nextDraft.id).captionStyleId, 'moving_pill', 'restyling preserves the original history');
     assert.deepEqual({ voice: counts.voice, asr: counts.asr, video: counts.video }, paidBeforeRepackage, 'local restyling must never repeat cloud work');
     let cycled = nextDraft;
-    for (const style of ['rise_v5', 'kinetic_v5', 'glow_v5', 'rise_v5']) {
+    for (const style of ['redbar_v5', 'tagline_v5', 'songti_v5', 'rise_v5']) {
       cycled = await service.repackage(cycled.id, { nextStyle: true });
       while (service.isBusy()) await new Promise(resolve => setTimeout(resolve, 5));
       cycled = service.get(cycled.id);

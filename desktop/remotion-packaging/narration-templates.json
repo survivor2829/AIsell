@@ -1,6 +1,6 @@
 {
   "version": 5,
-  "defaultTemplateId": "glow_v5",
+  "defaultTemplateId": "redbar_v5",
   "defaultVoiceStyleId": "original",
   "templates": [
     {
@@ -113,6 +113,39 @@
       "version": 4,
       "motion": "quiet",
       "assets": "Self-authored graphics; procedural audio; Noto Sans SC (OFL)"
+    },
+    {
+      "id": "redbar_v5",
+      "name": "红条标题",
+      "description": "红底斜体标题撑满全片 · 关键词黄绿 · 圆形转场",
+      "accent": "#C8FF3A",
+      "layout": "redbar",
+      "coverStyle": "contrast",
+      "version": 5,
+      "motion": "pop",
+      "assets": "Self-authored graphics; procedural audio; Noto Sans SC (OFL)"
+    },
+    {
+      "id": "tagline_v5",
+      "name": "标题签",
+      "description": "红底标题签撑满全片 · 多行大字 · 重点词黄色",
+      "accent": "#FFD600",
+      "layout": "tagline",
+      "coverStyle": "contrast",
+      "version": 5,
+      "motion": "rise",
+      "assets": "Self-authored graphics; procedural audio; Noto Sans SC (OFL)"
+    },
+    {
+      "id": "songti_v5",
+      "name": "宋体标题",
+      "description": "灰底宋体标题撑满全片 · 描边宋体字幕",
+      "accent": "#FFE14D",
+      "layout": "songti",
+      "coverStyle": "paper",
+      "version": 5,
+      "motion": "quiet",
+      "assets": "Self-authored graphics; procedural audio; Noto Sans SC, Noto Serif SC (OFL)"
     },
     {
       "id": "rise_v5",

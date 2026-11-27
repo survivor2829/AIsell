@@ -9,7 +9,21 @@ import type { NarrationPlan } from './NarrationLayoutV4';
 // white text readable on bright floors and white shirts. Used by digital humans (with the
 // packaging plan) and by lead mixes (no plan: pages come from the captions).
 
+//
+// Replicas (user 2026-11-26): three looks copied one to one from the user's own best videos.
+// Their title stays on screen for the whole video at the very top, may lie over the hair, and
+// keeps its own colours (no palette rotation):
+// - redbar_v5: each title line in its own red box, white heavy italic; short one-line captions,
+//   keywords yellow-green and a little larger; shot changes cut through a round frame.
+// - tagline_v5: a single red title tag; captions are whole sentences on two or three lines,
+//   heavy white with a black outline, keywords yellow.
+// - songti_v5: a heavy serif title on a full-width translucent grey band; big outlined serif
+//   captions, keywords pale yellow.
+
 const FONT = '"Narration Sans", "Microsoft YaHei", sans-serif';
+const SERIF = '"Narration Serif", "Noto Serif SC", "Source Han Serif SC", "SimSun", serif';
+export const REPLICAS = ['redbar_v5', 'tagline_v5', 'songti_v5'];
+const OUTLINE = (width: number) => ({ WebkitTextStroke: `${width}px #000`, paintOrder: 'stroke fill' as const });
 const HALO = '0 2px 4px rgba(0,0,0,.55), 0 0 18px rgba(0,0,0,.45), 0 0 46px rgba(0,0,0,.35)';
 const key = (text: string) => String(text || '').replace(/[\s，。！？；、,.!?;：:“”"'（）()]/gu, '');
 const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
@@ -24,11 +38,11 @@ export const isV5 = (styleId?: string) => catalog.templates.some((item) => item.
 
 // Pages depend only on the captions and keywords, which stay the same for the whole render.
 const pageCache = new WeakMap<NarrationCue[], Map<string, Page[]>>();
-function cachedPages(cues: NarrationCue[], emphasis: string[]) {
+function cachedPages(cues: NarrationCue[], emphasis: string[], maxChars = 12) {
   let byKey = pageCache.get(cues);
   if (!byKey) { byKey = new Map(); pageCache.set(cues, byKey); }
-  const id = emphasis.join('');
-  if (!byKey.has(id)) byKey.set(id, pagesFromCues(cues, emphasis));
+  const id = `${maxChars}:` + emphasis.join('');
+  if (!byKey.has(id)) byKey.set(id, maxChars > 12 ? sentencePages(cues, emphasis, maxChars) : pagesFromCues(cues, emphasis));
   return byKey.get(id)!;
 }
 
@@ -58,6 +72,22 @@ function pagesFromCues(cues: NarrationCue[], emphasis: string[]): Page[] {
         from += span; rest = rest.slice(cut);
       }
       at += length;
+    }
+  }
+  return out;
+}
+
+// tagline_v5 without a plan: a page is a whole sentence (clauses joined up to maxChars), so
+// the captions read as two or three lines like the user's mixes.
+function sentencePages(cues: NarrationCue[], emphasis: string[], maxChars: number): Page[] {
+  const out: Page[] = [];
+  for (const cue of cues) {
+    const start = out.length;
+    for (const page of pagesFromCues([cue], emphasis)) {
+      const last = out.length > start ? out[out.length - 1] : undefined;
+      if (last && key(last.text).length + key(page.text).length <= maxChars) {
+        last.text = `${last.text}，${page.text}`; last.endMs = page.endMs;
+      } else out.push({ ...page });
     }
   }
   return out;
@@ -111,11 +141,16 @@ function phrasesFor(page: Page, emphasis: string[]) {
   return [...listed, ...emphasis.filter((phrase) => phrase && phrase.length <= 8 && page.text.includes(phrase) && !listed.includes(phrase))];
 }
 
+// tagline_v5 shows whole sentences; every other template one clause (at most 12 characters).
+const pageChars = (styleId: string) => styleId === 'tagline_v5' ? 26 : 12;
+
 // The camera leans in a little when a keyword is said and settles back (rise/kinetic/glow).
 export function keywordPush(styleId: string, cues: NarrationCue[], emphasis: string[] = [], plan: NarrationPlan | undefined, nowMs: number) {
   if (!isV5(styleId)) return 0;
-  const strength = styleId === 'kinetic_v5' ? 0.07 : 0.04;
-  const pages: Page[] = plan?.pages?.length ? plan.pages : cachedPages(cues, emphasis);
+  // The replicas copy videos without a push, except redbar's punch-in on keywords.
+  const strength = styleId === 'kinetic_v5' ? 0.07 : styleId === 'redbar_v5' ? 0.05 : REPLICAS.includes(styleId) ? 0 : 0.04;
+  if (!strength) return 0;
+  const pages: Page[] = plan?.pages?.length ? plan.pages : cachedPages(cues, emphasis, pageChars(styleId));
   let push = 0;
   for (const page of pages) {
     if (page.startMs > nowMs || page.endMs + 1800 < nowMs) continue;
@@ -149,9 +184,112 @@ function titleLines(title: string) {
 const titleSize = (lines: string[], max: number, room: number, lineHeight: number, spacing = 0, width = 980) =>
   Math.max(44, Math.min(max, ...lines.map((line) => Math.floor(width / Array.from(line).length - spacing)), Math.floor(room / (lines.length * lineHeight))));
 
+// Replica title lines: clauses are joined while they fit `max` characters, a longer clause is
+// split evenly. When that needs more than `limit` lines, the whole title is split evenly into
+// `limit` lines instead (the size then shrinks to fit).
+function replicaLines(title: string, max: number, limit: number) {
+  const lines: string[] = [];
+  for (const part of title.split(/[，。！？：:、?!；;]/u).map((item) => item.trim()).filter(Boolean)) {
+    const chars = Array.from(part), last = lines[lines.length - 1];
+    if (last !== undefined && Array.from(last).length + 1 + chars.length <= max) { lines[lines.length - 1] = `${last} ${part}`; continue; }
+    const count = Math.ceil(chars.length / max), size = Math.ceil(chars.length / count);
+    for (let i = 0; i < count; i += 1) lines.push(chars.slice(i * size, (i + 1) * size).join(''));
+  }
+  if (lines.length <= limit) return lines;
+  const all = Array.from(lines.join('').replace(/s+/gu, '')), size = Math.ceil(all.length / limit);
+  return Array.from({ length: limit }, (_, i) => all.slice(i * size, (i + 1) * size).join('')).filter(Boolean);
+}
+
+const longest = (lines: string[]) => Math.max(1, ...lines.map((line) => Array.from(line).length));
+
+function ReplicaLayout({ styleId, title, cues, nowMs, emphasis, plan }: {
+  styleId: string; title: string; cues: NarrationCue[]; nowMs: number; emphasis: string[]; plan?: NarrationPlan;
+}) {
+  const accent = catalog.templates.find((item) => item.id === styleId)!.accent;
+  const layout = plan?.layout;
+  const pages: Page[] = plan?.pages?.length ? plan.pages : cachedPages(cues, emphasis, pageChars(styleId));
+  const found = pages.find((item) => nowMs >= item.startMs - 60 && nowMs < item.endMs + 100);
+  const page = found && { ...found, text: found.text.replace(/[，。！？；、,.!?;：:]+$/u, '') };
+  const chars = page ? charsOf(page, cues, phrasesFor(page, emphasis)) : [];
+  // Captions moved above the face (plan region starts high) take the top; the title then gives way.
+  const upper = !!layout && layout.top < 900;
+  const visibleTitle = !!title && !upper;
+
+  let titleNode: React.ReactNode = null;
+  if (visibleTitle && styleId === 'songti_v5') {
+    const lines = replicaLines(title, 9, 2), size = Math.min(100, Math.floor(960 / longest(lines)));
+    titleNode = <div style={{ position: 'absolute', top: 150, left: 0, right: 0, padding: `${Math.round(size * 0.14)}px 40px`, background: 'rgba(40,40,40,.45)', textAlign: 'center' }}>
+      {lines.map((line, i) => <div key={i} style={{ fontFamily: SERIF, fontWeight: 900, fontSize: size, lineHeight: 1.08, color: '#fff', whiteSpace: 'nowrap',
+        textShadow: '0 2px 5px rgba(0,0,0,.55)', ...OUTLINE(2) }}>{line}</div>)}
+    </div>;
+  } else if (visibleTitle) {
+    // redbar: up to three lines of 13; tagline: one tag, two lines at most.
+    const tagline = styleId === 'tagline_v5';
+    const lines = tagline ? replicaLines(title, 12, 2) : replicaLines(title, 13, 3);
+    const size = Math.min(tagline ? 80 : 70, Math.floor(940 / longest(lines)));
+    titleNode = <div style={{ position: 'absolute', top: tagline ? 140 : 90, left: 0, right: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: Math.round(size * 0.08) }}>
+      {lines.map((line, i) => <div key={i} style={{ background: tagline ? '#EE133B' : '#FF0039', padding: `${Math.round(size * 0.08)}px ${Math.round(size * 0.26)}px`,
+        fontFamily: FONT, fontWeight: 900, fontStyle: 'italic', fontSize: size, lineHeight: 1.18, letterSpacing: 1, color: '#fff', whiteSpace: 'nowrap',
+        textShadow: '0 2px 3px rgba(0,0,0,.35)' }}>{line}</div>)}
+    </div>;
+  }
+
+  let captionNode: React.ReactNode = null;
+  if (page) {
+    const count = chars.length || 1;
+    // Size first, then the height it takes, then where it sits: centred near y 1330 like the
+    // user's videos, kept inside the plan's caption area below (or above) the face.
+    let size: number, lineHeight: number, lines: number;
+    // One line while it fits at a readable size; a longer page (no word times: a whole sentence)
+    // wraps onto more lines rather than shrinking.
+    const keys = chars.filter((char) => char.key).length;
+    if (styleId === 'tagline_v5') { size = 80; lineHeight = 1.24; lines = Math.ceil(count * size / 940); }
+    else if (styleId === 'songti_v5') { size = Math.max(80, Math.min(104, Math.floor(960 / count))); lineHeight = 1.2; lines = Math.ceil(count * size / 960); }
+    else { size = Math.max(60, Math.min(72, Math.floor(900 / (count + 0.3 * keys)))); lineHeight = 1.25; lines = Math.ceil((count + 0.3 * keys) * size / 900); }
+    const wrap = lines > 1 ? 'normal' : 'nowrap';
+    const room = layout ? layout.bottom - layout.top : 640;
+    if (lines * size * lineHeight > room) size = Math.floor(room / (lines * lineHeight));
+    const height = lines * size * lineHeight;
+    const centre = !layout ? 1330 : upper ? (layout.top + layout.bottom) / 2 : Math.max(layout.top + height / 2, Math.min(1330, layout.bottom - height / 2));
+    const box: React.CSSProperties = { position: 'absolute', left: 70, right: 70, top: Math.round(centre - height / 2), textAlign: 'center', lineHeight };
+    const runs = runsOf(chars);
+    if (styleId === 'tagline_v5') {
+      captionNode = <div style={{ ...box, fontFamily: FONT, fontWeight: 900, fontSize: size, color: '#fff', textShadow: '0 4px 8px rgba(0,0,0,.45)', ...OUTLINE(Math.round(size * 0.08)),
+        opacity: ease((nowMs - page.startMs + 60) / 100) }}>
+        {runs.map((run, i) => <span key={i} style={{ color: run.key ? accent : '#fff' }}>{run.chars.map((char) => char.t).join('')}</span>)}
+      </div>;
+    } else if (styleId === 'songti_v5') {
+      const enter = ease((nowMs - page.startMs + 60) / 140);
+      captionNode = <div style={{ ...box, fontFamily: SERIF, fontWeight: 900, fontSize: size, whiteSpace: wrap, textShadow: '0 4px 10px rgba(0,0,0,.5)', ...OUTLINE(Math.round(size * 0.05)),
+        opacity: enter, transform: `translateY(${(1 - enter) * 16}px) skewX(-8deg)` }}>
+        {runs.map((run, i) => <span key={i} style={{ color: run.key ? accent : '#fff' }}>{run.chars.map((char) => char.t).join('')}</span>)}
+      </div>;
+    } else {
+      // redbar: the line pops in; a keyword lands a beat later, larger, in yellow-green.
+      const pop = ease((nowMs - page.startMs + 60) / 140);
+      captionNode = <div style={{ ...box, fontFamily: FONT, whiteSpace: wrap, opacity: pop, transform: `scale(${0.86 + 0.14 * pop})`,
+        textShadow: '0 3px 6px rgba(0,0,0,.6), 0 0 2px rgba(0,0,0,.8)' }}>
+        {runs.map((run, i) => {
+          const text = run.chars.map((char) => char.t).join('');
+          if (!run.key) return <span key={i} style={{ fontWeight: 800, fontSize: size, color: '#fff' }}>{text}</span>;
+          const land = clamp01(springy(nowMs - run.s, 60, 110));
+          return <span key={i} style={{ display: 'inline-block', fontWeight: 900, fontSize: Math.round(size * 1.18), color: nowMs >= run.s ? accent : '#fff',
+            transform: `scale(${nowMs >= run.s ? 1.35 - 0.35 * land : 1})`, transformOrigin: '50% 70%' }}>{text}</span>;
+        })}
+      </div>;
+    }
+  }
+
+  return <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden' }}>
+    {titleNode}
+    {captionNode}
+  </div>;
+}
+
 export function NarrationLayoutV5({ styleId, title, cues, nowMs, emphasis = [], plan, showTitle = true }: {
   styleId: string; title: string; cues: NarrationCue[]; nowMs: number; emphasis?: string[]; plan?: NarrationPlan; showTitle?: boolean;
 }) {
+  if (REPLICAS.includes(styleId)) return <ReplicaLayout styleId={styleId} title={title} cues={cues} nowMs={nowMs} emphasis={emphasis} plan={plan} />;
   const template = catalog.templates.find((item) => item.id === styleId)!;
   const accent = plan?.variant?.accent || template.accent;
   const layout = plan?.layout;

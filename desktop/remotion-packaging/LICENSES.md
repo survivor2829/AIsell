@@ -20,6 +20,10 @@
 当前仓库没有安装程序代码签名基础，`signed` 字段继续为 `false`。installer 必须在 delivery 便携包生成后、安装程序生成前，在 `release/` 之外取得独立签名的信任记录，并通过 `XIAOXI_RELEASE_TRUST_RECORD`、`XIAOXI_RELEASE_TRUST_PUBLIC_KEY` 和 `XIAOXI_RELEASE_TRUST_PUBLIC_KEY_SHA256` 指定记录、公钥和受信公钥摘要。记录同时约束便携包清单、完整目录树、Remotion runtime descriptor 和 runtime manifest 摘要；所以 `release:installer` 只消费已经签名确认的 delivery 便携包，不会在验签前重新构建它。构建脚本只验签，不生成签名，也不接触私钥；该信任记录不能描述成安装程序代码签名。
 
 
+## 宋体标题字体（songti_v5）
+
+`fonts/narration-serif.ttf` 由 Noto Serif SC 2.002 可变字体（© 2017-2023 Adobe，SIL Open Font License 1.1，源自 https://github.com/notofonts/noto-cjk ）用 fontTools 固定为 900 字重，并裁成 GB2312 汉字、ASCII 与常用中文标点。OFL 允许修改后再分发；许可全文随运行时以 `narration-font-OFL.txt` 提供。
+
 ## 本地 Noto Emoji 图像
 
 Copyright Google LLC. Source: https://github.com/googlefonts/noto-emoji

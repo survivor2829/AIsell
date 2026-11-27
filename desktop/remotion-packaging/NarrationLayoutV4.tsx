@@ -10,7 +10,7 @@ export type NarrationPlan = {
   layout: { revision?: number; align?: 'center'; left: number; width: number; top: number; bottom: number; showTitle: boolean; titleTop: number; compact: boolean };
   pages: { text: string; startMs: number; endMs: number; phrase?: string; emphasisMode?: 'inline' | 'stacked'; ordinal?: number }[];
   soundEvents: { startMs: number; sound: string; gain: number }[];
-  variant?: { palette: string; accent: string; transition: 'flash' | 'iris' | 'push'; rhythm: string };
+  variant?: { palette: string; accent: string; transition: 'flash' | 'iris' | 'push' | 'circle'; rhythm: string };
   camera?: { focusX: number; focusY: number; shots: { startMs: number; scale: number }[] };
   stickers?: { text: string; startMs: number; endMs: number; side: 'left' | 'right' | 'top'; top: number; width: number; fontSize: number; rotate: number }[];
 };

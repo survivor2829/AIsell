@@ -130,7 +130,7 @@ function registerNarratedBatchIpc({ handle, controller, validateId, validateVoic
   }
   function soundSettings(value) {
     keys(value, ["voice_persona_id", "brand_profile_id", "minimum_duration_seconds", "workflow_version", "music_mode", "music_track_ids", "video_template", "strict_visual_review", "caption_style_id", "display_title"]);
-    if (value.caption_style_id != null && !["rise_v5", "kinetic_v5", "glow_v5", "random"].includes(value.caption_style_id)) invalid("invalid_narrated_settings");
+    if (value.caption_style_id != null && !["tagline_v5", "redbar_v5", "songti_v5", "rise_v5", "kinetic_v5", "glow_v5", "random"].includes(value.caption_style_id)) invalid("invalid_narrated_settings");
     // Counted in characters like the engine, and sent trimmed so a re-confirm compares equal to what was saved.
     if (value.display_title != null && (typeof value.display_title !== "string" || [...value.display_title.trim()].length > 30)) invalid("invalid_narrated_settings");
     if (value.video_template != null && !["topic_fixed", "key_points"].includes(value.video_template)) invalid("invalid_narrated_settings");
