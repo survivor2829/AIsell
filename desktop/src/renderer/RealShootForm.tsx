@@ -29,13 +29,8 @@ export function realEstimate(timing: Timing | undefined, catalog: RealCatalog | 
   const picked = points.length + draft.customPoints.length;
   // Same as the plan: a cleaning shot leads when none was picked and there is room; extra cleaning shots make up short lists.
   const shots = Math.max(catalog.minShots[durationSeconds] || 3, picked + (!points.some((point) => point.cleaning) && picked < limit ? 1 : 0));
-  // The 定妆照, the AI director, the scene picture (none with a site photo), then the shots a few at a time.
-  return 10 + (draft.venue ? 1 : 2) * timing.image + timing.story + Math.ceil(shots / timing.shotSlots) * videoSeconds(timing, durationSeconds / shots) + timing.finish;
-}
-export function storyEstimate(timing: Timing | undefined, durationSeconds: number) {
-  if (!timing) return 0;
-  const segments = durationSeconds / 15;
-  return 10 + timing.image + timing.story + timing.image * (2 + Math.ceil(6 * segments / timing.imageSlots)) + Math.ceil(segments / timing.shotSlots) * timing.video15 + timing.finish + 15;
+  // The 定妆照, the AI director, the scene picture (none with a site photo), the keyframes a few at a time, then the shots.
+  return 10 + (draft.venue ? 1 : 2) * timing.image + timing.story + Math.ceil(shots / timing.imageSlots) * timing.image + Math.ceil(shots / timing.shotSlots) * videoSeconds(timing, durationSeconds / shots) + timing.finish;
 }
 export const minutes = (seconds: number) => seconds < 90 ? "1 分钟左右" : `${Math.round(seconds / 60)} 分钟左右`;
 
@@ -151,6 +146,60 @@ export function ShotReviewPanel({ review, titles, canRedo, busy, finished = true
       {shot.redone ? <em>{redoing ? "重拍中" : "已重拍"}</em> : canRedo && <button type="button" className="pv2-btn" data-product-video-action="redo-shot" disabled={busy} onClick={() => onRedo(shot.index)}><RefreshCw size={16} />重拍这一镜</button>}</div>)}
     {canRedo && open.length > 0 && <small>每条视频可以重拍一个镜头，只扣这一个镜头的算力；不重拍也能直接用。</small>}
   </div></div>;
+}
+// real-3 分镜确认 (客户：选的卖点一个也没拍出来、想自己改动作和角度): one keyframe per shot, drawn before any video.
+// The customer may change a shot's camera, action or caption; a new camera or action redraws that keyframe.
+export type StoryboardShot = { index: number; title: string; caption?: string; seconds: number; camera?: string; action?: string; proof?: string; unshowable?: string };
+export type Storyboard = { confirmed: boolean; redrawsLeft: number[]; cameras: Item[]; autoRedone: { index: number; issue: string } | null };
+type MediaResult = { ok: boolean; data?: { dataUrl: string } };
+type ShotChange = { action?: string; camera?: string; caption?: string };
+function KeyframeCard({ taskId, shot, ready, drawing, locked, version, cameras, redrawsLeft, busy, imageMedia, onSave }: {
+  taskId: string; shot: StoryboardShot; ready: boolean; drawing: boolean; locked: boolean; version: number; cameras: Item[]; redrawsLeft: number; busy: boolean;
+  imageMedia: (id: string, key: string) => Promise<MediaResult>; onSave: (change: ShotChange) => void;
+}) {
+  const [picture, setPicture] = useState("");
+  const [camera, setCamera] = useState(shot.camera || ""), [action, setAction] = useState(shot.action || ""), [caption, setCaption] = useState(shot.caption || "");
+  useEffect(() => { setCamera(shot.camera || ""); setAction(shot.action || ""); setCaption(shot.caption || ""); }, [shot.camera, shot.action, shot.caption]);
+  useEffect(() => {
+    let disposed = false; setPicture("");
+    if (ready) void imageMedia(taskId, `key_${shot.index}`).then((result) => { if (!disposed && result.ok && result.data) setPicture(result.data.dataUrl); }).catch(() => {});
+    return () => { disposed = true; };
+  }, [taskId, shot.index, ready, version]);
+  const redraw = camera !== (shot.camera || "") || action.trim() !== (shot.action || "");
+  const changed = redraw || caption.trim() !== (shot.caption || "");
+  const change: ShotChange = {};
+  if (camera !== shot.camera) change.camera = camera;
+  if (action.trim() !== shot.action) change.action = action.trim();
+  if (caption.trim() !== shot.caption) change.caption = caption.trim();
+  return <article className="rs-board-card">
+    <div className="rs-board-pic">{picture ? <img src={picture} alt={`第 ${shot.index + 1} 镜分镜图`} /> : <span>{drawing || !ready ? <LoaderCircle size={30} className="spin" /> : <ImagePlus size={30} />}<small>{drawing || !ready ? "正在画" : ""}</small></span>}
+      <em>{shot.index + 1}</em></div>
+    <div className="rs-board-body">
+      <b>{shot.title}<small>{shot.seconds} 秒</small></b>
+      {shot.proof && <p>画面证明：{shot.proof}</p>}
+      {shot.unshowable && <p className="rs-crew-warn"><AlertTriangle size={15} />{shot.unshowable}，可以改一下动作再画</p>}
+      <div className="rs-board-cams" role="radiogroup" aria-label="机位">{cameras.map((row) => <button key={row.id} type="button" role="radio" aria-checked={camera === row.id}
+        className={camera === row.id ? "is-on" : ""} disabled={busy || locked} onClick={() => setCamera(row.id)}>{row.name}</button>)}</div>
+      <label><span>动作</span><input maxLength={40} value={action} disabled={busy || locked} onChange={(event) => setAction(event.target.value)} /></label>
+      <label><span>字幕</span><input maxLength={10} value={caption} disabled={busy || locked} onChange={(event) => setCaption(event.target.value)} /></label>
+      {changed && <button type="button" className="pv2-btn" data-product-video-action="update-shot" disabled={busy || locked || (redraw && redrawsLeft <= 0) || !action.trim() || !caption.trim()}
+        onClick={() => onSave(change)}><RefreshCw size={16} />{redraw ? (redrawsLeft > 0 ? `按这个重画（还能 ${redrawsLeft} 次）` : "这一镜不能再重画了") : "保存字幕"}</button>}
+    </div>
+  </article>;
+}
+export function StoryboardConfirm({ task, busy, imageMedia, onSave, onConfirm }: {
+  task: { id: string; status: string; imagesReady?: Record<string, boolean>; storyboard?: Storyboard; plan: { shots: StoryboardShot[] } };
+  busy: boolean; imageMedia: (id: string, key: string) => Promise<MediaResult>; onSave: (index: number, change: ShotChange) => void; onConfirm: () => void;
+}) {
+  const board = task.storyboard, drawing = task.status === "drawing_frames";
+  if (!board) return null;
+  const allReady = task.plan.shots.every((shot) => task.imagesReady?.[`key_${shot.index}`]);
+  return <div className="rs-board">
+    <div className="rs-board-head"><h3>{drawing ? "正在画分镜" : "看看每个镜头"}</h3>
+      {!drawing && <button type="button" className="pv2-btn is-main" data-product-video-action="confirm-storyboard" disabled={busy || !allReady} onClick={onConfirm}><Check size={20} />分镜没问题，开始拍视频</button>}</div>
+    <div className="rs-board-grid">{task.plan.shots.map((shot) => <KeyframeCard key={shot.index} taskId={task.id} shot={shot} ready={Boolean(task.imagesReady?.[`key_${shot.index}`])} drawing={drawing && !task.imagesReady?.[`key_${shot.index}`]} locked={drawing}
+      version={board.redrawsLeft[shot.index] ?? 0} cameras={board.cameras} redrawsLeft={board.redrawsLeft[shot.index] ?? 0} busy={busy} imageMedia={imageMedia} onSave={(change) => onSave(shot.index, change)} />)}</div>
+  </div>;
 }
 // Only the steps this video really has: no 定妆照 on videos started before it, no scene picture without a venue shot.
 export function RealShootProgress({ task, shotVideos }: { task: ProgressTask; shotVideos: Record<string, string> }) {

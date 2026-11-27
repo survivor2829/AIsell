@@ -1,7 +1,10 @@
 /* 场景效果视频：卡片跟角色背景同一色系，大图标、大按钮、少字。 */
 .pv2{--pv-accent:var(--brand-red);--pv-surface:var(--workspace-role-surface,#faebef);--pv-card:color-mix(in srgb,var(--pv-surface) 35%,white);--pv-line:color-mix(in srgb,var(--pv-accent) 18%,transparent);--pv-soft:color-mix(in srgb,var(--pv-accent) 9%,white);max-width:1320px;margin:0 auto;padding:26px 30px 40px;color:#1f2937;caret-color:var(--pv-accent)}
 .pv2-header h1{font-size:28px;margin:0 0 6px}.pv2-header p{margin:0 0 18px;color:#4b5563;font-size:16px}
-.pv2-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:18px;align-items:stretch;margin-top:16px}
+/* The right card is as tall as its content (2026-11-27: it used to stretch to the form and leave a large blank).
+   A finished video and the storyboard need room, so that card gets the wider column then. */
+.pv2-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:18px;align-items:start;margin-top:16px}
+.pv2-grid.is-wide{grid-template-columns:minmax(0,.85fr) minmax(0,1.35fr)}
 .pv2-card{background:var(--pv-card);border:1.5px solid var(--pv-line);border-radius:22px;box-shadow:0 6px 24px color-mix(in srgb,var(--pv-accent) 9%,transparent);padding:22px 24px;min-width:0}
 .pv2 h2{font-size:19px;font-weight:900;margin:0 0 10px;color:#1f2937}
 .pv2 h2 small{font-size:14px;font-weight:700;color:#6b7280;margin-left:8px}
@@ -56,8 +59,13 @@ html[data-beat="1"] .pv2-bars .is-now i b{opacity:.55}
 .pv2-btn.is-main{background:var(--pv-accent);color:#fff;box-shadow:0 8px 18px color-mix(in srgb,var(--pv-accent) 26%,transparent)}
 .pv2-stuck{display:flex;align-items:center;gap:14px;padding:16px 18px;border-radius:18px;background:#fff7ed;border:1.5px solid #f5c48f;color:#c2410c}
 .pv2-stuck>div{display:grid;gap:3px;flex:1;min-width:0}.pv2-stuck b{font-size:18px;color:#1f2937}.pv2-stuck span{font-size:14px;color:#6b7280}.pv2-stuck .pv2-btn{flex:none}
-.pv2-result{display:grid;gap:14px}
-.pv2-result video{width:100%;max-height:520px;border-radius:18px;background:#1b1520}
+/* Finished: the vertical video as tall as the window allows, and beside it what to do with it. */
+.pv2-result{display:grid;grid-template-columns:auto minmax(0,1fr);gap:18px;align-items:start}
+.pv2-result-media video,.pv2-result-media .pv2-play{display:block;height:min(72vh,720px);aspect-ratio:9/16;width:auto;max-width:100%;border-radius:18px;background:#1b1520}
+.pv2-result-side{display:grid;gap:12px;align-content:start;min-width:0}
+.pv2-result-side .pv2-actions{flex-direction:column;align-items:stretch}
+.pv2-result-side .rs-review{margin-bottom:0}
+@media(max-width:860px){.pv2-result{grid-template-columns:1fr}.pv2-result-media video,.pv2-result-media .pv2-play{height:auto;width:100%}}
 .pv2-play{height:300px;border-radius:18px;border:0;background:linear-gradient(160deg,color-mix(in srgb,var(--pv-accent) 75%,#000),color-mix(in srgb,var(--pv-accent) 45%,#000));color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;font:inherit;font-size:19px;font-weight:900;cursor:pointer}
 .pv2-send{background:#fff;border-radius:16px;padding:14px 16px;border:1.5px solid var(--pv-line)}.pv2-send b{font-size:16px}.pv2-send p{margin:6px 0 0;font-size:16px;line-height:1.6;color:#374151}
 .pv2-empty{display:grid;gap:18px}
@@ -66,7 +74,7 @@ html[data-beat="1"] .pv2-bars .is-now i b{opacity:.55}
 .pv2-journey{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .pv2-journey li{display:flex;flex-direction:column;align-items:center;gap:8px;font-size:17px;font-weight:900;padding:14px 6px;border-radius:16px;background:var(--pv-soft)}
 .pv2-journey li>span{width:56px;height:56px;border-radius:16px;display:grid;place-items:center;background:#fff;color:var(--pv-accent)}
-.pv2-history{margin-top:auto;padding-top:6px}.pv2-history h3{font-size:18px;margin:0 0 10px}
+.pv2-history{padding-top:6px}.pv2-history h3{font-size:18px;margin:0 0 10px}
 .pv2-history>div{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
 .pv2-history button{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:14px;background:#fff;border:1.5px solid var(--pv-line);text-align:left;font:inherit;cursor:pointer;min-width:0}
 .pv2-history button>span:last-child{display:grid;min-width:0}.pv2-history b{font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pv2-history small{font-size:13px;color:#6b7280;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -118,10 +126,27 @@ html[data-beat="1"] .sv-stages li.is-now>span{opacity:.6}
 .sv-parts figure.is-done figcaption{color:#16a34a}
 
 /* 无人实拍 (2026-11-19): pick, don't type — device, scene, floor, dirt and selling points; a countdown while it is made. */
-.rs-mode{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px}
-.rs-mode button{display:grid;gap:3px;text-align:left;padding:14px 18px;border-radius:18px;background:#fff;border:1.5px solid var(--pv-line);font:inherit;cursor:pointer;color:#1f2937}
-.rs-mode b{font-size:20px;font-weight:900}.rs-mode small{font-size:14px;color:#6b7280;font-weight:700}
-.rs-mode button.is-on{border:3px solid var(--pv-accent);background:var(--pv-soft);padding:12.5px 16.5px}.rs-mode button.is-on b{color:var(--pv-accent)}
+/* 分镜确认 (2026-11-27): one card per shot — the keyframe beside its camera, action and caption. */
+.rs-board{display:grid;gap:14px}
+.rs-board-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.rs-board-head h3{margin:0;font-size:22px;font-weight:900}
+.rs-board-head .pv2-btn{height:56px;font-size:18px}
+.rs-board-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:12px}
+.rs-board-card{display:grid;grid-template-columns:130px minmax(0,1fr);gap:12px;padding:12px;border-radius:18px;background:#fff;border:1.5px solid var(--pv-line)}
+.rs-board-pic{position:relative;aspect-ratio:9/16;border-radius:12px;overflow:hidden;background:var(--pv-soft);display:grid;place-items:center;color:var(--pv-accent)}
+.rs-board-pic img{width:100%;height:100%;object-fit:cover}
+.rs-board-pic>span{display:grid;justify-items:center;gap:6px;font-size:13px;font-weight:800}
+.rs-board-pic em{position:absolute;left:6px;top:6px;min-width:24px;height:24px;border-radius:999px;background:rgba(0,0,0,.6);color:#fff;font-style:normal;font-size:13px;font-weight:900;display:grid;place-items:center}
+.rs-board-body{display:grid;gap:8px;align-content:start;min-width:0}
+.rs-board-body>b{font-size:17px;font-weight:900;display:flex;justify-content:space-between;gap:8px}.rs-board-body>b small{font-size:13px;color:#6b7280;font-weight:700}
+.rs-board-body>p{margin:0;font-size:14px;line-height:1.5;color:#4b5563}
+.rs-board-cams{display:flex;flex-wrap:wrap;gap:6px}
+.rs-board-cams button{height:34px;padding:0 10px;border-radius:10px;border:1.5px solid var(--pv-line);background:#fff;font:inherit;font-size:14px;font-weight:800;color:#374151;cursor:pointer}
+.rs-board-cams button.is-on{border:2px solid var(--pv-accent);background:var(--pv-soft);color:var(--pv-accent);padding:0 9.5px}
+.rs-board-body label{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:8px}
+.rs-board-body label span{font-size:14px;font-weight:800;color:#6b7280}
+.rs-board-body input{height:40px;min-width:0;padding:0 10px;border-radius:10px;border:1.5px solid var(--pv-line);background:#fff;font:inherit;font-size:15px}
+.rs-board-body .pv2-btn{height:42px;font-size:15px;justify-self:start}
 .rs-groups{display:grid;gap:12px}.rs-groups>div>span{display:block;font-size:15px;font-weight:800;color:#6b7280;margin-bottom:8px}
 .rs-chips{display:flex;flex-wrap:wrap;gap:10px}
 .rs-chips button{min-height:48px;padding:0 18px;border-radius:14px;border:1.5px solid color-mix(in srgb,var(--pv-accent) 25%,transparent);background:#fff;font:inherit;font-size:17px;font-weight:800;color:#1f2937;cursor:pointer}

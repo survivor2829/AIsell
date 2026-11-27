@@ -6,6 +6,8 @@ function createProductVideoApi(ipcRenderer) {
   const confirmClick = createTrustedClickGate('[data-product-video-action="confirm-sheet"]', "product-video:confirm-sheet");
   const redoClick = createTrustedClickGate('[data-product-video-action="redo-sheet"]', "product-video:redo-sheet");
   const redoShotClick = createTrustedClickGate('[data-product-video-action="redo-shot"]', "product-video:redo-shot");
+  const updateShotClick = createTrustedClickGate('[data-product-video-action="update-shot"]', "product-video:update-shot");
+  const storyboardClick = createTrustedClickGate('[data-product-video-action="confirm-storyboard"]', "product-video:confirm-storyboard");
   const invoke = (name, payload = {}) => ipcRenderer.invoke(`product-video:${name}`, payload);
   return {
     capabilities: () => invoke("capabilities"),
@@ -32,6 +34,8 @@ function createProductVideoApi(ipcRenderer) {
     confirmSheet: (id) => invoke("confirm-sheet", { id, clickToken: confirmClick() }),
     redoSheet: (id) => invoke("redo-sheet", { id, clickToken: redoClick() }),
     redoShot: (id, index) => invoke("redo-shot", { id, index, clickToken: redoShotClick() }),
+    updateShot: (id, index, change) => invoke("update-shot", { id, index, change, clickToken: updateShotClick() }),
+    confirmStoryboard: (id) => invoke("confirm-storyboard", { id, clickToken: storyboardClick() }),
     export: (id) => invoke("export", { id }),
     exportSource: (id) => invoke("export-source", { id })
   };
