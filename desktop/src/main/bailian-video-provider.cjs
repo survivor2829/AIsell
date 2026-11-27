@@ -82,6 +82,19 @@ function storyVideoRequest({ images, prompt, seconds = 15, resolution = '480P' }
     parameters: { resolution: quality, ratio: '9:16', duration: seconds, audio: true, prompt_extend: false, watermark: false } },
     headers: { ...ASYNC_HEADERS, ...(media.some((item) => item.url.startsWith('oss://')) ? { 'X-DashScope-OssResourceResolve': 'enable' } : {}) } };
 }
+// 场景效果视频 real-3: the shot starts from the keyframe the customer confirmed. Wan3 does not allow a first frame
+// together with reference images (阿里文档：first_frame 与 reference_image 互斥), so the keyframe is the only picture;
+// "adaptive" keeps the keyframe's own 9:16 shape. Sound on: the machine's own noise, as before.
+function firstFrameVideoRequest({ image, prompt, seconds, resolution = '480P' } = {}) {
+  const quality = String(resolution).toUpperCase(), text = String(prompt || '').trim();
+  if (!Number.isInteger(seconds) || seconds < 2 || seconds > 15) throw fail('bailian_duration_invalid', '每个镜头须为2至15秒。');
+  if (!['480P', '720P', '1080P'].includes(quality)) throw fail('bailian_resolution_invalid', 'Wan3视频支持480P、720P或1080P。');
+  if (!text || [...text].length > 4500) throw fail('bailian_prompt_invalid', '视频提示词须为1至4500字，不能截断导演要求。');
+  const url = mediaReference(image, { image: true });
+  return { route: ROUTES.video, body: { model: DIRECT_MODEL, input: { prompt: text, media: [{ type: 'first_frame', url }] },
+    parameters: { resolution: quality, ratio: 'adaptive', duration: seconds, audio: true, prompt_extend: false, watermark: false } },
+    headers: { ...ASYNC_HEADERS, ...(url.startsWith('oss://') ? { 'X-DashScope-OssResourceResolve': 'enable' } : {}) } };
+}
 function pollRequest(id) { return { route: ROUTES.task(id) }; }
 function nodeOf(payload) { return payload?.output && typeof payload.output === 'object' ? payload.output : {}; }
 function taskIdOf(payload) {
@@ -137,5 +150,5 @@ function createBailianVideoProvider(options = {}) {
     nodeOf, taskIdOf, statusOf, resultVideoUrl, normalizePoll, ttsPayload, ttsAudioUrl };
 }
 
-module.exports = { storyVideoRequest, MODEL, DIRECT_MODEL, TTS_MODEL, ROUTES, ASYNC_HEADERS, createBailianVideoProvider, directVideoRequest,
+module.exports = { storyVideoRequest, firstFrameVideoRequest, MODEL, DIRECT_MODEL, TTS_MODEL, ROUTES, ASYNC_HEADERS, createBailianVideoProvider, directVideoRequest,
   videoPayload, videoRequest, pollRequest, nodeOf, taskIdOf, statusOf, resultVideoUrl, normalizePoll, ttsPayload, ttsAudioUrl };

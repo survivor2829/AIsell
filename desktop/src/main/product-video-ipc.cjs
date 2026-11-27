@@ -3,7 +3,7 @@ const { createProductVideoService } = require("./product-video-service.cjs");
 const { cleanMessage, fail } = require("./digital-human-provider.cjs");
 
 const CHANNELS = Object.freeze(Object.fromEntries(
-  ["capabilities", "import-image", "import-facts", "create", "list", "get", "start", "retry-shot", "refresh", "media", "shot-media", "image-media", "confirm-sheet", "redo-sheet", "redo-shot", "export", "export-source"]
+  ["capabilities", "import-image", "import-facts", "create", "list", "get", "start", "retry-shot", "refresh", "media", "shot-media", "image-media", "confirm-sheet", "redo-sheet", "redo-shot", "update-shot", "confirm-storyboard", "export", "export-source"]
     .map((name) => [name, `product-video:${name}`])
 ));
 const ID = /^pv_[a-f0-9-]{36}$/u;
@@ -41,8 +41,17 @@ function registerProductVideoIpc(options = {}) {
       if (!Number.isInteger(payload.index) || payload.index < 0 || payload.index > 20) throw fail("product_video_invalid_input", "请刷新页面后重试。");
       return service.redoShot(idOf(payload), payload.index);
     },
+    // real-3 storyboard: change one shot (action, camera, caption); a new action or camera redraws its keyframe.
+    "update-shot": (payload) => {
+      if (!Number.isInteger(payload.index) || payload.index < 0 || payload.index > 20) throw fail("product_video_invalid_input", "请刷新页面后重试。");
+      const change = payload.change;
+      if (!change || typeof change !== "object" || Array.isArray(change) || Object.keys(change).some((key) => !["action", "camera", "caption"].includes(key))
+        || Object.values(change).some((value) => typeof value !== "string" || value.length > 200)) throw fail("product_video_invalid_input", "请刷新页面后重试。");
+      return service.updateShot(idOf(payload), payload.index, change);
+    },
+    "confirm-storyboard": (payload) => service.confirmStoryboard(idOf(payload)),
     "image-media": (payload) => {
-      if (!/^(?:sheet|scene|floor|plate|person_[ab]|grid_\d{1,2})$/u.test(String(payload.key || ""))) throw fail("product_video_invalid_input", "请刷新页面后重试。");
+      if (!/^(?:sheet|scene|floor|plate|person_[ab]|grid_\d{1,2}|key_\d{1,2})$/u.test(String(payload.key || ""))) throw fail("product_video_invalid_input", "请刷新页面后重试。");
       return service.imageMedia(idOf(payload), payload.key);
     },
     "shot-media": (payload) => {
@@ -71,8 +80,8 @@ function registerProductVideoIpc(options = {}) {
         if (!window?.webContents || event.sender !== window.webContents || (event.senderFrame && event.senderFrame !== window.webContents.mainFrame)) {
           throw fail("product_video_untrusted_sender", "请在应用主窗口操作。");
         }
-        if (["start", "retry-shot", "confirm-sheet", "redo-sheet", "redo-shot"].includes(name)) await options.requireTrustedClick(event, payload, name);
-        if (!["create", "import-image", "import-facts"].includes(name) && Object.keys(payload).some((key) => !["id", "clickToken", ...(name === "shot-media" || name === "redo-shot" ? ["index"] : name === "image-media" ? ["key"] : [])].includes(key))) {
+        if (["start", "retry-shot", "confirm-sheet", "redo-sheet", "redo-shot", "update-shot", "confirm-storyboard"].includes(name)) await options.requireTrustedClick(event, payload, name);
+        if (!["create", "import-image", "import-facts"].includes(name) && Object.keys(payload).some((key) => !["id", "clickToken", ...(name === "shot-media" || name === "redo-shot" ? ["index"] : name === "update-shot" ? ["index", "change"] : name === "image-media" ? ["key"] : [])].includes(key))) {
           throw fail("product_video_invalid_input", "请刷新页面后重试。");
         }
         return { ok: true, data: await handler(payload) };

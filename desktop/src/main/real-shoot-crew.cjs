@@ -119,8 +119,14 @@ function applySafeShots(plan, crew) {
   const flagged = new Set((crew?.risks || []).filter((row) => !row.ok).map((row) => row.index));
   if (!flagged.size) return { plan, fallback: [] };
   const direction = { operator: plan.operator || 'none', wet: plan.wet === true };
-  const shots = plan.shots.map((shot) => flagged.has(shot.index) ? { ...shot, place: plan.shots.some((row) => row.place === 'venue') ? 'venue' : shot.place, safe: true,
-    prompt: shotPrompt(plan, direction, { prompt: safeShotText({ plan, crew, shot }), venue: plan.shots.some((row) => row.place === 'venue'), seconds: shot.seconds }) } : shot);
+  const venue = plan.shots.some((row) => row.place === 'venue');
+  const shots = plan.shots.map((shot) => {
+    if (!flagged.has(shot.index)) return shot;
+    const safe = { ...shot, place: venue ? 'venue' : shot.place, safe: true };
+    // real-3 storyboard: the safe description replaces the director's, and the keyframe is drawn from it.
+    if (plan.storyboard) { safe.directorPrompt = safeShotText({ plan, crew, shot }); safe.prompt = shotPrompt(plan, direction, safe); return safe; }
+    return { ...safe, prompt: shotPrompt(plan, direction, { prompt: safeShotText({ plan, crew, shot }), venue, seconds: shot.seconds }) };
+  });
   return { plan: { ...plan, shots }, fallback: [...flagged] };
 }
 
