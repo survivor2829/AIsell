@@ -50,6 +50,9 @@ const FACING_PATTERNS = Object.freeze({
   right: /车头(?:朝向?|对着?|指向)(?:画面)?右/u
 });
 const facings = (text) => Object.keys(FACING_PATTERNS).filter((key) => FACING_PATTERNS[key].test(String(text || '')));
+const PERPENDICULAR = Object.freeze({ toward: ['left', 'right'], away: ['left', 'right'], left: ['toward', 'away'], right: ['toward', 'away'] });
+// 「距手机约3.2米」/「离镜头2米」: how far the machine stands from the phone in a start or end description.
+const distance = (text) => { const match = String(text || '').match(/(?:距|离)(?:手机|镜头)(?:约|大约)?\s*(\d+(?:\.\d+)?)\s*(?:米|m)/u); return match ? Number(match[1]) : null; };
 const ACTION_LENGTH = 40;
 const DIRECTOR_MODEL = 'qwen3-vl-plus';
 const DIRECTOR_ROUTE = '/bailian/compatible-mode/v1/chat/completions';
@@ -258,6 +261,19 @@ function parseDirection(content, plan) {
       if (startFacing.length > 1) problems.push(`第${i + 1}镜 start 里机器朝向写了两种（${startFacing.map((f) => FACING_WORDS[f]).join('、')}），只写一种`);
       if (endFacing.length > 1) problems.push(`第${i + 1}镜 end 里机器朝向写了两种（${endFacing.map((f) => FACING_WORDS[f]).join('、')}），只写一种`);
       if (expected && startFacing.length === 1 && startFacing[0] !== expected) problems.push(`第${i + 1}镜 camera 是 ${camera}，start 的朝向应该是${FACING_WORDS[expected]}`);
+      // 发版前验收 2026-11-27：结束位置比开始还远 → 机器开到纸箱前又往回开；「车头朝画面下方」→ 转弯拍成原地来回转。
+      const four = Object.values(FACING_WORDS).join('、');
+      if (start.length >= 10 && !startFacing.length) problems.push(`第${i + 1}镜 start 没写清朝向，只能用：${four}`);
+      if (end.length >= 10 && !endFacing.length) problems.push(`第${i + 1}镜 end 没写清朝向，只能用：${four}`);
+      if (startFacing.length === 1 && endFacing.length === 1) {
+        const [from, to] = [startFacing[0], endFacing[0]];
+        if (slot.pointId === 'obstacle' && from !== to) problems.push(`第${i + 1}镜是避障：绕过去以后要回到原来的朝向（${FACING_WORDS[from]}），end 写成了${FACING_WORDS[to]}`);
+        if (slot.pointId === 'narrow' && !PERPENDICULAR[from].includes(to)) problems.push(`第${i + 1}镜是 90 度转弯：从${FACING_WORDS[from]}转 90 度只能是${PERPENDICULAR[from].map((key) => FACING_WORDS[key]).join('或')}`);
+      }
+      const near = distance(start), far = distance(end);
+      if ((camera === 'toward' || camera === 'away') && (near === null || far === null)) problems.push(`第${i + 1}镜的 start 和 end 都要写“距手机约X米”`);
+      else if (camera === 'toward' && far >= near) problems.push(`第${i + 1}镜是迎面开来：结束时要比开始离手机更近（现在开始 ${near} 米、结束 ${far} 米）`);
+      else if (camera === 'away' && far <= near) problems.push(`第${i + 1}镜是背面开走：结束时要比开始离手机更远（现在开始 ${near} 米、结束 ${far} 米）`);
     }
     if (!camera) problems.push(`第${i + 1}镜 camera 只能是 ${Object.keys(cameras).join('、')}`);
     if (action.length < 6) problems.push(`第${i + 1}镜缺少 action（这一镜机器做什么动作）`);

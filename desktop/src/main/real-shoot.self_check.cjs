@@ -138,7 +138,7 @@ const real3Plan = ({ realScene, sceneStep, ...plan }) => { const old = oldShots(
 const planDirected = (input) => legacyPlan(ai.planDirected(input));
 const direction = (plan, overrides = {}) => JSON.stringify({ machine: '自主行驶的洗地机器人，底部滚刷和后部刮条', operator: 'none', wet: false, floor: '旧环氧地坪', dirt: '油污和铁屑',
   plate: '工厂仓储通道，两侧货架和周转箱，环氧地坪上有油污和铁屑，顶灯偏冷', shots: plan.shots.map((shot, i) => ({ title: shot.title, caption: shot.caption || `自己会干活${i + 1}`, venue: shot.pointId !== 'lift',
-    camera: 'side', action: '沿通道匀速向前清洁地面', start: '机器在通道中间离手机约四米，车头朝前，前方地面有浮灰', end: '机器沿直线开过约三米，仍在画面里，经过的地方略微变亮', timeline: '0到5秒：机器匀速直行约三米，不转弯；全程车身不变形，不碰任何东西', proof: shot.pointId === 'lift' ? '机器自己开进电梯门' : '身后留下一条干净带',
+    camera: 'side', action: '沿通道匀速向前清洁地面', start: '机器在通道中间距手机约4米，车头朝画面右边，前方地面有浮灰', end: '机器沿直线开过约三米，距手机约4米，车头朝画面右边，经过的地方略微变亮', timeline: '0到5秒：机器匀速直行约三米，不转弯；全程车身不变形，不碰任何东西', proof: shot.pointId === 'lift' ? '机器自己开进电梯门' : '身后留下一条干净带',
     prompt: `第${i + 1}镜：摄影机在机器斜后方同速跟随，机器沿通道匀速前进，滚刷经过的地方油污消失露出环氧地坪本色，没经过的地方保持原样作对照。两侧是蓝色货架和灰色周转箱，地面有黄色地标线，光线是厂房顶上普通的白色工业灯，画面平实，像现场随手拍的设备演示。` })), ...overrides });
 {
   assert.throws(() => planDirected({ ...aiBase, productName: ' ' }), /产品名称/u);
@@ -226,9 +226,21 @@ const direction = (plan, overrides = {}) => JSON.stringify({ machine: '自主行
   assert.throws(() => ai.parseDirection(JSON.stringify(turned), four), /第2镜 start 里机器朝向写了两种（车头朝手机、车头朝画面左边）/u);
   const facingWrong = JSON.parse(direction(four)); facingWrong.shots[0].camera = 'toward'; facingWrong.shots[0].start = '机器在画面中间离手机约五米，车头朝画面右边，前方地上一个纸箱';
   assert.throws(() => ai.parseDirection(JSON.stringify(facingWrong), four), /camera 是 toward，start 的朝向应该是车头朝手机/u);
-  const facingRight = JSON.parse(direction(four)); facingRight.shots[0].camera = 'toward'; facingRight.shots[0].start = '机器在画面中间离手机约五米，车头朝手机，前方2.5米地上一个纸箱';
-  facingRight.shots[0].end = '机器已从纸箱右侧绕过、离手机约一米，车头朝手机，纸箱在原地';
+  const facingRight = JSON.parse(direction(four)); facingRight.shots[0].camera = 'toward'; facingRight.shots[0].start = '机器在画面中间距手机约5米，车头朝手机，前方2.5米地上一个纸箱';
+  facingRight.shots[0].end = '机器已从纸箱右侧绕过、距手机约1.2米，车头朝手机，纸箱在原地';
+  facingRight.shots[1].end = '机器在过道尽头转过弯，距手机约4米，车头朝手机，侧面不再对着手机';
   assert.doesNotThrow(() => ai.parseDirection(JSON.stringify(facingRight), four));
+  // 发版前验收：结束比开始远（往回开）、绕完不回原朝向、转弯不是 90 度、朝向说法不明、没写距离 → 都退回重写。
+  const back = structuredClone(facingRight); back.shots[0].end = '机器已从纸箱右侧绕过、距手机约6米，车头朝手机';
+  assert.throws(() => ai.parseDirection(JSON.stringify(back), four), /第1镜是迎面开来：结束时要比开始离手机更近（现在开始 5 米、结束 6 米）/u);
+  const sideways = structuredClone(facingRight); sideways.shots[0].end = '机器已从纸箱右侧绕过、距手机约1.2米，车头朝画面右边';
+  assert.throws(() => ai.parseDirection(JSON.stringify(sideways), four), /第1镜是避障：绕过去以后要回到原来的朝向（车头朝手机）/u);
+  const uTurn = structuredClone(facingRight); uTurn.shots[1].end = '机器在过道尽头，距手机约4米，车头朝画面左边';
+  assert.throws(() => ai.parseDirection(JSON.stringify(uTurn), four), /第2镜是 90 度转弯：从车头朝画面右边转 90 度只能是车头朝手机或车尾朝手机/u);
+  const vague = structuredClone(facingRight); vague.shots[1].end = '车头朝画面下方，机身侧面对手机，距手机约1.7米，转入横向通道';
+  assert.throws(() => ai.parseDirection(JSON.stringify(vague), four), /第2镜 end 没写清朝向/u);
+  const noMetres = structuredClone(facingRight); noMetres.shots[0].start = '机器在画面中间，车头朝手机，前方地上一个纸箱';
+  assert.throws(() => ai.parseDirection(JSON.stringify(noMetres), four), /第1镜的 start 和 end 都要写“距手机约X米”/u);
   assert.match(ai.directorMessages({ plan: four, images: [] })[1].content.at(-1).text, /动作模板：自动避障：开始画面——障碍物[\s\S]*动作模板：窄道灵活：[\s\S]*90度/u);
   assert.deepEqual(four.shots.map((shot) => shot.seconds), [8, 7], 'two functions in 15 seconds: no filler, 8 + 7 seconds');
 }
