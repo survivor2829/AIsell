@@ -10,12 +10,14 @@ from .narration_alignment import align_narration, spoken_key
 from .prompt_ref import prompt_ref
 
 TEMPLATES = {"topic_fixed", "key_points"}
-CAPTION_STYLES = {"bold_yellow", "word_highlight", "keyword_pop", "moving_pill", "phrase_slide", "clean_business", "layered_v1", "impact_v1", "minimal_v1", "layered_v2", "impact_v2", "minimal_v2", "layered_v3", "impact_v3", "minimal_v3", "layered_v4", "impact_v4", "minimal_v4", "rise_v5", "kinetic_v5", "glow_v5"}
-# v5 packaging templates (2026-11-24): no boxes; lead mixes pick one, digital humans plan one.
-MIX_CAPTION_STYLES = ("rise_v5", "kinetic_v5", "glow_v5")
-DEFAULT_MIX_CAPTION_STYLE = "rise_v5"
-# A batch may ask for "random": its videos take the templates in turn from a start picked by the batch,
-# so every template shows up and neighbours differ (user 2026-11-24).
+CAPTION_STYLES = {"bold_yellow", "word_highlight", "keyword_pop", "moving_pill", "phrase_slide", "clean_business", "layered_v1", "impact_v1", "minimal_v1", "layered_v2", "impact_v2", "minimal_v2", "layered_v3", "impact_v3", "minimal_v3", "layered_v4", "impact_v4", "minimal_v4", "rise_v5", "kinetic_v5", "glow_v5", "redbar_v5", "tagline_v5", "songti_v5"}
+# v5 packaging templates (2026-11-24): lead mixes pick one, digital humans plan one. The last three are
+# copied one to one from the user's own best videos (2026-11-26); mixes default to tagline_v5.
+MIX_CAPTION_STYLES = ("tagline_v5", "redbar_v5", "songti_v5", "rise_v5", "kinetic_v5", "glow_v5")
+DEFAULT_MIX_CAPTION_STYLE = "tagline_v5"
+# A batch may ask for "random": its videos take the copied looks in turn from a start picked by the
+# batch, so neighbours differ (user 2026-11-24; copied looks only since 2026-11-26).
+MIX_RANDOM_STYLES = ("tagline_v5", "redbar_v5", "songti_v5")
 RANDOM_MIX_CAPTION_STYLE = "random"
 MAX_DISPLAY_TITLE = 30
 
@@ -40,7 +42,7 @@ def mix_caption_style(choice, batch_id, order):
         return choice or DEFAULT_MIX_CAPTION_STYLE
     import hashlib
     start = int(hashlib.sha256(str(batch_id).encode("utf-8")).hexdigest()[:8], 16)
-    return MIX_CAPTION_STYLES[(start + int(order)) % len(MIX_CAPTION_STYLES)]
+    return MIX_RANDOM_STYLES[(start + int(order)) % len(MIX_RANDOM_STYLES)]
 NUMBER_WITH_UNIT = re.compile(r"[0-9０-９.零〇一二两三四五六七八九十百千万亿半几]+(?:万平|平方|平米|小时|分钟|公分|厘米|毫米|公斤|升|个|台|次|天|年|元|块|倍|人|米|点)(?:以内|以上|左右)?")
 
 FUNCTION_CHARS = set("把的了在是这那就也都和与对给让被从到很还又")
@@ -238,7 +240,7 @@ def validate_narration_plan(plan, style):
     import math
     def finite(v):
         return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
-    if not isinstance(plan, dict) or plan.get("version") != 4 or plan.get("templateId") != style or style not in {"layered_v4", "impact_v4", "minimal_v4", "rise_v5", "kinetic_v5", "glow_v5"} or len(json.dumps(plan)) > 100000:
+    if not isinstance(plan, dict) or plan.get("version") != 4 or plan.get("templateId") != style or style not in {"layered_v4", "impact_v4", "minimal_v4", "rise_v5", "kinetic_v5", "glow_v5", "redbar_v5", "tagline_v5", "songti_v5"} or len(json.dumps(plan)) > 100000:
         raise ContentEngineError("invalid_narration_plan", "包装方案无法核对，请重新本地包装。")
     events = plan.get("soundEvents", [])
     if not isinstance(events, list) or len(events) > 60:

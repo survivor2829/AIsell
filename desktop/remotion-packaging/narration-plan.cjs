@@ -7,13 +7,11 @@ const key = text => String(text || '').replace(/[\s，。！？；、,.!?;：:]/
 function normalizeCue(c) { return { text: c.text, startMs: Number(c.startMs ?? c.start_time ?? c.start_ms), endMs: Number(c.endMs ?? c.end_time ?? c.end_ms), words: c.words?.map(normalizeCue) }; }
 
 function choose(task, visual = {}) {
-  const rules = catalog.matching;
-  const hits = patterns => patterns.filter(pattern => new RegExp(pattern, 'u').test(task.script || '')).length;
-  const viewpoint = hits(rules.viewpoint), structured = hits(rules.structured);
-  // 人物动作多时只放慢动效（见 buildPlan 的 motion），不再退回最素的版式：重点词高亮和花字照常显示。
-  // v5 (2026-11-24): glow is the default; strong viewpoints get kinetic, steps get the big rising title.
-  let preferred = viewpoint >= 2 ? 'kinetic_v5' : structured >= 2 ? 'rise_v5' : 'glow_v5';
-  const reasons = [viewpoint >= 2 ? '稿件包含对比与明确观点' : structured >= 2 ? '稿件包含步骤或选型问题' : '以清晰讲解为主，使用克制包装'];
+  // 2026-11-26: digital humans use the catalog default (redbar_v5, copied from the user's own best
+  // talking-head videos) whatever the script says; other looks stay available as a manual choice.
+  // Busy footage only slows the motion (buildPlan's motion).
+  let preferred = catalog.defaultTemplateId;
+  const reasons = ['使用本人爆款同款的红条标题'];
   const available = current().map(t => t.id);
   // A manual choice is kept even when it is an older planned template (saved drafts, explicit repackage).
   if (task.packagingMode === 'manual' && planned().some(t => t.id === task.captionStyleId)) { preferred = task.captionStyleId; reasons[0] = '使用手动选择的风格'; }
@@ -90,7 +88,11 @@ const PALETTES = [
   { id: 'mint', accent: '#9AF2BE' }, { id: 'lemon', accent: '#FFE56B' }, { id: 'sky', accent: '#7FE3FF' },
   { id: 'peach', accent: '#FFB067' }, { id: 'rose', accent: '#FF9CC2' }
 ];
-const TRANSITIONS = ['flash', 'iris', 'push'];
+// Shot changes rotate through these; 'circle' (a round frame, then open) belongs to redbar_v5.
+const ROTATING = ['flash', 'iris', 'push'];
+const TRANSITIONS = [...ROTATING, 'circle'];
+// Looks copied from the user's videos keep one style for a whole series (no anti-repeat switch).
+const REPLICAS = ['redbar_v5', 'tagline_v5', 'songti_v5'];
 // 景别节奏：第二个镜头就推到近景，短片也看得出推镜；a 从远景起，b 从中景起。
 const RHYTHMS = { a: [1, 1.26, 1.08, 1.3], b: [1.14, 1.3, 1, 1.2] };
 const hash = text => Array.from(String(text || '')).reduce((n, c) => (n * 31 + c.codePointAt(0)) >>> 0, 7);
@@ -100,15 +102,15 @@ function chooseVariant(task, recent = [], preferred) {
   const templates = current().map(t => t.id);
   // 内容决定首选版式；和上一条相同就换一个，连续两条不会是同一套版式。手动选的版式不动。
   let templateId = preferred;
-  if (task.packagingMode !== 'manual' && last.templateId === templateId) {
+  if (task.packagingMode !== 'manual' && last.templateId === templateId && !REPLICAS.includes(templateId)) {
     const others = templates.filter(id => id !== templateId);
     templateId = others[seed % others.length];
   }
   const used = recent.slice(0, 3).map(r => r.variant?.palette);
   const fresh = PALETTES.filter(p => !used.includes(p.id));
   const palette = fresh[seed % fresh.length];
-  const transitions = TRANSITIONS.filter(t => t !== last.variant?.transition);
-  const transition = transitions[seed % transitions.length];
+  const transitions = ROTATING.filter(t => t !== last.variant?.transition);
+  const transition = templateId === 'redbar_v5' ? 'circle' : transitions[seed % transitions.length];
   const rhythm = last.variant?.rhythm === 'a' ? 'b' : 'a';
   return { templateId, variant: { palette: palette.id, accent: palette.accent, transition, rhythm } };
 }
@@ -222,7 +224,8 @@ function buildPlan(task, visual = {}, cues = [], final = false, recent = []) {
   const titleHeight = definition.layout === 'minimal' ? Math.ceil(title.length * 48 / 772) * 60 + 30 : titleLines * titleSize * 1.22 + 26;
   // v5 titles may lie over the hair (2026-11-24 previews the user approved) but stop at the face.
   const titleRoom = Math.max(0, Math.floor(faceTop - 20 - titleTop));
-  const showTitle = definition.version === 5 ? !upper && titleRoom >= 150 : !upper && titleTop + titleHeight + safe.facePadding < faceTop;
+  // Replica titles sit at the very top over the hair for the whole video, as in the user's videos.
+  const showTitle = REPLICAS.includes(templateId) ? !upper : definition.version === 5 ? !upper && titleRoom >= 150 : !upper && titleTop + titleHeight + safe.facePadding < faceTop;
   if (!showTitle && !upper) warnings.push('头部靠近顶部，已隐藏片内装饰标题；标题仍保留在独立封面。');
   const soundEvents = []; let last = -Infinity;
   if (task.soundEffects !== false) for (const page of displayPages) {

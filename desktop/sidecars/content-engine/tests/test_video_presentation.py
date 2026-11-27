@@ -610,15 +610,16 @@ if __name__ == "__main__":
 
 class MixTemplateChoiceTests(unittest.TestCase):
     def test_random_takes_the_templates_in_turn(self):
-        from content_engine.video_presentation import mix_caption_style, MIX_CAPTION_STYLES
+        from content_engine.video_presentation import mix_caption_style, MIX_RANDOM_STYLES
         picks = [mix_caption_style("random", "batch-a", order) for order in range(6)]
-        self.assertEqual(set(MIX_CAPTION_STYLES), set(picks[:3]), "every template shows up within three videos")
+        self.assertEqual({"tagline_v5", "redbar_v5", "songti_v5"}, set(MIX_RANDOM_STYLES))
+        self.assertEqual(set(MIX_RANDOM_STYLES), set(picks[:3]), "every copied look shows up within three videos")
         self.assertTrue(all(left != right for left, right in zip(picks, picks[1:])), "neighbouring videos differ")
         self.assertEqual(picks, [mix_caption_style("random", "batch-a", order) for order in range(6)], "a video keeps its template on rerun")
         starts = {mix_caption_style("random", f"batch-{index}", 0) for index in range(30)}
         self.assertGreater(len(starts), 1, "batches start from different templates")
         self.assertEqual("kinetic_v5", mix_caption_style("kinetic_v5", "batch-a", 4))
-        self.assertEqual("rise_v5", mix_caption_style(None, "batch-a", 0))
+        self.assertEqual("tagline_v5", mix_caption_style(None, "batch-a", 0), "mixes default to the title tag")
 
 
 class MixLookTests(unittest.TestCase):

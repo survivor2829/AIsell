@@ -232,7 +232,7 @@ async function main() {
     assert.equal(saved.at(-1).settings.strict_visual_review, value);
   }
   // 1.3.67: the batch's packaging template is one of the v5 templates.
-  for (const value of ["rise_v5", "kinetic_v5", "glow_v5"]) {
+  for (const value of ["tagline_v5", "redbar_v5", "songti_v5", "rise_v5", "kinetic_v5", "glow_v5"]) {
     assert.equal((await save({ workflow_version: 2, caption_style_id: value })).ok, true);
     assert.equal(saved.at(-1).settings.caption_style_id, value);
   }

@@ -44,9 +44,11 @@ const NarrationTypeface: React.FC<React.PropsWithChildren> = ({ children }) => {
   const [ready, setReady] = React.useState(false);
   const [handle] = React.useState(() => delayRender("Loading the bundled narration typeface"));
   React.useEffect(() => {
-    narrationFontReady ??= new FontFace("Narration Sans", `url(${staticFile("narration-font.ttf")})`, {
-      weight: "100 900"
-    }).load().then((font) => { document.fonts.add(font); });
+    // The serif (songti_v5) is a Noto Serif SC Black subset: GB2312 characters plus ASCII.
+    narrationFontReady ??= Promise.all([
+      new FontFace("Narration Sans", `url(${staticFile("narration-font.ttf")})`, { weight: "100 900" }),
+      new FontFace("Narration Serif", `url(${staticFile("narration-serif.ttf")})`, { weight: "900" })
+    ].map((face) => face.load())).then((fonts) => { fonts.forEach((font) => document.fonts.add(font)); });
     narrationFontReady.then(() => { setReady(true); continueRender(handle); }).catch(cancelRender);
   }, [handle]);
   return ready ? <>{children}</> : null;
@@ -174,6 +176,8 @@ const effectAttributes = (effect: EffectSelection) => ({
   "data-effect-surface": effect.surface
 });
 
+const ease3 = (value: number) => 1 - Math.pow(1 - Math.max(0, Math.min(1, value)), 3);
+
 // 本人口播的镜头推拉：按包装方案在句子结束处换景别（以脸为中心放大），换景处按方案加转场。
 function cameraState(manifest: MotionManifest, nowMs: number) {
   const camera = manifest.narrationPlan?.camera;
@@ -185,9 +189,13 @@ function cameraState(manifest: MotionManifest, nowMs: number) {
   const origin = `${camera.focusX * 100}% ${camera.focusY * 100}%`;
   return {
     origin,
-    scale: shot.scale + (transition === "push" && since < 260 ? 0.06 * (1 - since / 260) : 0),
+    scale: shot.scale + (transition === "push" && since < 260 ? 0.06 * (1 - since / 260) : 0)
+      + (transition === "circle" && since < 700 ? 0.08 * (1 - since / 700) : 0),
     flash: transition === "flash" && since < 160 ? 0.55 * (1 - since / 160) : 0,
-    iris: transition === "iris" && since < 320 ? 8 + 92 * Math.pow(since / 320, 0.8) : null
+    iris: transition === "iris" && since < 320 ? 8 + 92 * Math.pow(since / 320, 0.8) : null,
+    // circle (redbar_v5): the new shot shows through a round frame about as wide as the picture
+    // for half a second, then the frame opens (radius in px).
+    circle: transition === "circle" && since < 700 ? (since < 500 ? 570 : 570 + 900 * ease3((since - 500) / 200)) : null
   };
 }
 
@@ -217,6 +225,7 @@ const VideoBase: React.FC<{ manifest: MotionManifest; pack: StylePack; frame: nu
       />
       {!reference && <AbsoluteFill style={{ background: pack.video.overlay }} />}
       {camera && camera.flash > 0 ? <AbsoluteFill style={{ background: "#fff", opacity: camera.flash }} /> : null}
+      {camera && camera.circle !== null ? <AbsoluteFill style={{ background: `radial-gradient(circle ${camera.circle}px at 50% 46%, transparent 99.6%, #000 100%)` }} /> : null}
       {camera && camera.iris !== null ? <AbsoluteFill style={{ background: `radial-gradient(circle at ${camera.origin}, transparent ${camera.iris}%, #000 ${camera.iris + 1}%)` }} /> : null}
     </AbsoluteFill>
   );

@@ -221,6 +221,9 @@ async function main() {
     const fontSource = path.join("sidecars", "content-engine", "content_engine", "assets", "fonts", "NotoSansSC-Variable.ttf");
     fs.mkdirSync(path.dirname(path.join(sourceFixture, fontSource)), { recursive: true });
     fs.copyFileSync(path.join(desktopDir, fontSource), path.join(sourceFixture, fontSource));
+    const serifSource = path.join("remotion-packaging", "fonts", "narration-serif.ttf");
+    fs.mkdirSync(path.dirname(path.join(sourceFixture, serifSource)), { recursive: true });
+    fs.copyFileSync(path.join(desktopDir, serifSource), path.join(sourceFixture, serifSource));
     assert.doesNotThrow(() => verifyCurrentRuntimeSources(build.manifest, sourceFixture));
     fs.appendFileSync(path.join(sourceFixture, "remotion-packaging", "root.tsx"), "// source drift\n", "utf8");
     assert.throws(() => verifyCurrentRuntimeSources(build.manifest, sourceFixture), /source drift.*rebuild/u);
