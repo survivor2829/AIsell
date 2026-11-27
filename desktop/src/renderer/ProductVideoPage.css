@@ -128,6 +128,8 @@ html[data-beat="1"] .sv-stages li.is-now>span{opacity:.6}
 /* 无人实拍 (2026-11-19): pick, don't type — device, scene, floor, dirt and selling points; a countdown while it is made. */
 /* 分镜确认 (2026-11-27): one card per shot — the keyframe beside its camera, action and caption. */
 .rs-board{display:grid;gap:14px}
+.rs-turn{margin:0;display:grid;gap:6px;font-size:17px;font-weight:700;color:var(--pv-ink,#1f1f1f)}
+.rs-turn b{font-size:26px;font-weight:900;color:var(--pv-accent)}
 .rs-board-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .rs-board-head h3{margin:0;font-size:22px;font-weight:900}
 .rs-board-head .pv2-btn{height:56px;font-size:18px}

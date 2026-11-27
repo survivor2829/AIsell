@@ -28,7 +28,8 @@ function registerProductVideoIpc(options = {}) {
       const result = await (window ? dialog.showOpenDialog(window, settings) : dialog.showOpenDialog(settings));
       return result.canceled || !result.filePaths?.[0] ? null : service.importFacts(result.filePaths[0]);
     },
-    create: (payload) => service.create(payload),
+    // 有人剧情 left the page (user 2026-11-27); older 剧情 tasks still finish in the service.
+    create: (payload) => { if (payload?.style === 'story') throw fail('product_video_invalid_input', '场景效果视频只做无人实拍。'); return service.create(payload); },
     list: () => service.list(),
     get: (payload) => service.get(idOf(payload)),
     start: (payload) => service.start(idOf(payload)),

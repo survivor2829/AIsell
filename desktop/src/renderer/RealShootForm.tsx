@@ -189,6 +189,30 @@ function KeyframeCard({ taskId, shot, ready, pair, drawing, locked, version, cam
     </div>
   </article>;
 }
+// The 定妆照 to confirm: four views of the customer's machine; the whole video follows it. Every real shoot starts with it.
+function SheetCard({ picture, redos, busy, onConfirm, onRedo }: { picture?: string; redos: number; busy: boolean; onConfirm: () => void; onRedo: () => void }) {
+  return <div className="sv-sheet">
+    <h3>这是你的产品吗？</h3>
+    <p>AI 先照着产品图画了四个角度。像的话就继续，后面整条视频都按这台机器来拍。</p>
+    <div className="sv-sheet-image">{picture ? <img src={picture} alt="定妆照" /> : <LoaderCircle size={40} className="spin" />}</div>
+    <div className="sv-sheet-actions">
+      <button type="button" className="pv2-btn is-main" data-product-video-action="confirm-sheet" disabled={busy || !picture} onClick={onConfirm}><Check size={20} />就是这台，继续</button>
+      <button type="button" className="pv2-btn" data-product-video-action="redo-sheet" disabled={busy || redos >= 2} onClick={onRedo}><RefreshCw size={18} />不像，重出一张{redos < 2 ? `（还能 ${2 - redos} 次）` : ""}</button>
+    </div>
+  </div>;
+}
+// Loads the 定妆照 itself (again after a redo) and shows the same card.
+export function SheetConfirm({ taskId, redos, busy, imageMedia, onConfirm, onRedo }: { taskId: string; redos: number; busy: boolean;
+  imageMedia: (id: string, key: string) => Promise<MediaResult>; onConfirm: () => void; onRedo: () => void }) {
+  const [picture, setPicture] = useState("");
+  useEffect(() => {
+    let disposed = false; setPicture("");
+    void imageMedia(taskId, "sheet").then((result) => { if (!disposed && result.ok && result.data) setPicture(result.data.dataUrl); }).catch(() => {});
+    return () => { disposed = true; };
+  }, [taskId, redos]);
+  return <SheetCard picture={picture} redos={redos} busy={busy} onConfirm={onConfirm} onRedo={onRedo} />;
+}
+
 // real-4: the place every shot happens in. A drawn one is shown first; the customer keeps it or has it drawn again.
 export function SceneConfirm({ taskId, redosLeft, busy, imageMedia, onConfirm, onRedo }: { taskId: string; redosLeft: number; busy: boolean;
   imageMedia: (id: string, key: string) => Promise<MediaResult>; onConfirm: () => void; onRedo: () => void }) {
@@ -225,11 +249,12 @@ export function StoryboardConfirm({ task, busy, imageMedia, onSave, onConfirm }:
   </div>;
 }
 // Only the steps this video really has: no 定妆照 on videos started before it, no scene picture without a venue shot.
-export function RealShootProgress({ task, shotVideos }: { task: ProgressTask; shotVideos: Record<string, string> }) {
+// stage=false: the page already shows the workbench above (one view for the whole run).
+export function RealShootProgress({ task, shotVideos, stage = true }: { task: ProgressTask; shotVideos: Record<string, string>; stage?: boolean }) {
   const stuck = ["needs_attention", "outcome_unknown"].includes(task.status);
   return <div className="sv-progress">
     {/* AI 工作台（用户 2026-11-24）：每个 AI 角色在它真实处理的那一步上干活，取代原来的步骤条和导演卡。 */}
-    <AgentStage model={sceneStageModel(task)} label="AI 导演组工作台" />
+    {stage && <AgentStage model={sceneStageModel(task)} label="AI 导演组工作台" />}
     <CrewCard crew={task.crew} />
     <div className="pv2-shots">{task.plan.shots.map((shot, index) => {
       const src = shotVideos[`${task.id}:${index}`], done = task.shotsReady?.[index], now = task.shotsRunning?.[index];
