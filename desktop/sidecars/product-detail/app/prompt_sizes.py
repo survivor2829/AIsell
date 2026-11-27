@@ -422,7 +422,7 @@ SIZES = {
  "video.realshoot.v4.cam_close@1": 117,
  "video.realshoot.v4.cam_side@1": 108,
  "video.realshoot.v4.cam_toward@1": 90,
- "video.realshoot.v4.director.p4@1": 2860,
+ "video.realshoot.v4.director.p4@1": 3332,
  "video.realshoot.v4.director.p5@1": 1473,
  "video.realshoot.v4.first_last@1": 339,
  "video.realshoot.v4.fn.charge@1": 327,

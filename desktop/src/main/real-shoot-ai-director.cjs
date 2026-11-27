@@ -41,6 +41,15 @@ const camerasOf = (plan) => plan?.realScene ? CAMERAS_V4 : CAMERAS;
 const FN_TEMPLATES = Object.freeze({ obstacle: 'obstacle', narrow: 'narrow', edge: 'edge', gate: 'gate', charge: 'charge', water: 'water', lift: 'lift' });
 const fnTemplate = (shot) => promptRef(`video.realshoot.v4.fn.${FN_TEMPLATES[shot.pointId] || 'clean'}`);
 const SCENE_REDRAWS = 2;
+// Which way the machine faces in a start or end description (real-4): one way per picture.
+const FACING_WORDS = Object.freeze({ toward: '车头朝手机', away: '车尾朝手机', left: '车头朝画面左边', right: '车头朝画面右边' });
+const FACING_PATTERNS = Object.freeze({
+  toward: /车头(?:正)?(?:对着?|朝向?|面向)(?:手机|镜头)|(?:朝|向|对着?)(?:手机|镜头)(?:方向)?(?:开|驶)来/u,
+  away: /车尾(?:正)?(?:对着?|朝向?|面向)(?:手机|镜头)|背对(?:着)?(?:手机|镜头)/u,
+  left: /车头(?:朝向?|对着?|指向)(?:画面)?左/u,
+  right: /车头(?:朝向?|对着?|指向)(?:画面)?右/u
+});
+const facings = (text) => Object.keys(FACING_PATTERNS).filter((key) => FACING_PATTERNS[key].test(String(text || '')));
 const ACTION_LENGTH = 40;
 const DIRECTOR_MODEL = 'qwen3-vl-plus';
 const DIRECTOR_ROUTE = '/bailian/compatible-mode/v1/chat/completions';
@@ -243,6 +252,13 @@ function parseDirection(content, plan) {
     if (plan.realScene && end.length < 10) problems.push(`第${i + 1}镜缺少 end（结束画面）`);
     if (plan.realScene && timeline.length < 20) problems.push(`第${i + 1}镜缺少 timeline（按秒的动作分解）`);
     if (!wet && LIQUID.test(`${start}${end}${timeline}`)) problems.push(`第${i + 1}镜的开始、结束画面或动作分解里写了和水有关的词`);
+    if (plan.realScene) {
+      // 2026-11-27 正式流程：「车头朝左（沿过道向镜头方向驶来）」→ 开始图朝左、结束图朝右，转弯被画成掉头。
+      const startFacing = facings(start), endFacing = facings(end), expected = { toward: 'toward', away: 'away' }[camera];
+      if (startFacing.length > 1) problems.push(`第${i + 1}镜 start 里机器朝向写了两种（${startFacing.map((f) => FACING_WORDS[f]).join('、')}），只写一种`);
+      if (endFacing.length > 1) problems.push(`第${i + 1}镜 end 里机器朝向写了两种（${endFacing.map((f) => FACING_WORDS[f]).join('、')}），只写一种`);
+      if (expected && startFacing.length === 1 && startFacing[0] !== expected) problems.push(`第${i + 1}镜 camera 是 ${camera}，start 的朝向应该是${FACING_WORDS[expected]}`);
+    }
     if (!camera) problems.push(`第${i + 1}镜 camera 只能是 ${Object.keys(cameras).join('、')}`);
     if (action.length < 6) problems.push(`第${i + 1}镜缺少 action（这一镜机器做什么动作）`);
     if (!slot.filler && slot.pointId !== 'clean' && proof.length < 6) problems.push(`第${i + 1}镜卖点「${slot.title}」缺少 proof：画面里看到什么就能证明它`);

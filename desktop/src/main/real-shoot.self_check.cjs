@@ -220,6 +220,17 @@ const direction = (plan, overrides = {}) => JSON.stringify({ machine: '自主行
   assert.throws(() => ai.parseDirection(JSON.stringify(bare), board), (e) => /camera 只能是/u.test(e.message) && /卖点「自己乘电梯」缺少 proof/u.test(e.message));
   const honest = JSON.parse(direction(board)); honest.shots[board.shots.findIndex((shot) => shot.pointId === 'lift')].unshowable = '画不出电梯里面';
   assert.equal(ai.parseDirection(JSON.stringify(honest), board).shots.find((shot) => shot.unshowable).unshowable, '画不出电梯里面');
+  // real-4 (2026-11-27 正式流程): a start that says two ways of facing, or one that contradicts the camera, is written again.
+  const four = ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['obstacle', 'narrow'] });
+  const turned = JSON.parse(direction(four)); turned.shots[1].camera = 'side'; turned.shots[1].start = '机器在过道里距镜头2米，车头朝左（沿过道向镜头方向驶来），右侧是货架';
+  assert.throws(() => ai.parseDirection(JSON.stringify(turned), four), /第2镜 start 里机器朝向写了两种（车头朝手机、车头朝画面左边）/u);
+  const facingWrong = JSON.parse(direction(four)); facingWrong.shots[0].camera = 'toward'; facingWrong.shots[0].start = '机器在画面中间离手机约五米，车头朝画面右边，前方地上一个纸箱';
+  assert.throws(() => ai.parseDirection(JSON.stringify(facingWrong), four), /camera 是 toward，start 的朝向应该是车头朝手机/u);
+  const facingRight = JSON.parse(direction(four)); facingRight.shots[0].camera = 'toward'; facingRight.shots[0].start = '机器在画面中间离手机约五米，车头朝手机，前方2.5米地上一个纸箱';
+  facingRight.shots[0].end = '机器已从纸箱右侧绕过、离手机约一米，车头朝手机，纸箱在原地';
+  assert.doesNotThrow(() => ai.parseDirection(JSON.stringify(facingRight), four));
+  assert.match(ai.directorMessages({ plan: four, images: [] })[1].content.at(-1).text, /动作模板：自动避障：开始画面——障碍物[\s\S]*动作模板：窄道灵活：[\s\S]*90度/u);
+  assert.deepEqual(four.shots.map((shot) => shot.seconds), [8, 7], 'two functions in 15 seconds: no filler, 8 + 7 seconds');
 }
 
 // Prices: the scene picture, the footage with sound, and one redo of a shot and the picture.
