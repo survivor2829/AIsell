@@ -220,27 +220,23 @@ const direction = (plan, overrides = {}) => JSON.stringify({ machine: '自主行
   assert.throws(() => ai.parseDirection(JSON.stringify(bare), board), (e) => /camera 只能是/u.test(e.message) && /卖点「自己乘电梯」缺少 proof/u.test(e.message));
   const honest = JSON.parse(direction(board)); honest.shots[board.shots.findIndex((shot) => shot.pointId === 'lift')].unshowable = '画不出电梯里面';
   assert.equal(ai.parseDirection(JSON.stringify(honest), board).shots.find((shot) => shot.unshowable).unshowable, '画不出电梯里面');
-  // real-4 (2026-11-27 正式流程): a start that says two ways of facing, or one that contradicts the camera, is written again.
+  // real-4 (2026-11-27 正式流程、发版前验收): facing and distance are settled by the code from the camera and the move —
+  // the director wrote 「车头朝左（沿过道向镜头方向驶来）」, ends farther than the start, 「车头朝画面右边（…回正）」 after an
+  // obstacle, 「车头朝画面下方」 after a turn, and three rewrites did not fix it.
   const four = ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['obstacle', 'narrow'] });
-  const turned = JSON.parse(direction(four)); turned.shots[1].camera = 'side'; turned.shots[1].start = '机器在过道里距镜头2米，车头朝左（沿过道向镜头方向驶来），右侧是货架';
-  assert.throws(() => ai.parseDirection(JSON.stringify(turned), four), /第2镜 start 里机器朝向写了两种（车头朝手机、车头朝画面左边）/u);
-  const facingWrong = JSON.parse(direction(four)); facingWrong.shots[0].camera = 'toward'; facingWrong.shots[0].start = '机器在画面中间离手机约五米，车头朝画面右边，前方地上一个纸箱';
-  assert.throws(() => ai.parseDirection(JSON.stringify(facingWrong), four), /camera 是 toward，start 的朝向应该是车头朝手机/u);
-  const facingRight = JSON.parse(direction(four)); facingRight.shots[0].camera = 'toward'; facingRight.shots[0].start = '机器在画面中间距手机约5米，车头朝手机，前方2.5米地上一个纸箱';
-  facingRight.shots[0].end = '机器已从纸箱右侧绕过、距手机约1.2米，车头朝手机，纸箱在原地';
-  facingRight.shots[1].end = '机器在过道尽头转过弯，距手机约4米，车头朝手机，侧面不再对着手机';
-  assert.doesNotThrow(() => ai.parseDirection(JSON.stringify(facingRight), four));
-  // 发版前验收：结束比开始远（往回开）、绕完不回原朝向、转弯不是 90 度、朝向说法不明、没写距离 → 都退回重写。
-  const back = structuredClone(facingRight); back.shots[0].end = '机器已从纸箱右侧绕过、距手机约6米，车头朝手机';
-  assert.throws(() => ai.parseDirection(JSON.stringify(back), four), /第1镜是迎面开来：结束时要比开始离手机更近（现在开始 5 米、结束 6 米）/u);
-  const sideways = structuredClone(facingRight); sideways.shots[0].end = '机器已从纸箱右侧绕过、距手机约1.2米，车头朝画面右边';
-  assert.throws(() => ai.parseDirection(JSON.stringify(sideways), four), /第1镜是避障：绕过去以后要回到原来的朝向（车头朝手机）/u);
-  const uTurn = structuredClone(facingRight); uTurn.shots[1].end = '机器在过道尽头，距手机约4米，车头朝画面左边';
-  assert.throws(() => ai.parseDirection(JSON.stringify(uTurn), four), /第2镜是 90 度转弯：从车头朝画面右边转 90 度只能是车头朝手机或车尾朝手机/u);
-  const vague = structuredClone(facingRight); vague.shots[1].end = '车头朝画面下方，机身侧面对手机，距手机约1.7米，转入横向通道';
-  assert.throws(() => ai.parseDirection(JSON.stringify(vague), four), /第2镜 end 没写清朝向/u);
-  const noMetres = structuredClone(facingRight); noMetres.shots[0].start = '机器在画面中间，车头朝手机，前方地上一个纸箱';
-  assert.throws(() => ai.parseDirection(JSON.stringify(noMetres), four), /第1镜的 start 和 end 都要写“距手机约X米”/u);
+  const settledShots = (edit) => { const answer = JSON.parse(direction(four)); answer.shots[0].camera = 'toward'; edit(answer.shots); return ai.parseDirection(JSON.stringify(answer), four).shots; };
+  const geo = settledShots((shots) => {
+    shots[0].start = '机器在画面中间离手机约3米，车头朝画面右边，前方2.5米地上一个纸箱'; shots[0].end = '车头朝画面右边（即右转20度后回正），距手机约6米，纸箱在原位';
+    shots[1].start = '机器在过道里距镜头2米，车头朝左（沿过道向镜头方向驶来），右侧是货架'; shots[1].end = '车头朝画面下方，机身侧面对手机，距手机约1.7米，转入横向通道';
+  });
+  assert.match(geo[0].start, /^车头朝手机，距手机约4\.5米；/u, 'toward starts facing the phone, far enough for the box to stand 2.5 m ahead');
+  assert.match(geo[0].end, /^车头朝手机，距手机约1\.2米；纸箱在原位$/u, 'after the obstacle the facing returns and the end is past the box, closer to the phone');
+  assert.match(geo[1].start, /^车头朝画面左边，距手机约2米；/u); assert.doesNotMatch(geo[1].start, /车头朝手机|驶来）/u);
+  assert.match(geo[1].end, /^车头朝手机，距手机约1\.7米；转入横向通道$/u, 'a 90° turn from facing left ends facing the phone; the fighting words are gone');
+  const awayShot = ai.settleGeometry({ pointId: 'clean', camera: 'away', start: '车尾朝手机，距手机约1.5米', end: '距手机约1米，开远' });
+  assert.match(awayShot.end, /^车尾朝手机，距手机约3\.5米；开远$/u, 'an away shot ends farther');
+  const toRight = ai.settleGeometry({ pointId: 'narrow', camera: 'toward', start: '距手机约4米，在过道里', end: '向画面右侧转过90度，距手机约3米', action: '到尽头向画面右侧转90度' });
+  assert.match(toRight.end, /^车头朝画面右边，距手机约3米；/u, 'a turn from facing the phone goes to the side the move names');
   assert.match(ai.directorMessages({ plan: four, images: [] })[1].content.at(-1).text, /动作模板：自动避障：开始画面——障碍物[\s\S]*动作模板：窄道灵活：[\s\S]*90度/u);
   assert.deepEqual(four.shots.map((shot) => shot.seconds), [8, 7], 'two functions in 15 seconds: no filler, 8 + 7 seconds');
 }

@@ -46,13 +46,41 @@ const FACING_WORDS = Object.freeze({ toward: '车头朝手机', away: '车尾朝
 const FACING_PATTERNS = Object.freeze({
   toward: /车头(?:正)?(?:对着?|朝向?|面向)(?:手机|镜头)|(?:朝|向|对着?)(?:手机|镜头)(?:方向)?(?:开|驶)来/u,
   away: /车尾(?:正)?(?:对着?|朝向?|面向)(?:手机|镜头)|背对(?:着)?(?:手机|镜头)/u,
-  left: /车头(?:朝向?|对着?|指向)(?:画面)?左/u,
-  right: /车头(?:朝向?|对着?|指向)(?:画面)?右/u
+  left: /车头(?:朝向?|对着?|指向)(?:画面)?左(?:边|侧|方)?/u,
+  right: /车头(?:朝向?|对着?|指向)(?:画面)?右(?:边|侧|方)?/u
 });
 const facings = (text) => Object.keys(FACING_PATTERNS).filter((key) => FACING_PATTERNS[key].test(String(text || '')));
 const PERPENDICULAR = Object.freeze({ toward: ['left', 'right'], away: ['left', 'right'], left: ['toward', 'away'], right: ['toward', 'away'] });
 // 「距手机约3.2米」/「离镜头2米」: how far the machine stands from the phone in a start or end description.
-const distance = (text) => { const match = String(text || '').match(/(?:距|离)(?:手机|镜头)(?:约|大约)?\s*(\d+(?:\.\d+)?)\s*(?:米|m)/u); return match ? Number(match[1]) : null; };
+// Other ways of saying which way it faces, which would fight the one plain facing put in front.
+const CONFLICTING = /(?:现)?(?:车身|机身)?侧(?:面|身)(?:正)?(?:对着?|朝向?|面向)?(?:手机|镜头)?|车头(?:朝向?|对着?)(?:画面)?(?:上|下)方/gu;
+const DISTANCE = /(?:距|离)(?:手机|镜头)(?:约|大约)?\s*(\d+(?:\.\d+)?)\s*(?:米|m)/u;
+const distance = (text) => { const match = String(text || '').match(DISTANCE); return match ? Number(match[1]) : null; };
+// The start and end facing and distance for a shot, from the camera and the move (the director's words keep the scene):
+// a toward shot starts facing the phone and ends closer; an away shot ends farther; after an obstacle the facing returns;
+// a 90° turn ends perpendicular. Each picture then begins with one plain facing and one distance.
+function settleGeometry({ pointId, camera, start, end, action = '', timeline = '' }) {
+  const one = (text) => { const found = facings(text); return found.length === 1 ? found[0] : ''; };
+  const side = (text) => /左/u.test(text) && !/右/u.test(text) ? 'left' : 'right';
+  // A side or close shot: the one facing written, else the left/right one among several, else the side the words lean to.
+  const from = camera === 'toward' ? 'toward' : camera === 'away' ? 'away' : one(start) || facings(start).find((key) => key === 'left' || key === 'right') || side(start);
+  const said = one(end), moveText = `${action}${timeline}${end}`;
+  const to = pointId === 'obstacle' ? from
+    : pointId === 'narrow' ? (said && PERPENDICULAR[from].includes(said) ? said : ['left', 'right'].includes(from) ? 'toward' : side(moveText))
+    : said || from;
+  // Avoiding an obstacle toward the phone: the box stands between the start and the phone, and the end is past it
+  // (发版前验收：机器在 3 米、纸箱在它前方 2.5 米、结束在 1.8 米 → 根本没绕过去就结束了).
+  const boxAhead = pointId === 'obstacle' && camera === 'toward' ? Number((String(start).match(/前方(?:约)?\s*(\d+(?:\.\d+)?)\s*米/u) || [])[1]) || 2.5 : 0;
+  let near = distance(start) ?? (camera === 'away' ? 1.5 : camera === 'toward' ? 4 : 3);
+  if (boxAhead) near = Math.max(near, Math.round((boxAhead + 2) * 10) / 10);
+  let far = distance(end) ?? (camera === 'away' ? near + 2 : camera === 'toward' ? Math.max(1, near - 2.5) : near);
+  if (camera === 'toward' && far >= near) far = Math.max(1, Math.round((near - 2) * 10) / 10);
+  if (camera === 'away' && far <= near) far = Math.round((near + 2) * 10) / 10;
+  if (boxAhead) far = Math.min(far, Math.max(0.8, Math.round((near - boxAhead - 0.8) * 10) / 10));
+  const strip = (text) => Object.values(FACING_PATTERNS).reduce((value, pattern) => value.replace(new RegExp(pattern.source, 'gu'), ''), text)
+    .replace(new RegExp(DISTANCE.source, 'gu'), '').replace(/（[^）]*(?:朝|转|回正)[^）]*）/gu, '').replace(CONFLICTING, '').replace(/（\s*）/gu, '').replace(/^[，。；、,;\s]+/u, '').replace(/([，；、,;])\s*[，；、,;]+/gu, '$1').replace(/[，；、,;\s]+$/u, '');
+  return { start: `${FACING_WORDS[from]}，距手机约${near}米；${strip(start)}`, end: `${FACING_WORDS[to]}，距手机约${far}米；${strip(end)}` };
+}
 const ACTION_LENGTH = 40;
 const DIRECTOR_MODEL = 'qwen3-vl-plus';
 const DIRECTOR_ROUTE = '/bailian/compatible-mode/v1/chat/completions';
@@ -255,32 +283,15 @@ function parseDirection(content, plan) {
     if (plan.realScene && end.length < 10) problems.push(`第${i + 1}镜缺少 end（结束画面）`);
     if (plan.realScene && timeline.length < 20) problems.push(`第${i + 1}镜缺少 timeline（按秒的动作分解）`);
     if (!wet && LIQUID.test(`${start}${end}${timeline}`)) problems.push(`第${i + 1}镜的开始、结束画面或动作分解里写了和水有关的词`);
-    if (plan.realScene) {
-      // 2026-11-27 正式流程：「车头朝左（沿过道向镜头方向驶来）」→ 开始图朝左、结束图朝右，转弯被画成掉头。
-      const startFacing = facings(start), endFacing = facings(end), expected = { toward: 'toward', away: 'away' }[camera];
-      if (startFacing.length > 1) problems.push(`第${i + 1}镜 start 里机器朝向写了两种（${startFacing.map((f) => FACING_WORDS[f]).join('、')}），只写一种`);
-      if (endFacing.length > 1) problems.push(`第${i + 1}镜 end 里机器朝向写了两种（${endFacing.map((f) => FACING_WORDS[f]).join('、')}），只写一种`);
-      if (expected && startFacing.length === 1 && startFacing[0] !== expected) problems.push(`第${i + 1}镜 camera 是 ${camera}，start 的朝向应该是${FACING_WORDS[expected]}`);
-      // 发版前验收 2026-11-27：结束位置比开始还远 → 机器开到纸箱前又往回开；「车头朝画面下方」→ 转弯拍成原地来回转。
-      const four = Object.values(FACING_WORDS).join('、');
-      if (start.length >= 10 && !startFacing.length) problems.push(`第${i + 1}镜 start 没写清朝向，只能用：${four}`);
-      if (end.length >= 10 && !endFacing.length) problems.push(`第${i + 1}镜 end 没写清朝向，只能用：${four}`);
-      if (startFacing.length === 1 && endFacing.length === 1) {
-        const [from, to] = [startFacing[0], endFacing[0]];
-        if (slot.pointId === 'obstacle' && from !== to) problems.push(`第${i + 1}镜是避障：绕过去以后要回到原来的朝向（${FACING_WORDS[from]}），end 写成了${FACING_WORDS[to]}`);
-        if (slot.pointId === 'narrow' && !PERPENDICULAR[from].includes(to)) problems.push(`第${i + 1}镜是 90 度转弯：从${FACING_WORDS[from]}转 90 度只能是${PERPENDICULAR[from].map((key) => FACING_WORDS[key]).join('或')}`);
-      }
-      const near = distance(start), far = distance(end);
-      if ((camera === 'toward' || camera === 'away') && (near === null || far === null)) problems.push(`第${i + 1}镜的 start 和 end 都要写“距手机约X米”`);
-      else if (camera === 'toward' && far >= near) problems.push(`第${i + 1}镜是迎面开来：结束时要比开始离手机更近（现在开始 ${near} 米、结束 ${far} 米）`);
-      else if (camera === 'away' && far <= near) problems.push(`第${i + 1}镜是背面开走：结束时要比开始离手机更远（现在开始 ${near} 米、结束 ${far} 米）`);
-    }
+    // real-4: facing and distance have one right answer for the camera and the move, so the code settles them instead
+    // of sending the director back (发版前验收 2026-11-27: three rewrites still wrote「车头朝画面右边（…回正）」).
+    const settled = plan.realScene && camera && start.length >= 10 && end.length >= 10 ? settleGeometry({ pointId: slot.pointId, camera, start, end, action, timeline }) : { start, end };
     if (!camera) problems.push(`第${i + 1}镜 camera 只能是 ${Object.keys(cameras).join('、')}`);
     if (action.length < 6) problems.push(`第${i + 1}镜缺少 action（这一镜机器做什么动作）`);
     if (!slot.filler && slot.pointId !== 'clean' && proof.length < 6) problems.push(`第${i + 1}镜卖点「${slot.title}」缺少 proof：画面里看到什么就能证明它`);
     if (!wet && LIQUID.test(action)) problems.push(`第${i + 1}镜 action 里写了「${action.match(LIQUID)[0]}」，不要写和水有关的词`);
     if (!wet && LIQUID.test(setup)) problems.push(`第${i + 1}镜 setup 里写了「${setup.match(LIQUID)[0]}」，不要写和水有关的词`);
-    return { title, caption, venue: row.venue !== false, prompt, camera, action, proof, unshowable, ...(plan.realScene ? { setup, start, end, timeline } : {}) };
+    return { title, caption, venue: row.venue !== false, prompt, camera, action, proof, unshowable, ...(plan.realScene ? { setup, start: settled.start, end: settled.end, timeline } : {}) };
   });
   if (!wet && LIQUID.test(plate)) problems.push(`plate 里写了「${plate.match(LIQUID)[0]}」`);
   for (const [field, text] of [['plate', plate], ['dirt', String(value.dirt || '')]]) if (oilyWord(text)) problems.push(`${field} 里写了「${oilyWord(text)}」，油污要写成渗进地面的发暗旧油斑`);
@@ -404,5 +415,5 @@ function parseReview(content, plan) {
   });
 }
 
-module.exports = { CAMERAS, CAMERAS_V4, camerasOf, SCENE_REDRAWS, ACTION_LENGTH, keyframePrompt, editShot, CREW, CREWS, SCENE_LENGTH, reviewRequest, parseReview, VERSION, DIRECTOR_MODEL, DIRECTOR_ROUTE, PROMPT_LIMIT, MAX_PRODUCT_IMAGES, CUSTOM_LIMIT, CUSTOM_LENGTH, LIQUID,
+module.exports = { settleGeometry, CAMERAS, CAMERAS_V4, camerasOf, SCENE_REDRAWS, ACTION_LENGTH, keyframePrompt, editShot, CREW, CREWS, SCENE_LENGTH, reviewRequest, parseReview, VERSION, DIRECTOR_MODEL, DIRECTOR_ROUTE, PROMPT_LIMIT, MAX_PRODUCT_IMAGES, CUSTOM_LIMIT, CUSTOM_LENGTH, LIQUID,
   choices, planDirected, directorMessages, directorRequest, parseDirection, applyDirection, shotPrompt, platePrompt, width, reword };
