@@ -128,6 +128,8 @@ html[data-beat="1"] .sv-stages li.is-now>span{opacity:.6}
 /* 无人实拍 (2026-11-19): pick, don't type — device, scene, floor, dirt and selling points; a countdown while it is made. */
 /* 分镜确认 (2026-11-27): one card per shot — the keyframe beside its camera, action and caption. */
 .rs-board{display:grid;gap:14px}
+.rs-turn{margin:0;display:grid;gap:6px;font-size:17px;font-weight:700;color:var(--pv-ink,#1f1f1f)}
+.rs-turn b{font-size:26px;font-weight:900;color:var(--pv-accent)}
 .rs-board-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .rs-board-head h3{margin:0;font-size:22px;font-weight:900}
 .rs-board-head .pv2-btn{height:56px;font-size:18px}
@@ -136,6 +138,9 @@ html[data-beat="1"] .sv-stages li.is-now>span{opacity:.6}
 .rs-board-pic{position:relative;aspect-ratio:9/16;border-radius:12px;overflow:hidden;background:var(--pv-soft);display:grid;place-items:center;color:var(--pv-accent)}
 .rs-board-pic img{width:100%;height:100%;object-fit:cover}
 .rs-board-pic>span{display:grid;justify-items:center;gap:6px;font-size:13px;font-weight:800}
+.rs-board-card.is-pair{grid-template-columns:1fr}
+.rs-board-pair{display:grid;grid-template-columns:auto 1fr 1fr;gap:8px;align-items:start}
+.rs-board-no{min-width:28px;height:28px;border-radius:999px;background:var(--pv-accent);color:#fff;display:grid;place-items:center;font-size:14px;font-weight:900}
 .rs-board-pic em{position:absolute;left:6px;top:6px;min-width:24px;height:24px;border-radius:999px;background:rgba(0,0,0,.6);color:#fff;font-style:normal;font-size:13px;font-weight:900;display:grid;place-items:center}
 .rs-board-body{display:grid;gap:8px;align-content:start;min-width:0}
 .rs-board-body>b{font-size:17px;font-weight:900;display:flex;justify-content:space-between;gap:8px}.rs-board-body>b small{font-size:13px;color:#6b7280;font-weight:700}

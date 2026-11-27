@@ -153,27 +153,29 @@ export type StoryboardShot = { index: number; title: string; caption?: string; s
 export type Storyboard = { confirmed: boolean; redrawsLeft: number[]; cameras: Item[]; autoRedone: { index: number; issue: string } | null };
 type MediaResult = { ok: boolean; data?: { dataUrl: string } };
 type ShotChange = { action?: string; camera?: string; caption?: string };
-function KeyframeCard({ taskId, shot, ready, drawing, locked, version, cameras, redrawsLeft, busy, imageMedia, onSave }: {
-  taskId: string; shot: StoryboardShot; ready: boolean; drawing: boolean; locked: boolean; version: number; cameras: Item[]; redrawsLeft: number; busy: boolean;
+function KeyframeCard({ taskId, shot, ready, pair, drawing, locked, version, cameras, redrawsLeft, busy, imageMedia, onSave }: {
+  taskId: string; shot: StoryboardShot; ready: boolean; pair: boolean; drawing: boolean; locked: boolean; version: number; cameras: Item[]; redrawsLeft: number; busy: boolean;
   imageMedia: (id: string, key: string) => Promise<MediaResult>; onSave: (change: ShotChange) => void;
 }) {
-  const [picture, setPicture] = useState("");
+  const [picture, setPicture] = useState(""), [endPicture, setEndPicture] = useState("");
   const [camera, setCamera] = useState(shot.camera || ""), [action, setAction] = useState(shot.action || ""), [caption, setCaption] = useState(shot.caption || "");
   useEffect(() => { setCamera(shot.camera || ""); setAction(shot.action || ""); setCaption(shot.caption || ""); }, [shot.camera, shot.action, shot.caption]);
   useEffect(() => {
-    let disposed = false; setPicture("");
+    let disposed = false; setPicture(""); setEndPicture("");
     if (ready) void imageMedia(taskId, `key_${shot.index}`).then((result) => { if (!disposed && result.ok && result.data) setPicture(result.data.dataUrl); }).catch(() => {});
+    if (ready && pair) void imageMedia(taskId, `key_${shot.index}_end`).then((result) => { if (!disposed && result.ok && result.data) setEndPicture(result.data.dataUrl); }).catch(() => {});
     return () => { disposed = true; };
-  }, [taskId, shot.index, ready, version]);
+  }, [taskId, shot.index, ready, pair, version]);
   const redraw = camera !== (shot.camera || "") || action.trim() !== (shot.action || "");
   const changed = redraw || caption.trim() !== (shot.caption || "");
   const change: ShotChange = {};
   if (camera !== shot.camera) change.camera = camera;
   if (action.trim() !== shot.action) change.action = action.trim();
   if (caption.trim() !== shot.caption) change.caption = caption.trim();
-  return <article className="rs-board-card">
-    <div className="rs-board-pic">{picture ? <img src={picture} alt={`第 ${shot.index + 1} 镜分镜图`} /> : <span>{drawing || !ready ? <LoaderCircle size={30} className="spin" /> : <ImagePlus size={30} />}<small>{drawing || !ready ? "正在画" : ""}</small></span>}
-      <em>{shot.index + 1}</em></div>
+  const frame = (src: string, label: string) => <div className="rs-board-pic">{src ? <img src={src} alt={`第 ${shot.index + 1} 镜${label}`} /> : <span>{drawing || !ready ? <LoaderCircle size={30} className="spin" /> : <ImagePlus size={30} />}<small>{drawing || !ready ? "正在画" : ""}</small></span>}
+      <em>{pair ? label : shot.index + 1}</em></div>;
+  return <article className={`rs-board-card${pair ? " is-pair" : ""}`}>
+    {pair ? <div className="rs-board-pair"><b className="rs-board-no">{shot.index + 1}</b>{frame(picture, "开始")}{frame(endPicture, "结束")}</div> : frame(picture, "分镜图")}
     <div className="rs-board-body">
       <b>{shot.title}<small>{shot.seconds} 秒</small></b>
       {shot.proof && <p>画面证明：{shot.proof}</p>}
@@ -187,26 +189,72 @@ function KeyframeCard({ taskId, shot, ready, drawing, locked, version, cameras, 
     </div>
   </article>;
 }
+// The 定妆照 to confirm: four views of the customer's machine; the whole video follows it. Every real shoot starts with it.
+function SheetCard({ picture, redos, busy, onConfirm, onRedo }: { picture?: string; redos: number; busy: boolean; onConfirm: () => void; onRedo: () => void }) {
+  return <div className="sv-sheet">
+    <h3>这是你的产品吗？</h3>
+    <p>AI 先照着产品图画了四个角度。像的话就继续，后面整条视频都按这台机器来拍。</p>
+    <div className="sv-sheet-image">{picture ? <img src={picture} alt="定妆照" /> : <LoaderCircle size={40} className="spin" />}</div>
+    <div className="sv-sheet-actions">
+      <button type="button" className="pv2-btn is-main" data-product-video-action="confirm-sheet" disabled={busy || !picture} onClick={onConfirm}><Check size={20} />就是这台，继续</button>
+      <button type="button" className="pv2-btn" data-product-video-action="redo-sheet" disabled={busy || redos >= 2} onClick={onRedo}><RefreshCw size={18} />不像，重出一张{redos < 2 ? `（还能 ${2 - redos} 次）` : ""}</button>
+    </div>
+  </div>;
+}
+// Loads the 定妆照 itself (again after a redo) and shows the same card.
+export function SheetConfirm({ taskId, redos, busy, imageMedia, onConfirm, onRedo }: { taskId: string; redos: number; busy: boolean;
+  imageMedia: (id: string, key: string) => Promise<MediaResult>; onConfirm: () => void; onRedo: () => void }) {
+  const [picture, setPicture] = useState("");
+  useEffect(() => {
+    let disposed = false; setPicture("");
+    void imageMedia(taskId, "sheet").then((result) => { if (!disposed && result.ok && result.data) setPicture(result.data.dataUrl); }).catch(() => {});
+    return () => { disposed = true; };
+  }, [taskId, redos]);
+  return <SheetCard picture={picture} redos={redos} busy={busy} onConfirm={onConfirm} onRedo={onRedo} />;
+}
+
+// real-4: the place every shot happens in. A drawn one is shown first; the customer keeps it or has it drawn again.
+export function SceneConfirm({ taskId, redosLeft, busy, imageMedia, onConfirm, onRedo }: { taskId: string; redosLeft: number; busy: boolean;
+  imageMedia: (id: string, key: string) => Promise<MediaResult>; onConfirm: () => void; onRedo: () => void }) {
+  const [picture, setPicture] = useState("");
+  useEffect(() => {
+    let disposed = false; setPicture("");
+    void imageMedia(taskId, "plate").then((result) => { if (!disposed && result.ok && result.data) setPicture(result.data.dataUrl); }).catch(() => {});
+    return () => { disposed = true; };
+  }, [taskId, redosLeft]);
+  return <div className="sv-sheet">
+    <h3>在这里拍，可以吗？</h3>
+    <p>每个镜头都在这个现场拍，机器会放进这张照片里。</p>
+    <div className="sv-sheet-image">{picture ? <img src={picture} alt="拍摄现场" /> : <LoaderCircle size={40} className="spin" />}</div>
+    <div className="sv-sheet-actions">
+      <button type="button" className="pv2-btn is-main" data-product-video-action="confirm-scene" disabled={busy || !picture} onClick={onConfirm}><Check size={20} />就在这里拍</button>
+      <button type="button" className="pv2-btn" data-product-video-action="redo-scene" disabled={busy || redosLeft <= 0} onClick={onRedo}><RefreshCw size={18} />{redosLeft > 0 ? `换一个场景（还能 ${redosLeft} 次）` : "不能再换了"}</button>
+    </div>
+  </div>;
+}
 export function StoryboardConfirm({ task, busy, imageMedia, onSave, onConfirm }: {
-  task: { id: string; status: string; imagesReady?: Record<string, boolean>; storyboard?: Storyboard; plan: { shots: StoryboardShot[] } };
+  task: { id: string; status: string; imagesReady?: Record<string, boolean>; storyboard?: Storyboard; plan: { shots: StoryboardShot[]; realScene?: boolean } };
   busy: boolean; imageMedia: (id: string, key: string) => Promise<MediaResult>; onSave: (index: number, change: ShotChange) => void; onConfirm: () => void;
 }) {
   const board = task.storyboard, drawing = task.status === "drawing_frames";
   if (!board) return null;
-  const allReady = task.plan.shots.every((shot) => task.imagesReady?.[`key_${shot.index}`]);
+  const pair = Boolean(task.plan.realScene);
+  const ready = (index: number) => Boolean(task.imagesReady?.[`key_${index}`] && (!pair || task.imagesReady?.[`key_${index}_end`]));
+  const allReady = task.plan.shots.every((shot) => ready(shot.index));
   return <div className="rs-board">
     <div className="rs-board-head"><h3>{drawing ? "正在画分镜" : "看看每个镜头"}</h3>
       {!drawing && <button type="button" className="pv2-btn is-main" data-product-video-action="confirm-storyboard" disabled={busy || !allReady} onClick={onConfirm}><Check size={20} />分镜没问题，开始拍视频</button>}</div>
-    <div className="rs-board-grid">{task.plan.shots.map((shot) => <KeyframeCard key={shot.index} taskId={task.id} shot={shot} ready={Boolean(task.imagesReady?.[`key_${shot.index}`])} drawing={drawing && !task.imagesReady?.[`key_${shot.index}`]} locked={drawing}
+    <div className="rs-board-grid">{task.plan.shots.map((shot) => <KeyframeCard key={shot.index} taskId={task.id} shot={shot} ready={ready(shot.index)} pair={pair} drawing={drawing && !ready(shot.index)} locked={drawing}
       version={board.redrawsLeft[shot.index] ?? 0} cameras={board.cameras} redrawsLeft={board.redrawsLeft[shot.index] ?? 0} busy={busy} imageMedia={imageMedia} onSave={(change) => onSave(shot.index, change)} />)}</div>
   </div>;
 }
 // Only the steps this video really has: no 定妆照 on videos started before it, no scene picture without a venue shot.
-export function RealShootProgress({ task, shotVideos }: { task: ProgressTask; shotVideos: Record<string, string> }) {
+// stage=false: the page already shows the workbench above (one view for the whole run).
+export function RealShootProgress({ task, shotVideos, stage = true }: { task: ProgressTask; shotVideos: Record<string, string>; stage?: boolean }) {
   const stuck = ["needs_attention", "outcome_unknown"].includes(task.status);
   return <div className="sv-progress">
     {/* AI 工作台（用户 2026-11-24）：每个 AI 角色在它真实处理的那一步上干活，取代原来的步骤条和导演卡。 */}
-    <AgentStage model={sceneStageModel(task)} label="AI 导演组工作台" />
+    {stage && <AgentStage model={sceneStageModel(task)} label="AI 导演组工作台" />}
     <CrewCard crew={task.crew} />
     <div className="pv2-shots">{task.plan.shots.map((shot, index) => {
       const src = shotVideos[`${task.id}:${index}`], done = task.shotsReady?.[index], now = task.shotsRunning?.[index];

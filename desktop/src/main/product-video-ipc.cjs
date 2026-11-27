@@ -3,7 +3,7 @@ const { createProductVideoService } = require("./product-video-service.cjs");
 const { cleanMessage, fail } = require("./digital-human-provider.cjs");
 
 const CHANNELS = Object.freeze(Object.fromEntries(
-  ["capabilities", "import-image", "import-facts", "create", "list", "get", "start", "retry-shot", "refresh", "media", "shot-media", "image-media", "confirm-sheet", "redo-sheet", "redo-shot", "update-shot", "confirm-storyboard", "export", "export-source"]
+  ["capabilities", "import-image", "import-facts", "create", "list", "get", "start", "retry-shot", "refresh", "media", "shot-media", "image-media", "confirm-sheet", "redo-sheet", "confirm-scene", "redo-scene", "redo-shot", "update-shot", "confirm-storyboard", "export", "export-source"]
     .map((name) => [name, `product-video:${name}`])
 ));
 const ID = /^pv_[a-f0-9-]{36}$/u;
@@ -28,7 +28,8 @@ function registerProductVideoIpc(options = {}) {
       const result = await (window ? dialog.showOpenDialog(window, settings) : dialog.showOpenDialog(settings));
       return result.canceled || !result.filePaths?.[0] ? null : service.importFacts(result.filePaths[0]);
     },
-    create: (payload) => service.create(payload),
+    // 有人剧情 left the page (user 2026-11-27); older 剧情 tasks still finish in the service.
+    create: (payload) => { if (payload?.style === 'story') throw fail('product_video_invalid_input', '场景效果视频只做无人实拍。'); return service.create(payload); },
     list: () => service.list(),
     get: (payload) => service.get(idOf(payload)),
     start: (payload) => service.start(idOf(payload)),
@@ -37,6 +38,8 @@ function registerProductVideoIpc(options = {}) {
     media: (payload) => service.media(idOf(payload)),
     "confirm-sheet": (payload) => service.confirmSheet(idOf(payload)),
     "redo-sheet": (payload) => service.redoSheet(idOf(payload)),
+    "confirm-scene": (payload) => service.confirmScene(idOf(payload)),
+    "redo-scene": (payload) => service.redoScene(idOf(payload)),
     "redo-shot": (payload) => {
       if (!Number.isInteger(payload.index) || payload.index < 0 || payload.index > 20) throw fail("product_video_invalid_input", "请刷新页面后重试。");
       return service.redoShot(idOf(payload), payload.index);
@@ -80,7 +83,7 @@ function registerProductVideoIpc(options = {}) {
         if (!window?.webContents || event.sender !== window.webContents || (event.senderFrame && event.senderFrame !== window.webContents.mainFrame)) {
           throw fail("product_video_untrusted_sender", "请在应用主窗口操作。");
         }
-        if (["start", "retry-shot", "confirm-sheet", "redo-sheet", "redo-shot", "update-shot", "confirm-storyboard"].includes(name)) await options.requireTrustedClick(event, payload, name);
+        if (["start", "retry-shot", "confirm-sheet", "redo-sheet", "confirm-scene", "redo-scene", "redo-shot", "update-shot", "confirm-storyboard"].includes(name)) await options.requireTrustedClick(event, payload, name);
         if (!["create", "import-image", "import-facts"].includes(name) && Object.keys(payload).some((key) => !["id", "clickToken", ...(name === "shot-media" || name === "redo-shot" ? ["index"] : name === "update-shot" ? ["index", "change"] : name === "image-media" ? ["key"] : [])].includes(key))) {
           throw fail("product_video_invalid_input", "请刷新页面后重试。");
         }

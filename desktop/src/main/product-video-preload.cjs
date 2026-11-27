@@ -5,6 +5,8 @@ function createProductVideoApi(ipcRenderer) {
   const retryClick = createTrustedClickGate('[data-product-video-action="retry-shot"]', "product-video:retry-shot");
   const confirmClick = createTrustedClickGate('[data-product-video-action="confirm-sheet"]', "product-video:confirm-sheet");
   const redoClick = createTrustedClickGate('[data-product-video-action="redo-sheet"]', "product-video:redo-sheet");
+  const sceneClick = createTrustedClickGate('[data-product-video-action="confirm-scene"]', "product-video:confirm-scene");
+  const redoSceneClick = createTrustedClickGate('[data-product-video-action="redo-scene"]', "product-video:redo-scene");
   const redoShotClick = createTrustedClickGate('[data-product-video-action="redo-shot"]', "product-video:redo-shot");
   const updateShotClick = createTrustedClickGate('[data-product-video-action="update-shot"]', "product-video:update-shot");
   const storyboardClick = createTrustedClickGate('[data-product-video-action="confirm-storyboard"]', "product-video:confirm-storyboard");
@@ -33,6 +35,8 @@ function createProductVideoApi(ipcRenderer) {
     imageMedia: (id, key) => invoke("image-media", { id, key }),
     confirmSheet: (id) => invoke("confirm-sheet", { id, clickToken: confirmClick() }),
     redoSheet: (id) => invoke("redo-sheet", { id, clickToken: redoClick() }),
+    confirmScene: (id) => invoke("confirm-scene", { id, clickToken: sceneClick() }),
+    redoScene: (id) => invoke("redo-scene", { id, clickToken: redoSceneClick() }),
     redoShot: (id, index) => invoke("redo-shot", { id, index, clickToken: redoShotClick() }),
     updateShot: (id, index, change) => invoke("update-shot", { id, index, change, clickToken: updateShotClick() }),
     confirmStoryboard: (id) => invoke("confirm-storyboard", { id, clickToken: storyboardClick() }),

@@ -5,7 +5,7 @@ import type { StageAgent, StageCard, StageLog, StageModel, StageState } from "./
 // 步骤顺序与主进程 advanceReal 一致：定妆照 → 等客户确认 → 导演写分镜 → 画场地 → 风险审查 → 并行拍镜头 → AI 检查 → 拼接加字幕。
 export type SceneStageTask = {
   status: string; resumeStatus?: string; error?: string; failedShotIndex?: number | null; currentShot?: number;
-  sheetStep?: boolean; sheetConfirmed?: boolean; directorStep?: boolean; directed?: boolean;
+  sheetStep?: boolean; sheetConfirmed?: boolean; sceneStep?: boolean; sceneConfirmed?: boolean; directorStep?: boolean; directed?: boolean;
   imagesReady?: Record<string, boolean>; shotsReady?: boolean[]; shotsRunning?: boolean[];
   review?: { skipped?: boolean; shots: { ok: boolean; redone?: boolean }[] } | null;
   crew?: { sides: string[]; survey: { widthM: number | null; canTurn: boolean } | null; risks: { index: number }[]; rewritten: boolean; fallback?: number[] } | null;
@@ -27,6 +27,8 @@ function phaseOf(task: SceneStageTask, status: string) {
     if (task.directorStep && !task.directed) return PHASE.direct;
     return plateNeeded && !task.imagesReady?.plate ? PHASE.plate : PHASE.preflight;
   }
+  // real-4: the customer looks at the drawn place before the risk review and the keyframes.
+  if (status === "awaiting_scene") return PHASE.plate;
   // real-3: the keyframes and the customer's look at them come right before filming.
   if (status === "drawing_frames" || status === "awaiting_storyboard") return PHASE.preflight;
   if (status === "submitting" || status === "generating") return PHASE.shoot;
@@ -65,6 +67,8 @@ export function sceneStageModel(task: SceneStageTask): StageModel {
   };
   const sheetState: StageState = phase === PHASE.confirm ? (stuck ? "fail" : "user") : at(PHASE.sheet);
   const crew = task.crew;
+  // The risk review is finished before the keyframes are drawn (real-3/real-4), though both share its phase.
+  const riskState: StageState = task.status === "drawing_frames" || task.status === "awaiting_storyboard" ? "done" : at(PHASE.preflight);
   const flagged = task.review?.shots.filter((shot) => !shot.ok && !shot.redone).length || 0;
 
   const cards: StageCard[] = [
@@ -72,9 +76,10 @@ export function sceneStageModel(task: SceneStageTask): StageModel {
     ...(task.sheetStep ? [{ id: "sheet", label: "定妆照", icon: <ImagePlus size={18} />, state: sheetState, detail: sheetState === "user" ? "等你确认" : undefined }] : []),
     // Every real shoot has a shot plan; without the AI director it comes from the customer's picks, and the
     // pre-shoot check still runs on it, so the card is always there to show that step.
-    { id: "board", label: "分镜", icon: <Sparkles size={18} />, state: phase === PHASE.preflight ? at(PHASE.preflight) : task.directorStep ? at(PHASE.direct) : at(PHASE.upload),
-      detail: phase > PHASE.direct ? `${shots.length} 个镜头` : undefined },
-    ...(plateNeeded ? [{ id: "plate", label: "拍摄场地", icon: <MapPin size={18} />, state: at(PHASE.plate) }] : []),
+    { id: "board", label: "分镜", icon: <Sparkles size={18} />, state: task.status === "awaiting_storyboard" ? "user" : phase === PHASE.preflight ? at(PHASE.preflight) : task.directorStep ? at(PHASE.direct) : at(PHASE.upload),
+      detail: task.status === "awaiting_storyboard" ? "等你确认" : task.status === "drawing_frames" ? "画分镜图" : phase > PHASE.direct ? `${shots.length} 个镜头` : undefined },
+    ...(plateNeeded ? [{ id: "plate", label: "拍摄场地", icon: <MapPin size={18} />, state: (task.status === "awaiting_scene" ? "user" : at(PHASE.plate)) as StageState,
+      detail: task.status === "awaiting_scene" ? "等你确认" : undefined }] : []),
     ...shots.map((shot, index) => ({ id: `shot-${index}`, label: `镜头 ${index + 1}`, icon: <Clapperboard size={18} />, state: shotState(index), detail: shot.title })),
     ...(task.directorStep ? [{ id: "review", label: "AI 检查", icon: <ScanEye size={18} />, state: at(PHASE.review),
       detail: task.review && !task.review.skipped ? (flagged ? `${flagged} 个镜头要看` : "都没问题") : undefined }] : []),
@@ -86,7 +91,7 @@ export function sceneStageModel(task: SceneStageTask): StageModel {
     agent("analyst", "产品分析师", "#22d3ee", task.sheetStep ? "sheet" : "photos", task.sheetStep ? (sheetState === "user" ? "done" : at(PHASE.sheet)) : at(PHASE.upload)),
     ...(task.directorStep ? [agent("director", "导演", "#f472b6", "board", at(PHASE.direct))] : []),
     ...(plateNeeded ? [agent("survey", "场景勘察", "#a3e635", "plate", at(PHASE.plate))] : []),
-    ...(task.directorStep ? [agent("risk", "风险审查", "#fb7185", "board", at(PHASE.preflight))] : []),
+    ...(task.directorStep ? [agent("risk", "风险审查", "#fb7185", "board", riskState)] : []),
     ...shots.map((_, index) => agent(`camera-${index}`, `摄影师 ${index + 1}`, CAMERA_COLORS[index % CAMERA_COLORS.length], `shot-${index}`, shotState(index))),
     ...(task.directorStep ? [agent("qa", "质检", "#facc15", "review", at(PHASE.review))] : []),
     agent("editor", "剪辑", "#a78bfa", "final", at(PHASE.finish))
@@ -107,8 +112,11 @@ export function sceneStageModel(task: SceneStageTask): StageModel {
     [task.plan.machine?.split(/[，,（(]/)[0], `${shots.length} 个镜头：${shots.map((shot) => shot.title).join(" / ")}`].filter(Boolean).join(" · "));
   if (plateNeeded) line("survey", "场景勘察", "#a3e635", at(PHASE.plate), "画拍摄场地",
     crew?.survey ? `场地宽约 ${crew.survey.widthM ?? "?"} 米 · ${crew.survey.canTurn ? "能转弯" : "只直行"}` : "场地画好了");
-  if (task.directorStep) line("risk", "风险审查", "#fb7185", at(PHASE.preflight), "逐镜查穿帮风险",
+  if (task.directorStep) line("risk", "风险审查", "#fb7185", riskState, "逐镜查穿帮风险",
     crew?.risks?.length ? `第 ${crew.risks.map((row) => row.index + 1).join("、")} 镜仍有风险` : crew?.fallback?.length ? `第 ${crew.fallback.map((index) => index + 1).join("、")} 镜换成稳妥拍法` : crew?.rewritten ? "让导演改过分镜，没有穿帮风险了" : "没发现穿帮风险");
+  if (task.sceneStep && plateNeeded) line("you-scene", "你", "#fde047", task.status === "awaiting_scene" ? "user" : phase > PHASE.plate ? "done" : "wait", "请看拍摄现场，可以换一个", "拍摄现场已确认");
+  if (phase >= PHASE.preflight && (task.status === "drawing_frames" || task.status === "awaiting_storyboard" || phase > PHASE.preflight))
+    line("you-board", "你", "#fde047", task.status === "awaiting_storyboard" ? "user" : task.status === "drawing_frames" ? "now" : "done", task.status === "drawing_frames" ? "AI 正在画每个镜头的开始和结束画面" : "请看分镜，可以改动作和角度", "分镜已确认");
   shots.forEach((shot, index) => line(`camera-${index}`, `摄影师 ${index + 1}`, CAMERA_COLORS[index % CAMERA_COLORS.length], shotState(index), `拍镜头 ${index + 1}「${shot.title}」`, `镜头 ${index + 1}「${shot.title}」拍好了`));
   if (task.directorStep) line("qa", "质检", "#facc15", at(PHASE.review), "逐镜检查画面",
     task.review?.skipped ? "这次没能自动检查" : flagged ? `${flagged} 个镜头可能要重拍` : "每个镜头都没发现明显问题");
