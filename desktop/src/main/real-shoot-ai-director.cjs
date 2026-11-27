@@ -18,9 +18,11 @@ const { promptRef, promptLength } = require("../shared/prompt-ref.cjs");
 // checks and may change (action, camera) before any video is paid for, and the video starts from that keyframe.
 const VERSION = 'real-4';
 // real-4 (2026-11-27, 用户：「贴近真实生活」「一眼假」「换个产品还适用吗」): a paid A/B on the user's own CC1 Pro footage showed
-// a real place as the first frame plus one simple action is what looks real (an AI-drawn place and first+last frames
-// morph instead of driving). So the place is one photo — the customer's, or a drawn one the customer accepts or redraws —
-// every keyframe puts the machine into that same photo, and each shot is one physical action filmed like a phone in a hand.
+// a real place as the first frame plus one simple action is what looks real (an AI-drawn place with first+last frames morphed).
+// So the place is one photo — the customer's, or a drawn one the customer accepts or redraws — and each shot is one physical
+// action filmed like a phone in a hand. Later the same day the machine's sides were invented on every turn (Wan3 sees no
+// reference beside a first frame), so each shot is now held between a start and an end picture both drawn into that same
+// photo from the product photos and the 定妆照: same background, so first+last no longer morphs between two places.
 // The camera moves paid trials proved (导演组 crew prompts) plus a low close-up of the working parts.
 const CAMERAS = Object.freeze({
   side: { name: '侧面跟拍', prompt: () => promptRef('video.crew.camera_side') },
@@ -53,7 +55,7 @@ const facings = (text) => Object.keys(FACING_PATTERNS).filter((key) => FACING_PA
 const PERPENDICULAR = Object.freeze({ toward: ['left', 'right'], away: ['left', 'right'], left: ['toward', 'away'], right: ['toward', 'away'] });
 // 「距手机约3.2米」/「离镜头2米」: how far the machine stands from the phone in a start or end description.
 // Other ways of saying which way it faces, which would fight the one plain facing put in front.
-const CONFLICTING = /(?:现)?(?:车身|机身)?侧(?:面|身)(?:正)?(?:对着?|朝向?|面向)?(?:手机|镜头)?|车头(?:朝向?|对着?)(?:画面)?(?:上|下)方/gu;
+const CONFLICTING = /(?:车身|机身)?侧(?:面|身)(?:正)?(?:对着?|朝向?|面向)(?:手机|镜头)|现侧身|车头(?:朝向?|对着?)(?:画面)?(?:上|下)方/gu;
 const DISTANCE = /(?:距|离)(?:手机|镜头)(?:约|大约)?\s*(\d+(?:\.\d+)?)\s*(?:米|m)/u;
 const distance = (text) => { const match = String(text || '').match(DISTANCE); return match ? Number(match[1]) : null; };
 // The start and end facing and distance for a shot, from the camera and the move (the director's words keep the scene):
@@ -73,6 +75,7 @@ function settleGeometry({ pointId, camera, start, end, action = '', timeline = '
   const boxAhead = pointId === 'obstacle' && camera === 'toward' ? Number((String(start).match(/前方(?:约)?\s*(\d+(?:\.\d+)?)\s*米/u) || [])[1]) || 2.5 : 0;
   let near = distance(start) ?? (camera === 'away' ? 1.5 : camera === 'toward' ? 4 : 3);
   if (boxAhead) near = Math.max(near, Math.round((boxAhead + 2) * 10) / 10);
+  if (camera === 'toward') near = Math.max(near, 2.5);
   let far = distance(end) ?? (camera === 'away' ? near + 2 : camera === 'toward' ? Math.max(1, near - 2.5) : near);
   if (camera === 'toward' && far >= near) far = Math.max(1, Math.round((near - 2) * 10) / 10);
   if (camera === 'away' && far <= near) far = Math.round((near + 2) * 10) / 10;
@@ -234,7 +237,7 @@ function directorMessages({ plan, facts = '', images, feedback = '', crew = '' }
   const place = detail ? `「${scene.name}」：${detail.place}；${detail.light}；环境声：${detail.ambient}`
     : `${promptRef("video.realshoot.custom_scene.p1")}${plan.scene}${promptRef("video.realshoot.custom_scene.p2")}`;
   const photos = plan.productImages;
-  const list = plan.shots.map((shot) => `第${shot.index + 1}镜｜${shot.seconds}秒｜${shot.filler || shot.pointId === 'clean' ? `清洁效果（地面由脏变干净${plan.shots.filter((row) => row.filler || row.pointId === 'clean').length > 1 ? '；几个清洁镜头换不同区域、不同机位和走向，不要拍成一样' : ''}）` : `卖点「${shot.title}」`}${shot.caption ? `｜默认字幕：${shot.caption}` : ''}${plan.realScene ? `｜动作模板：${fnTemplate(shot)}` : pointHint(shot) ? `｜常见拍法：${pointHint(shot)}` : ''}`).join('\n');
+  const list = plan.shots.map((shot) => `第${shot.index + 1}镜｜${shot.seconds}秒｜${shot.filler || shot.pointId === 'clean' ? `清洁效果（地面由脏变干净${plan.shots.filter((row) => row.filler || row.pointId === 'clean').length > 1 ? '；几个清洁镜头换不同区域、不同机位和走向，不要拍成一样' : ''}）` : `卖点「${shot.title}」`}${shot.caption ? `｜默认字幕：${shot.caption}` : ''}${plan.realScene ? `｜动作模板：${fnTemplate(shot)}${!FN_TEMPLATES[shot.pointId] && pointHint(shot) ? `｜这个卖点的拍法：${pointHint(shot)}` : ''}` : pointHint(shot) ? `｜常见拍法：${pointHint(shot)}` : ''}`).join('\n');
   const system = `${promptRef("video.realshoot.director.p1")}${photos}${promptRef("video.realshoot.director.p2")}${photos + 1}${promptRef("video.realshoot.director.p3")}${plan.venuePhoto ? promptRef("video.realshoot.venue_photo") : ''}${plan.realScene ? promptRef("video.realshoot.v4.director.p4") : promptRef("video.realshoot.director.p4", plan.storyboard ? 2 : 1)}${place}${plan.realScene ? promptRef("video.realshoot.v4.director.p5") : promptRef("video.realshoot.director.p5", plan.storyboard ? 2 : 1)}`;
   const user = [`产品名称：${plan.productName}`, `使用场所：${scene ? `${scene.name}（${scene.description}）` : `${plan.scene}（客户自己写的）`}`, facts ? `客户资料：${clean(facts, FACT_LIMIT)}` : '',
     crew ? `${promptRef("video.realshoot.crew_report.p1")}${crew}` : '',
@@ -357,7 +360,9 @@ function editShot(plan, index, change) {
   const redraw = action !== shot.action || camera !== shot.camera;
   // A redraw the customer asked for answers the "may not show" note; it is not shown again on the new picture.
   const next = { ...shot, action, camera, caption, edited: shot.edited || redraw, ...(redraw ? { unshowable: '' } : {}),
-    ...(plan.realScene && action !== shot.action ? { start: '', end: '', timeline: action } : {}) };
+    ...(plan.realScene && action !== shot.action ? { start: '', end: '', timeline: action, setup: '' } : {}) };
+  if (plan.realScene && redraw) Object.assign(next, settleGeometry({ pointId: next.pointId, camera, start: next.start || `机器在作业区里，动作马上开始：${action}`,
+    end: next.end || `动作「${action}」刚做完，机器仍在画面里`, action, timeline: next.timeline }));
   next.prompt = storyboardPrompt({ operator: plan.operator, wet: plan.wet, realScene: plan.realScene }, next);
   if (promptLength(next.prompt) > PROMPT_LIMIT) throw fail('product_video_invalid_input', '动作写得太长了，请精简。');
   return { plan: { ...plan, shots: plan.shots.map((row, i) => i === index ? next : row) }, redraw };
