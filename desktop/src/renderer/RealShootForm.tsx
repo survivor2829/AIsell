@@ -153,27 +153,29 @@ export type StoryboardShot = { index: number; title: string; caption?: string; s
 export type Storyboard = { confirmed: boolean; redrawsLeft: number[]; cameras: Item[]; autoRedone: { index: number; issue: string } | null };
 type MediaResult = { ok: boolean; data?: { dataUrl: string } };
 type ShotChange = { action?: string; camera?: string; caption?: string };
-function KeyframeCard({ taskId, shot, ready, drawing, locked, version, cameras, redrawsLeft, busy, imageMedia, onSave }: {
-  taskId: string; shot: StoryboardShot; ready: boolean; drawing: boolean; locked: boolean; version: number; cameras: Item[]; redrawsLeft: number; busy: boolean;
+function KeyframeCard({ taskId, shot, ready, pair, drawing, locked, version, cameras, redrawsLeft, busy, imageMedia, onSave }: {
+  taskId: string; shot: StoryboardShot; ready: boolean; pair: boolean; drawing: boolean; locked: boolean; version: number; cameras: Item[]; redrawsLeft: number; busy: boolean;
   imageMedia: (id: string, key: string) => Promise<MediaResult>; onSave: (change: ShotChange) => void;
 }) {
-  const [picture, setPicture] = useState("");
+  const [picture, setPicture] = useState(""), [endPicture, setEndPicture] = useState("");
   const [camera, setCamera] = useState(shot.camera || ""), [action, setAction] = useState(shot.action || ""), [caption, setCaption] = useState(shot.caption || "");
   useEffect(() => { setCamera(shot.camera || ""); setAction(shot.action || ""); setCaption(shot.caption || ""); }, [shot.camera, shot.action, shot.caption]);
   useEffect(() => {
-    let disposed = false; setPicture("");
+    let disposed = false; setPicture(""); setEndPicture("");
     if (ready) void imageMedia(taskId, `key_${shot.index}`).then((result) => { if (!disposed && result.ok && result.data) setPicture(result.data.dataUrl); }).catch(() => {});
+    if (ready && pair) void imageMedia(taskId, `key_${shot.index}_end`).then((result) => { if (!disposed && result.ok && result.data) setEndPicture(result.data.dataUrl); }).catch(() => {});
     return () => { disposed = true; };
-  }, [taskId, shot.index, ready, version]);
+  }, [taskId, shot.index, ready, pair, version]);
   const redraw = camera !== (shot.camera || "") || action.trim() !== (shot.action || "");
   const changed = redraw || caption.trim() !== (shot.caption || "");
   const change: ShotChange = {};
   if (camera !== shot.camera) change.camera = camera;
   if (action.trim() !== shot.action) change.action = action.trim();
   if (caption.trim() !== shot.caption) change.caption = caption.trim();
-  return <article className="rs-board-card">
-    <div className="rs-board-pic">{picture ? <img src={picture} alt={`第 ${shot.index + 1} 镜分镜图`} /> : <span>{drawing || !ready ? <LoaderCircle size={30} className="spin" /> : <ImagePlus size={30} />}<small>{drawing || !ready ? "正在画" : ""}</small></span>}
-      <em>{shot.index + 1}</em></div>
+  const frame = (src: string, label: string) => <div className="rs-board-pic">{src ? <img src={src} alt={`第 ${shot.index + 1} 镜${label}`} /> : <span>{drawing || !ready ? <LoaderCircle size={30} className="spin" /> : <ImagePlus size={30} />}<small>{drawing || !ready ? "正在画" : ""}</small></span>}
+      <em>{pair ? label : shot.index + 1}</em></div>;
+  return <article className={`rs-board-card${pair ? " is-pair" : ""}`}>
+    {pair ? <div className="rs-board-pair"><b className="rs-board-no">{shot.index + 1}</b>{frame(picture, "开始")}{frame(endPicture, "结束")}</div> : frame(picture, "分镜图")}
     <div className="rs-board-body">
       <b>{shot.title}<small>{shot.seconds} 秒</small></b>
       {shot.proof && <p>画面证明：{shot.proof}</p>}
@@ -207,16 +209,18 @@ export function SceneConfirm({ taskId, redosLeft, busy, imageMedia, onConfirm, o
   </div>;
 }
 export function StoryboardConfirm({ task, busy, imageMedia, onSave, onConfirm }: {
-  task: { id: string; status: string; imagesReady?: Record<string, boolean>; storyboard?: Storyboard; plan: { shots: StoryboardShot[] } };
+  task: { id: string; status: string; imagesReady?: Record<string, boolean>; storyboard?: Storyboard; plan: { shots: StoryboardShot[]; realScene?: boolean } };
   busy: boolean; imageMedia: (id: string, key: string) => Promise<MediaResult>; onSave: (index: number, change: ShotChange) => void; onConfirm: () => void;
 }) {
   const board = task.storyboard, drawing = task.status === "drawing_frames";
   if (!board) return null;
-  const allReady = task.plan.shots.every((shot) => task.imagesReady?.[`key_${shot.index}`]);
+  const pair = Boolean(task.plan.realScene);
+  const ready = (index: number) => Boolean(task.imagesReady?.[`key_${index}`] && (!pair || task.imagesReady?.[`key_${index}_end`]));
+  const allReady = task.plan.shots.every((shot) => ready(shot.index));
   return <div className="rs-board">
     <div className="rs-board-head"><h3>{drawing ? "正在画分镜" : "看看每个镜头"}</h3>
       {!drawing && <button type="button" className="pv2-btn is-main" data-product-video-action="confirm-storyboard" disabled={busy || !allReady} onClick={onConfirm}><Check size={20} />分镜没问题，开始拍视频</button>}</div>
-    <div className="rs-board-grid">{task.plan.shots.map((shot) => <KeyframeCard key={shot.index} taskId={task.id} shot={shot} ready={Boolean(task.imagesReady?.[`key_${shot.index}`])} drawing={drawing && !task.imagesReady?.[`key_${shot.index}`]} locked={drawing}
+    <div className="rs-board-grid">{task.plan.shots.map((shot) => <KeyframeCard key={shot.index} taskId={task.id} shot={shot} ready={ready(shot.index)} pair={pair} drawing={drawing && !ready(shot.index)} locked={drawing}
       version={board.redrawsLeft[shot.index] ?? 0} cameras={board.cameras} redrawsLeft={board.redrawsLeft[shot.index] ?? 0} busy={busy} imageMedia={imageMedia} onSave={(change) => onSave(shot.index, change)} />)}</div>
   </div>;
 }

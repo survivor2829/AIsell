@@ -32,7 +32,7 @@ const LABELS = { draft: '方案已保存', uploading: '上传产品图', prepari
 const storyImageKeys = (segments) => ['scene', 'floor', 'person_a', 'person_b',
   ...Array.from({ length: segments }, (_, s) => Array.from({ length: story.SHOTS_PER_SEGMENT }, (_, k) => `frame_${s}_${k}`)).flat()];
 // real-3 storyboard: one keyframe per shot, key_0, key_1, …
-const keyframeKeys = (task) => task.plan.storyboard ? task.plan.shots.map((_, index) => `key_${index}`) : [];
+const keyframeKeys = (task) => task.plan.storyboard ? task.plan.shots.flatMap((_, index) => task.plan.realScene ? [`key_${index}`, `key_${index}_end`] : [`key_${index}`]) : [];
 
 const IMAGE_LABEL = { sheet: '定妆照', scene: '场景图', floor: '地面对照图', person_a: '人物', person_b: '人物', plate: '场景图' };
 const shotPipeline = (task) => task.plan.pipelineVersion >= 5;
@@ -489,11 +489,12 @@ function createProductVideoService(options = {}) {
   }
   function storyImageSpec(task, key) {
     if (key === 'plate' && task.plan.pipelineVersion === 6) return { prompt: task.plan.platePrompt, refs: [], size: '9:16' };
-    if (/^key_\d{1,2}$/u.test(key) && task.plan.storyboard) {
-      const shot = task.plan.shots[Number(key.slice(4))];
+    if (/^key_\d{1,2}(?:_end)?$/u.test(key) && task.plan.storyboard) {
+      const shot = task.plan.shots[Number(key.match(/\d+/u)[0])];
       if (!shot) throw fail('product_video_plan_invalid', '分镜编号无效。');
       const extra = (task.extraImageIds || []).map((_, index) => `extra_${index}`);
       // real-4: the place photo leads (the keyframe continues that photo); the product photos and the 定妆照 follow.
+      if (task.plan.realScene && key.endsWith('_end')) return { prompt: aiDirector.keyframePrompt(task.plan, shot, true), refs: [`key_${shot.index}`, 'product', ...extra, 'sheet'], size: '9:16' };
       if (task.plan.realScene) return { prompt: aiDirector.keyframePrompt(task.plan, shot), refs: [...(shot.place === 'venue' ? ['plate'] : []), 'product', ...extra, 'sheet'], size: '9:16' };
       return { prompt: aiDirector.keyframePrompt(task.plan, shot), refs: ['product', ...extra, 'sheet', ...(shot.place === 'venue' ? ['plate'] : [])], size: '9:16' };
     }
@@ -880,6 +881,7 @@ function createProductVideoService(options = {}) {
       const done = await advanceShots(task, async (index) => {
         const shot = task.plan.shots[index], images = [];
         // The confirmed keyframe is the first frame; Wan3 takes no reference images beside it.
+        if (task.plan.realScene) return wan.firstLastVideoRequest({ first: await storyReference(task, `key_${index}`), last: await storyReference(task, `key_${index}_end`), prompt: shot.prompt, seconds: shot.seconds });
         if (task.plan.storyboard) return wan.firstFrameVideoRequest({ image: await storyReference(task, `key_${index}`), prompt: shot.prompt, seconds: shot.seconds });
         for (const id of [task.imageId, ...(task.extraImageIds || [])]) images.push(await productReference(task, id));
         if (task.plan.sheet) images.push(await storyReference(task, 'sheet'));
@@ -1242,10 +1244,13 @@ function createProductVideoService(options = {}) {
       if (edited.redraw) {
         const redraws = (task.keyframeRedraws ||= {});
         if ((redraws[index] || 0) >= KEYFRAME_REDRAWS) throw fail('product_video_keyframe_retry_limit', `这一镜已经重画过${KEYFRAME_REDRAWS}次，可以直接确认，或者新建一条。`);
-        const key = `key_${index}`, candidate = structuredClone(task);
+        const candidate = structuredClone(task);
         candidate.plan = edited.plan; checkPlan(candidate);
-        if (candidate.operations[`img_${key}`]) { (candidate.archivedOperations ||= []).push(candidate.operations[`img_${key}`]); delete candidate.operations[`img_${key}`]; }
-        delete candidate.images[key];
+        // real-4: the start and end pictures are redrawn together.
+        for (const key of keyframeKeys(candidate).filter((name) => name === `key_${index}` || name === `key_${index}_end`)) {
+          if (candidate.operations[`img_${key}`]) { (candidate.archivedOperations ||= []).push(candidate.operations[`img_${key}`]); delete candidate.operations[`img_${key}`]; }
+          delete candidate.images[key];
+        }
         candidate.keyframeRedraws = { ...redraws, [index]: (redraws[index] || 0) + 1 };
         await verifyQuote(candidate); hold();
         Object.assign(task, candidate); task.status = 'drawing_frames'; save(task); schedule(id); return publicTask(task);
@@ -1264,7 +1269,7 @@ function createProductVideoService(options = {}) {
   // A picture made for a 剧情版 (定妆照、场景、人物、分镜), small enough for the page.
   async function storyImageMedia(id, key) {
     const task = read(id);
-    if (!/^(?:sheet|scene|floor|plate|person_[ab]|grid_\d{1,2}|key_\d{1,2})$/u.test(String(key || '')) || !task.images?.[key]?.file) throw fail('product_video_not_ready', '这张图还没准备好。');
+    if (!/^(?:sheet|scene|floor|plate|person_[ab]|grid_\d{1,2}|key_\d{1,2}(?:_end)?)$/u.test(String(key || '')) || !task.images?.[key]?.file) throw fail('product_video_not_ready', '这张图还没准备好。');
     return { dataUrl: `data:image/jpeg;base64,${(await fsp.readFile(await storyJpeg(task, key))).toString('base64')}` };
   }
   function preview(id) {

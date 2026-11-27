@@ -76,7 +76,7 @@ function estimateTask(task, timings, { now = Date.now(), shotSlots = 3, imageSlo
       ? Math.max(5, r.story - (task.status === 'directing' ? since(task.operations?.direct?.submittedAt, now) : 0)) : 0;
     const plate = FINISHING.has(task.status) || !venue ? 0 : imageLeft(task, 'plate', r, now);
     // real-3: the keyframes still to draw, a few at a time, before the customer looks at the storyboard.
-    const keys = task.plan.storyboard && !task.storyboardConfirmedAt ? task.plan.shots.map((_, index) => `key_${index}`).filter((key) => !task.images?.[key]?.file) : [];
+    const keys = task.plan.storyboard && !task.storyboardConfirmedAt ? task.plan.shots.flatMap((_, index) => task.plan.realScene ? [`key_${index}`, `key_${index}_end`] : [`key_${index}`]).filter((key) => !task.images?.[key]?.file) : [];
     const keyframes = keys.length ? Math.max(...keys.map((key) => imageLeft(task, key, r, now))) + (Math.ceil(keys.length / imageSlots) - 1) * r.image : 0;
     const shots = FINISHING.has(task.status) ? 0 : shotsLeft(task, r, shotSlots, now);
     return Math.round(directing + plate + keyframes + shots + finishLeft(task, r, now));

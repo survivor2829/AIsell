@@ -95,6 +95,15 @@ function firstFrameVideoRequest({ image, prompt, seconds, resolution = '480P' } 
     parameters: { resolution: quality, ratio: 'adaptive', duration: seconds, audio: true, prompt_extend: false, watermark: false } },
     headers: { ...ASYNC_HEADERS, ...(url.startsWith('oss://') ? { 'X-DashScope-OssResourceResolve': 'enable' } : {}) } };
 }
+// real-4: held between the confirmed start and end pictures (both drawn from the product photos and the 定妆照), so a
+// turn shows the machine's real sides; first/last frames cannot be combined with reference images (阿里文档).
+function firstLastVideoRequest({ first, last, prompt, seconds, resolution = '480P' } = {}) {
+  const request = firstFrameVideoRequest({ image: first, prompt, seconds, resolution });
+  const tail = mediaReference(last, { image: true });
+  request.body.input.media = [...request.body.input.media, { type: 'last_frame', url: tail }];
+  if (tail.startsWith('oss://')) request.headers = { ...request.headers, 'X-DashScope-OssResourceResolve': 'enable' };
+  return request;
+}
 function pollRequest(id) { return { route: ROUTES.task(id) }; }
 function nodeOf(payload) { return payload?.output && typeof payload.output === 'object' ? payload.output : {}; }
 function taskIdOf(payload) {
@@ -150,5 +159,5 @@ function createBailianVideoProvider(options = {}) {
     nodeOf, taskIdOf, statusOf, resultVideoUrl, normalizePoll, ttsPayload, ttsAudioUrl };
 }
 
-module.exports = { storyVideoRequest, firstFrameVideoRequest, MODEL, DIRECT_MODEL, TTS_MODEL, ROUTES, ASYNC_HEADERS, createBailianVideoProvider, directVideoRequest,
+module.exports = { storyVideoRequest, firstFrameVideoRequest, firstLastVideoRequest, MODEL, DIRECT_MODEL, TTS_MODEL, ROUTES, ASYNC_HEADERS, createBailianVideoProvider, directVideoRequest,
   videoPayload, videoRequest, pollRequest, nodeOf, taskIdOf, statusOf, resultVideoUrl, normalizePoll, ttsPayload, ttsAudioUrl };

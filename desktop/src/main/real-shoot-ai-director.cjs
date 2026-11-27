@@ -36,6 +36,10 @@ const CAMERAS_V4 = Object.freeze({
   close: { name: '近处特写', prompt: () => promptRef('video.realshoot.v4.cam_close') }
 });
 const camerasOf = (plan) => plan?.realScene ? CAMERAS_V4 : CAMERAS;
+// real-4 (2026-11-27 实测：一句话动作 + 5 秒 → 撞开纸箱、倒退；33 号试拍的带数字分解动作 + 7–10 秒 → 绕开了): each selling point
+// has a choreography template with distances and angles; the director makes it concrete for this place and machine.
+const FN_TEMPLATES = Object.freeze({ obstacle: 'obstacle', narrow: 'narrow', edge: 'edge', gate: 'gate', charge: 'charge', water: 'water', lift: 'lift' });
+const fnTemplate = (shot) => promptRef(`video.realshoot.v4.fn.${FN_TEMPLATES[shot.pointId] || 'clean'}`);
 const SCENE_REDRAWS = 2;
 const ACTION_LENGTH = 40;
 const DIRECTOR_MODEL = 'qwen3-vl-plus';
@@ -140,7 +144,8 @@ function planDirected(input) {
 
   const points = [...pointIds.map((id) => allowed.find((point) => point.id === id)),
     ...custom.map((text, i) => ({ id: `custom_${i}`, name: text, caption: width(text) <= catalog.CAPTION_WIDTH ? text : '', custom: true }))];
-  if (!points.some((point) => point.cleaning) && points.length < catalog.POINT_LIMIT[seconds]) points.unshift(FILLER);
+  if (!points.some((point) => point.cleaning) && points.length < catalog.MIN_SHOTS[seconds]) points.unshift(FILLER);
+  // real-4: a selling point is a choreography that needs its seconds; a filler cleaning shot only fills a missing minimum (was: up to the point limit).
   // A filler never repeats a caption a selling point already has (captions compared without spaces).
   const used = new Set(points.map((point) => bare(point.caption)).filter(Boolean));
   const fillers = [...FILLERS.filter((row) => !used.has(bare(row.caption))), ...FILLERS];
@@ -158,8 +163,9 @@ function planDirected(input) {
   });
   return {
     version: VERSION, pipelineVersion: 6, director: 'ai', directorModel: DIRECTOR_MODEL, videoProvider: 'bailian', videoModel: DIRECT_MODEL, videoAudio: true,
-    sourceResolution: '480p', outputSize: '1080x1920', imageModel: IMAGE_MODEL, storyboard: true, keyframes: shots.length,
+    sourceResolution: '480p', outputSize: '1080x1920', imageModel: IMAGE_MODEL, storyboard: true, keyframes: shots.length * 2,
     // real-4: one place photo for every shot; a drawn one is shown to the customer first (accept or redraw).
+    // Each shot has a start and an end picture (both drawn with the product photos and the 定妆照); the video is held between them.
     realScene: true, sceneStep: !venuePhoto,
     // The 定妆照 and the scene picture: the director always sets at least one shot in the venue.
     // A site photo from the customer is the scene picture itself: nothing to draw.
@@ -188,7 +194,7 @@ function directorMessages({ plan, facts = '', images, feedback = '', crew = '' }
   const place = detail ? `「${scene.name}」：${detail.place}；${detail.light}；环境声：${detail.ambient}`
     : `${promptRef("video.realshoot.custom_scene.p1")}${plan.scene}${promptRef("video.realshoot.custom_scene.p2")}`;
   const photos = plan.productImages;
-  const list = plan.shots.map((shot) => `第${shot.index + 1}镜｜${shot.seconds}秒｜${shot.filler || shot.pointId === 'clean' ? `清洁效果（地面由脏变干净${plan.shots.filter((row) => row.filler || row.pointId === 'clean').length > 1 ? '；几个清洁镜头换不同区域、不同机位和走向，不要拍成一样' : ''}）` : `卖点「${shot.title}」`}${shot.caption ? `｜默认字幕：${shot.caption}` : ''}${pointHint(shot) ? `｜常见拍法：${pointHint(shot)}` : ''}`).join('\n');
+  const list = plan.shots.map((shot) => `第${shot.index + 1}镜｜${shot.seconds}秒｜${shot.filler || shot.pointId === 'clean' ? `清洁效果（地面由脏变干净${plan.shots.filter((row) => row.filler || row.pointId === 'clean').length > 1 ? '；几个清洁镜头换不同区域、不同机位和走向，不要拍成一样' : ''}）` : `卖点「${shot.title}」`}${shot.caption ? `｜默认字幕：${shot.caption}` : ''}${plan.realScene ? `｜动作模板：${fnTemplate(shot)}` : pointHint(shot) ? `｜常见拍法：${pointHint(shot)}` : ''}`).join('\n');
   const system = `${promptRef("video.realshoot.director.p1")}${photos}${promptRef("video.realshoot.director.p2")}${photos + 1}${promptRef("video.realshoot.director.p3")}${plan.venuePhoto ? promptRef("video.realshoot.venue_photo") : ''}${plan.realScene ? promptRef("video.realshoot.v4.director.p4") : promptRef("video.realshoot.director.p4", plan.storyboard ? 2 : 1)}${place}${plan.realScene ? promptRef("video.realshoot.v4.director.p5") : promptRef("video.realshoot.director.p5", plan.storyboard ? 2 : 1)}`;
   const user = [`产品名称：${plan.productName}`, `使用场所：${scene ? `${scene.name}（${scene.description}）` : `${plan.scene}（客户自己写的）`}`, facts ? `客户资料：${clean(facts, FACT_LIMIT)}` : '',
     crew ? `${promptRef("video.realshoot.crew_report.p1")}${crew}` : '',
@@ -232,12 +238,17 @@ function parseDirection(content, plan) {
     const cameras = camerasOf(plan);
     const camera = Object.hasOwn(cameras, String(row.camera)) ? row.camera : '', action = reword(clip(row.action, ACTION_LENGTH)), proof = reword(clip(row.proof, 60));
     const unshowable = clip(row.unshowable, 60), setup = plan.realScene ? reword(clip(row.setup, 60)) : '';
+    const start = plan.realScene ? reword(clip(row.start, 160)) : '', end = plan.realScene ? reword(clip(row.end, 160)) : '', timeline = plan.realScene ? reword(clip(row.timeline, 400)) : '';
+    if (plan.realScene && start.length < 10) problems.push(`第${i + 1}镜缺少 start（开始画面）`);
+    if (plan.realScene && end.length < 10) problems.push(`第${i + 1}镜缺少 end（结束画面）`);
+    if (plan.realScene && timeline.length < 20) problems.push(`第${i + 1}镜缺少 timeline（按秒的动作分解）`);
+    if (!wet && LIQUID.test(`${start}${end}${timeline}`)) problems.push(`第${i + 1}镜的开始、结束画面或动作分解里写了和水有关的词`);
     if (!camera) problems.push(`第${i + 1}镜 camera 只能是 ${Object.keys(cameras).join('、')}`);
     if (action.length < 6) problems.push(`第${i + 1}镜缺少 action（这一镜机器做什么动作）`);
     if (!slot.filler && slot.pointId !== 'clean' && proof.length < 6) problems.push(`第${i + 1}镜卖点「${slot.title}」缺少 proof：画面里看到什么就能证明它`);
     if (!wet && LIQUID.test(action)) problems.push(`第${i + 1}镜 action 里写了「${action.match(LIQUID)[0]}」，不要写和水有关的词`);
     if (!wet && LIQUID.test(setup)) problems.push(`第${i + 1}镜 setup 里写了「${setup.match(LIQUID)[0]}」，不要写和水有关的词`);
-    return { title, caption, venue: row.venue !== false, prompt, camera, action, proof, unshowable, ...(plan.realScene ? { setup } : {}) };
+    return { title, caption, venue: row.venue !== false, prompt, camera, action, proof, unshowable, ...(plan.realScene ? { setup, start, end, timeline } : {}) };
   });
   if (!wet && LIQUID.test(plate)) problems.push(`plate 里写了「${plate.match(LIQUID)[0]}」`);
   for (const [field, text] of [['plate', plate], ['dirt', String(value.dirt || '')]]) if (oilyWord(text)) problems.push(`${field} 里写了「${oilyWord(text)}」，油污要写成渗进地面的发暗旧油斑`);
@@ -253,7 +264,7 @@ function parseDirection(content, plan) {
 function cameraLine(shot, plan) { const cameras = camerasOf(plan); return Object.hasOwn(cameras, String(shot.camera)) ? `机位：${cameras[shot.camera].name}。${cameras[shot.camera].prompt()}` : ''; }
 // real-4 video prompt: the keyframe, one physical action, the rules of a rigid machine and a phone in a hand. Nothing else.
 function realScenePrompt(direction, shot) {
-  return [promptRef("video.realshoot.first_frame"), `${cameraLine(shot, direction)}动作：${shot.action}。${shot.setup ? `现场：${shot.setup}。` : ''}`,
+  return [promptRef("video.realshoot.v4.first_last"), `${cameraLine(shot, direction)}动作：${shot.action}。${shot.timeline ? `动作分解：${shot.timeline}` : ''}${shot.setup ? `现场：${shot.setup}。` : ''}`,
     promptRef("video.realshoot.v4.motion"), promptRef("video.realshoot.v4.real_look"),
     `${shot.seconds}${promptRef("video.realshoot.v4.tail")}${PEOPLE[direction.operator] || ''}${!direction.wet ? '地面上不凭空出现任何液体或水痕。' : ''}`,
     promptRef("video.realshoot.v4.negative")].join('\n');
@@ -267,15 +278,20 @@ ${NEG}`;
 }
 // The keyframe: drawn from the product photos, the 定妆照 and (venue shots) the scene picture, showing the start of
 // the shot from its camera with the dirt and whatever proves the selling point.
-function keyframePrompt(plan, shot) {
+function keyframePrompt(plan, shot, end = false) {
   const n = plan.productImages;
+  if (plan.realScene && end) {
+    // The end picture continues the start picture (same phone, same place) and shows every side the turn reveals, from the photos.
+    const photos = Array.from({ length: n }, (_, i) => `图${i + 2}`).join('、');
+    return `${promptRef("video.realshoot.v4.keyframe.end")}${shot.end || `动作「${shot.action}」刚做完时的样子`}。${photos}是这台机器${n > 1 ? '不同角度' : ''}的真实产品照片，图${n + 2}是它的四视角定妆图：机器转身后露出的每一面都照它们画，不编造。这台机器：${plan.machine || plan.productName}。${shot.setup ? `道具：${shot.setup}，道具留在开始画面里的原位不动。` : ''}${promptRef("video.realshoot.v4.keyframe.p2")}`;
+  }
   if (plan.realScene) {
     // The place photo comes first (it is the picture being continued); then the product photos and the 定妆照.
     const base = shot.place === 'venue', offset = base ? 1 : 0;
     const photos = Array.from({ length: n }, (_, i) => `图${i + 1 + offset}`).join('、');
     const refs = `${photos}是这台机器${n > 1 ? '不同角度' : ''}的真实产品照片，图${n + 1 + offset}是它的四视角定妆图。`;
     const dirt = plan.dirt ? `地上平常的脏污：${plan.dirt}。` : '';
-    return `${promptRef(base ? "video.realshoot.v4.keyframe.p1" : "video.realshoot.v4.keyframe.alone")}${refs}这台机器：${plan.machine || plan.productName}。${cameraLine(shot, plan)}这一镜的动作马上开始：${shot.action}。${shot.setup ? `本镜需要的道具和环境：${shot.setup}。` : ''}${base ? '' : dirt}${promptRef("video.realshoot.v4.keyframe.p2")}`;
+    return `${promptRef(base ? "video.realshoot.v4.keyframe.p1" : "video.realshoot.v4.keyframe.alone")}${refs}这台机器：${plan.machine || plan.productName}。${cameraLine(shot, plan)}${shot.start ? `开始画面：${shot.start}。` : ''}这一镜的动作马上开始：${shot.action}。${shot.setup ? `本镜需要的道具和环境：${shot.setup}。` : ''}${base ? '' : dirt}${promptRef("video.realshoot.v4.keyframe.p2")}`;
   }
   const photos = n > 1 ? `${Array.from({ length: n }, (_, i) => `图${i + 1}`).join('、')}是这台机器不同角度的真实产品照片` : '图1是这台机器的真实产品照片';
   const refs = `参考图：${photos}，图${n + 1}是它的四视角定妆图${shot.place === 'venue' ? `，图${n + 2}是拍摄现场（陈设、地面和光线照它）` : ''}。`;
@@ -297,7 +313,8 @@ function editShot(plan, index, change) {
   if (!plan.wet && LIQUID.test(action)) throw fail('product_video_invalid_input', `动作里不要写「${action.match(LIQUID)[0]}」，视频会凭空画出脏水；写看得见的结果，比如“地面变亮”。`);
   const redraw = action !== shot.action || camera !== shot.camera;
   // A redraw the customer asked for answers the "may not show" note; it is not shown again on the new picture.
-  const next = { ...shot, action, camera, caption, edited: shot.edited || redraw, ...(redraw ? { unshowable: '' } : {}) };
+  const next = { ...shot, action, camera, caption, edited: shot.edited || redraw, ...(redraw ? { unshowable: '' } : {}),
+    ...(plan.realScene && action !== shot.action ? { start: '', end: '', timeline: action } : {}) };
   next.prompt = storyboardPrompt({ operator: plan.operator, wet: plan.wet, realScene: plan.realScene }, next);
   if (promptLength(next.prompt) > PROMPT_LIMIT) throw fail('product_video_invalid_input', '动作写得太长了，请精简。');
   return { plan: { ...plan, shots: plan.shots.map((row, i) => i === index ? next : row) }, redraw };
@@ -324,7 +341,7 @@ function applyDirection(plan, direction) {
     const decided = direction.shots[i];
     const shot = { ...slot, title: decided.title, caption: decided.caption, place: decided.venue ? 'venue' : 'other',
       ...(plan.storyboard ? { camera: decided.camera, action: decided.action, proof: decided.proof, unshowable: decided.unshowable, directorPrompt: decided.prompt, edited: false,
-        ...(plan.realScene ? { setup: decided.setup || '' } : {}) } : {}) };
+        ...(plan.realScene ? { setup: decided.setup || '', start: decided.start || '', end: decided.end || '', timeline: decided.timeline || '' } : {}) } : {}) };
     shot.prompt = shotPrompt(plan, direction, plan.storyboard ? shot : decided && { ...decided, seconds: slot.seconds });
     if (promptLength(shot.prompt) > PROMPT_LIMIT) throw fail('product_video_direction_invalid', `第${i + 1}镜提示词太长`);
     return shot;
