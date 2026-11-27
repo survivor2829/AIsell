@@ -653,6 +653,7 @@ async function run() {
     await service.confirmScene(r4.id);
     r4Task = await until(r4.id, (t) => t.status === 'awaiting_storyboard');
     await assert.rejects(service.confirmScene(r4.id), (e) => e.code === 'product_video_scene_unavailable');
+    assert.ok(r4Task.progress >= 40 && r4Task.progress < 60, `the pictures before filming count (was 10% at the storyboard): ${r4Task.progress}`);
     const r4Keys = r4Posts().filter((p) => p.route.includes('/images/generations') && /视频的第一帧/u.test(p.body.prompt));
     assert.equal(r4Keys.length, r4Task.plan.shots.length);
     const venueKeys = r4Keys.filter((p) => /^图1是一张真实的现场手机照片/u.test(p.body.prompt));
