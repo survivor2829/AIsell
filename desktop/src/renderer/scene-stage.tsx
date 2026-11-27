@@ -5,7 +5,7 @@ import type { StageAgent, StageCard, StageLog, StageModel, StageState } from "./
 // 步骤顺序与主进程 advanceReal 一致：定妆照 → 等客户确认 → 导演写分镜 → 画场地 → 风险审查 → 并行拍镜头 → AI 检查 → 拼接加字幕。
 export type SceneStageTask = {
   status: string; resumeStatus?: string; error?: string; failedShotIndex?: number | null; currentShot?: number;
-  sheetStep?: boolean; sheetConfirmed?: boolean; directorStep?: boolean; directed?: boolean;
+  sheetStep?: boolean; sheetConfirmed?: boolean; sceneStep?: boolean; sceneConfirmed?: boolean; directorStep?: boolean; directed?: boolean;
   imagesReady?: Record<string, boolean>; shotsReady?: boolean[]; shotsRunning?: boolean[];
   review?: { skipped?: boolean; shots: { ok: boolean; redone?: boolean }[] } | null;
   crew?: { sides: string[]; survey: { widthM: number | null; canTurn: boolean } | null; risks: { index: number }[]; rewritten: boolean; fallback?: number[] } | null;
@@ -27,6 +27,8 @@ function phaseOf(task: SceneStageTask, status: string) {
     if (task.directorStep && !task.directed) return PHASE.direct;
     return plateNeeded && !task.imagesReady?.plate ? PHASE.plate : PHASE.preflight;
   }
+  // real-4: the customer looks at the drawn place before the risk review and the keyframes.
+  if (status === "awaiting_scene") return PHASE.plate;
   // real-3: the keyframes and the customer's look at them come right before filming.
   if (status === "drawing_frames" || status === "awaiting_storyboard") return PHASE.preflight;
   if (status === "submitting" || status === "generating") return PHASE.shoot;
@@ -74,7 +76,8 @@ export function sceneStageModel(task: SceneStageTask): StageModel {
     // pre-shoot check still runs on it, so the card is always there to show that step.
     { id: "board", label: "分镜", icon: <Sparkles size={18} />, state: phase === PHASE.preflight ? at(PHASE.preflight) : task.directorStep ? at(PHASE.direct) : at(PHASE.upload),
       detail: phase > PHASE.direct ? `${shots.length} 个镜头` : undefined },
-    ...(plateNeeded ? [{ id: "plate", label: "拍摄场地", icon: <MapPin size={18} />, state: at(PHASE.plate) }] : []),
+    ...(plateNeeded ? [{ id: "plate", label: "拍摄场地", icon: <MapPin size={18} />, state: (task.status === "awaiting_scene" ? "user" : at(PHASE.plate)) as StageState,
+      detail: task.status === "awaiting_scene" ? "等你确认" : undefined }] : []),
     ...shots.map((shot, index) => ({ id: `shot-${index}`, label: `镜头 ${index + 1}`, icon: <Clapperboard size={18} />, state: shotState(index), detail: shot.title })),
     ...(task.directorStep ? [{ id: "review", label: "AI 检查", icon: <ScanEye size={18} />, state: at(PHASE.review),
       detail: task.review && !task.review.skipped ? (flagged ? `${flagged} 个镜头要看` : "都没问题") : undefined }] : []),

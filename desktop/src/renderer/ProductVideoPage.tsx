@@ -8,7 +8,7 @@ import { SceneIcon } from "./SceneIcons";
 import { formatWan } from "./BillingBadge";
 // 剧情版 (有人剧情) was removed for new videos (user 2026-11-27: 场景效果视频只做无人实拍); its progress view stays for older ones.
 import { SheetConfirm, StoryVideoProgress, storyProgress, type StoryTask } from "./StoryVideoProgress";
-import { Countdown, CrewCard, MAX_PHOTOS, ProductPhotos, RealShootFields, RealShootProgress, ShotReviewPanel, StoryboardConfirm, initialReal, minutes, realEstimate, type Crew, type ProductImage, type RealCatalog, type RealDraft, realSceneReady, type ShotReview, type Storyboard, type StoryboardShot, type Timing } from "./RealShootForm";
+import { Countdown, CrewCard, MAX_PHOTOS, ProductPhotos, RealShootFields, RealShootProgress, ShotReviewPanel, SceneConfirm, StoryboardConfirm, initialReal, minutes, realEstimate, type Crew, type ProductImage, type RealCatalog, type RealDraft, realSceneReady, type ShotReview, type Storyboard, type StoryboardShot, type Timing } from "./RealShootForm";
 
 type Choice = { id: string; name: string };
 type Quote = { ready?: boolean; estimatedCny?: number | null; maximumCny?: number; actualCny?: number; pendingCny?: number; reservedCny?: number; budgetCny?: number; note?: string; message?: string; checkedAt?: string };
@@ -20,7 +20,7 @@ type Plan = {
 type VideoTask = {
   id: string; mode: "product" | "social"; status: string; statusLabel: string; createdAt: string;
   durationSeconds: number; sceneIds?: string[]; productName?: string; facts: string; imageId: string; plan: Plan; currentShot: number;
-  completedShots: number; shotsReady?: boolean[]; shotsRunning?: boolean[]; storyPipeline?: boolean; realPipeline?: boolean; progress?: number; etaSeconds?: number | null; estimatedFinishAt?: string | null; imagesReady?: Record<string, boolean>; imageTotal?: number; sheetRedos?: number; sheetStep?: boolean; sheetConfirmed?: boolean; directorStep?: boolean; directed?: boolean; review?: ShotReview | null; canRedoShot?: boolean; redoNote?: string;
+  completedShots: number; shotsReady?: boolean[]; shotsRunning?: boolean[]; storyPipeline?: boolean; realPipeline?: boolean; progress?: number; etaSeconds?: number | null; estimatedFinishAt?: string | null; imagesReady?: Record<string, boolean>; imageTotal?: number; sheetRedos?: number; sheetStep?: boolean; sheetConfirmed?: boolean; sceneStep?: boolean; sceneRedosLeft?: number; sceneConfirmed?: boolean; directorStep?: boolean; directed?: boolean; review?: ShotReview | null; canRedoShot?: boolean; redoNote?: string;
   story?: StoryTask["story"]; crew?: Crew | null; storyboard?: Storyboard; error: string; resumeStatus?: string; failedShotIndex?: number | null; retryLabel?: string; canRetry: boolean; canExport: boolean; canExportSource?: boolean; canPreview: boolean; canRefresh?: boolean; quote?: Quote;
 };
 type Result<T> = { ok: boolean; data?: T; error?: string; code?: string; task?: VideoTask };
@@ -35,7 +35,7 @@ type VideoApi = {
   refresh(id: string): Promise<Result<VideoTask>>; media(id: string): Promise<Result<{ dataUrl: string }>>;
   shotMedia(id: string, index: number): Promise<Result<{ dataUrl: string }>>;
   imageMedia(id: string, key: string): Promise<Result<{ dataUrl: string }>>;
-  confirmSheet(id: string): Promise<Result<VideoTask>>; redoSheet(id: string): Promise<Result<VideoTask>>; redoShot?(id: string, index: number): Promise<Result<VideoTask>>;
+  confirmSheet(id: string): Promise<Result<VideoTask>>; redoSheet(id: string): Promise<Result<VideoTask>>; confirmScene?(id: string): Promise<Result<VideoTask>>; redoScene?(id: string): Promise<Result<VideoTask>>; redoShot?(id: string, index: number): Promise<Result<VideoTask>>;
   updateShot(id: string, index: number, change: { action?: string; camera?: string; caption?: string }): Promise<Result<VideoTask>>; confirmStoryboard(id: string): Promise<Result<VideoTask>>;
   export(id: string): Promise<Result<{ path: string; subtitlePath?: string; sendText: string } | null>>;
   exportSource(id: string): Promise<Result<{ path: string } | null>>;
@@ -147,7 +147,7 @@ export function ProductVideoPage() {
   const realReady = Boolean(draft.productName.trim() && realSceneReady(realDraft));
   const canGenerate = Boolean(draft.imageId && !busy && !running && realReady);
   const estimate = realEstimate(capability?.timing, capability?.catalog, draft.durationSeconds, realDraft);
-  const waiting = selected && ["awaiting_sheet", "awaiting_storyboard"].includes(selected.status);
+  const waiting = selected && ["awaiting_sheet", "awaiting_scene", "awaiting_storyboard"].includes(selected.status);
   const boardStep = Boolean(selected?.storyboard && ["drawing_frames", "awaiting_storyboard"].includes(selected.status));
   const addImage = (extra: boolean) => api && void perform("image", () => unwrap(api.importImage()), item => {
     if (!item) return;
@@ -172,7 +172,7 @@ export function ProductVideoPage() {
           </div>
           <div className="pv2-fields">
             <label><h2>产品叫什么？</h2><input maxLength={80} value={draft.productName} onChange={event => setDraft({ ...draft, productName: event.target.value })} placeholder="例如：CC1 Pro 洗地机器人" /></label>
-            <p className="pv2-note">不用写提示词：AI 导演看你的产品图安排每个镜头，先画分镜给你看，可以改动作和机位，确认了才拍视频。</p>
+            <p className="pv2-note">不用写提示词：AI 导演看你的产品图安排每个镜头，先给你看拍摄现场和分镜，可以改动作和机位，确认了才拍视频。</p>
           </div>
         </div>
         {capability?.catalog ? <RealShootFields catalog={capability.catalog} draft={realDraft} durationSeconds={draft.durationSeconds} disabled={!!busy || running}
@@ -212,13 +212,17 @@ export function ProductVideoPage() {
               onSave={(index, change) => api && void perform("update-shot", () => unwrap(api.updateShot(selected.id, index, change)), updateTask)}
               onConfirm={() => api && void perform("confirm-storyboard", () => unwrap(api.confirmStoryboard(selected.id)), updateTask)} />
           : selected.realPipeline && !STUCK.has(selected.status) && selected.status !== "draft" ? <>
-            <div className="pv2-progress"><Ring value={progressOf(selected)} lines={[selected.status === "awaiting_sheet" ? "等你确认" : selected.statusLabel, `${selected.durationSeconds} 秒 · ${shots.length} 个镜头`]} />
-              {selected.status !== "awaiting_sheet" && <div className="rs-side-info"><Countdown finishAt={selected.estimatedFinishAt} /><p className="pv2-note">几个镜头同时在拍，拍好一个就显示一个。可以先去做别的，做好了桌宠会告诉你。</p></div>}</div>
+            <div className="pv2-progress"><Ring value={progressOf(selected)} lines={[["awaiting_sheet", "awaiting_scene"].includes(selected.status) ? "等你确认" : selected.statusLabel, `${selected.durationSeconds} 秒 · ${shots.length} 个镜头`]} />
+              {!["awaiting_sheet", "awaiting_scene"].includes(selected.status) && <div className="rs-side-info"><Countdown finishAt={selected.estimatedFinishAt} /><p className="pv2-note">几个镜头同时在拍，拍好一个就显示一个。可以先去做别的，做好了桌宠会告诉你。</p></div>}</div>
             {selected.status === "awaiting_sheet" && <CrewCard crew={selected.crew} atSheet />}
             {selected.status === "awaiting_sheet"
               ? <SheetConfirm taskId={selected.id} redos={selected.sheetRedos || 0} busy={!!busy} imageMedia={(id, key) => api ? api.imageMedia(id, key) : Promise.resolve({ ok: false })}
                 onConfirm={() => api && void perform("confirm", () => unwrap(api.confirmSheet(selected.id)), updateTask)}
                 onRedo={() => api && void perform("redo", () => unwrap(api.redoSheet(selected.id)), updateTask)} />
+              : selected.status === "awaiting_scene"
+              ? <SceneConfirm taskId={selected.id} redosLeft={selected.sceneRedosLeft ?? 0} busy={!!busy} imageMedia={(id, key) => api ? api.imageMedia(id, key) : Promise.resolve({ ok: false })}
+                onConfirm={() => api?.confirmScene && void perform("confirm-scene", () => unwrap(api.confirmScene!(selected.id)), updateTask)}
+                onRedo={() => api?.redoScene && void perform("redo-scene", () => unwrap(api.redoScene!(selected.id)), updateTask)} />
               : <RealShootProgress task={selected} shotVideos={shotVideos} />}
           </> : selected.storyPipeline && !STUCK.has(selected.status) && selected.status !== "draft" ? <>
             <div className="pv2-progress"><Ring value={progressOf(selected)} lines={[selected.status === "awaiting_sheet" ? "等你确认" : selected.statusLabel, `${selected.durationSeconds} 秒 · ${shots.length} 段`]} />
@@ -253,7 +257,7 @@ export function ProductVideoPage() {
         </> : <div className="pv2-empty">
           <div className="pv2-canvas">{image ? <img src={image.previewDataUrl} alt="已选择的产品图" /> : <ImagePlus size={70} strokeWidth={1.2} />}</div>
           <ol className="pv2-journey"><li><span><ImagePlus size={26} /></span>放产品图</li><li><span><SceneIcon id="market" size={34} /></span>点选场景卖点</li><li><span><Play size={26} /></span>看分镜再拍</li></ol>
-          <p className="pv2-note">不用拉设备、不用布置现场：放产品图，填名称，选场所和卖点。AI 先画四个角度给你确认，再给每个卖点画一张分镜，你看过、可以改动作和机位，确认后才拍视频，每个卖点一个镜头，配一行字幕。</p>
+          <p className="pv2-note">不用拉设备、不用布置现场：放产品图，填名称，选场所和卖点。AI 先画四个角度给你确认，再给你看拍摄现场（也可以传你自己拍的现场照），然后把机器放进现场、给每个卖点画一张分镜，你看过、可以改动作和机位，确认后才拍视频，每个卖点一个镜头，配一行字幕。</p>
         </div>}
         {history.length > 0 && <div className="pv2-history"><h3>做过的</h3><div>{history.slice(0, 9).map(task => <button type="button" key={task.id} onClick={() => selectTask(task)} className={`is-${task.status === "completed" ? "done" : STUCK.has(task.status) ? "stuck" : "other"}`}>
           <span className="pv2-history-icon">{task.status === "completed" ? <Play size={18} /> : STUCK.has(task.status) ? <AlertTriangle size={18} /> : <LoaderCircle size={18} />}</span>

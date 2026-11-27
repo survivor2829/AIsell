@@ -263,7 +263,8 @@ function quotePlan(plan, prices, budgetCny) {
     const pictures = plan.imageCount + (plan.keyframes || 0);
     const imageReserveCny = pictures * round(prices.imageUsd * prices.fxCnyPerUsd), imageEstimateCny = pictures * prices.estimatedImageUsd * prices.fxCnyPerUsd;
     // One failed shot may be redone, and one failed picture; with a 定妆照, both redos the page offers too.
-    const retryReserveCny = round(((plan.sheet ? 3 : 1) + KEYFRAME_REDRAWS * (plan.keyframes || 0)) * round(prices.imageUsd * prices.fxCnyPerUsd) + Math.max(0, ...plan.shots.map((shot) => shot.seconds)) * prices.videoCnyPerSecond);
+    // Redraws the customer may ask for: the 定妆照 twice, each keyframe twice, a drawn place twice (real-4).
+    const retryReserveCny = round(((plan.sheet ? 3 : 1) + KEYFRAME_REDRAWS * (plan.keyframes || 0) + (plan.sceneStep ? 2 : 0)) * round(prices.imageUsd * prices.fxCnyPerUsd) + Math.max(0, ...plan.shots.map((shot) => shot.seconds)) * prices.videoCnyPerSecond);
     // AI 导演: up to three looks at the photos to write the shots, and one look at the finished shots.
     // real-3: a second check after the automatic redo of a shot with something extra in it.
     const directorCny = plan.director === 'ai' ? round(((plan.storyboard ? 5 : 4) + crewReserveCalls(plan)) * DIRECTOR_RESERVE_CNY) : 0;

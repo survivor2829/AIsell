@@ -65,7 +65,7 @@ function finishLeft(task, r, now, extra = 0) {
 
 // Seconds left for a running task, or null when none can be given (waiting for the customer, stopped, old kinds).
 function estimateTask(task, timings, { now = Date.now(), shotSlots = 3, imageSlots = 4 } = {}) {
-  if (!task?.plan || ['draft', 'completed', 'needs_attention', 'outcome_unknown', 'awaiting_sheet', 'awaiting_storyboard'].includes(task.status)) return null;
+  if (!task?.plan || ['draft', 'completed', 'needs_attention', 'outcome_unknown', 'awaiting_sheet', 'awaiting_scene', 'awaiting_storyboard'].includes(task.status)) return null;
   const r = rates(timings || {});
   if (task.plan.pipelineVersion === 6) {
     const venue = task.plan.shots.some((shot) => shot.place === 'venue');

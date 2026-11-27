@@ -27,7 +27,7 @@ const { upscaleTo1080Size } = require('./video-upscale.cjs');
 const TASK_ID = /^pv_[a-f0-9-]{36}$/u, IMAGE_ID = /^pva_[a-f0-9-]{36}$/u;
 const RUNNING = new Set(['imaging', 'directing', 'drawing_frames', 'writing_story', 'composing', 'uploading', 'preparing_frames', 'frame_generating', 'locking_frames', 'preparing_audio', 'submitting', 'generating', 'assembling', 'enhancing', 'transcribing', 'packaging']);
 const LABELS = { draft: '方案已保存', uploading: '上传产品图', preparing_frames: '准备场景首帧', frame_generating: '生成场景首帧', locking_frames: '锁定全部场景首帧', preparing_audio: '准备整片声音', submitting: '提交镜头', generating: '生成镜头', assembling: '合成画面与整片声音', enhancing: '本地放大画面', transcribing: '识别实际对白', packaging: '渲染大字字幕', completed: '成片已就绪', needs_attention: '需要处理', outcome_unknown: '请求待核对',
-  awaiting_sheet: '请确认定妆照', drawing_frames: '画分镜图', awaiting_storyboard: '请确认分镜', writing_story: 'AI 正在写故事', directing: 'AI 导演在看图写分镜', composing: '拼分镜' };
+  awaiting_sheet: '请确认定妆照', awaiting_scene: '请确认场景', drawing_frames: '画分镜图', awaiting_storyboard: '请确认分镜', writing_story: 'AI 正在写故事', directing: 'AI 导演在看图写分镜', composing: '拼分镜' };
 // 剧情版 image steps, in the order they are made after the 定妆照 is confirmed.
 const storyImageKeys = (segments) => ['scene', 'floor', 'person_a', 'person_b',
   ...Array.from({ length: segments }, (_, s) => Array.from({ length: story.SHOTS_PER_SEGMENT }, (_, k) => `frame_${s}_${k}`)).flat()];
@@ -133,12 +133,13 @@ function createProductVideoService(options = {}) {
       shotsRunning: task.shots.map((shot) => Boolean(shot.providerTaskId && !shot.file)),
       progress: progressOf(task), etaSeconds: eta, estimatedFinishAt: eta === null ? null : new Date(Date.now() + eta * 1000).toISOString(),
       ...(task.plan.pipelineVersion === 6 ? { realPipeline: true, crew: publicCrew(task), sheetStep: Boolean(task.plan.sheet), sheetRedos: task.sheetRedos || 0, sheetConfirmed: Boolean(task.sheetConfirmedAt),
+        ...(task.plan.sceneStep ? { sceneStep: true, sceneRedosLeft: aiDirector.SCENE_REDRAWS - (task.sceneRedos || 0), sceneConfirmed: Boolean(task.sceneConfirmedAt) } : {}),
         ...(task.plan.director === 'ai' ? { directorStep: true, directed: Boolean(task.plan.directed), review: task.review || null, redoNote: task.redoNote || '',
           canRedoShot: task.status === 'completed' && (task.videoRetryCount || 0) < 1 && redoAffordable(task) } : {}),
         imagesReady: { sheet: Boolean(task.images?.sheet?.file), plate: Boolean(task.images?.plate?.file || !realPlateNeeded(task)),
           ...Object.fromEntries(keyframeKeys(task).map((key) => [key, Boolean(task.images?.[key]?.file)])) },
         ...(task.plan.storyboard ? { storyboard: { confirmed: Boolean(task.storyboardConfirmedAt), redrawsLeft: task.plan.shots.map((_, index) => KEYFRAME_REDRAWS - (task.keyframeRedraws?.[index] || 0)),
-          cameras: Object.entries(aiDirector.CAMERAS).map(([id, row]) => ({ id, name: row.name })), autoRedone: task.autoRedone ? { index: task.autoRedone.index, issue: task.autoRedone.issue } : null } } : {}) } : {}),
+          cameras: Object.entries(aiDirector.camerasOf(task.plan)).map(([id, row]) => ({ id, name: row.name })), autoRedone: task.autoRedone ? { index: task.autoRedone.index, issue: task.autoRedone.issue } : null } } : {}) } : {}),
       preparation: task.plan.pipelineVersion >= 3 ? { referenceMode: task.plan.pipelineVersion === 4 ? 'original_product_image' : 'scene_first_frames',
         inputsLocked: Boolean(task.frameManifest), framesReady: task.shots.filter((shot) => shot.frameFile).length, framesLocked: task.plan.pipelineVersion !== 4 && Boolean(task.frameManifest),
         ruleCheck: task.frameManifest?.ruleCheck || 'pending', visualReview: 'not_performed', audioReady: Boolean(task.audio), music: publicMusic(task.audio?.music) } : undefined,
@@ -492,6 +493,8 @@ function createProductVideoService(options = {}) {
       const shot = task.plan.shots[Number(key.slice(4))];
       if (!shot) throw fail('product_video_plan_invalid', '分镜编号无效。');
       const extra = (task.extraImageIds || []).map((_, index) => `extra_${index}`);
+      // real-4: the place photo leads (the keyframe continues that photo); the product photos and the 定妆照 follow.
+      if (task.plan.realScene) return { prompt: aiDirector.keyframePrompt(task.plan, shot), refs: [...(shot.place === 'venue' ? ['plate'] : []), 'product', ...extra, 'sheet'], size: '9:16' };
       return { prompt: aiDirector.keyframePrompt(task.plan, shot), refs: ['product', ...extra, 'sheet', ...(shot.place === 'venue' ? ['plate'] : [])], size: '9:16' };
     }
     const st = task.story;
@@ -863,6 +866,8 @@ function createProductVideoService(options = {}) {
     if (task.status === 'imaging') {
       if (realPlateNeeded(task) && task.plan.venuePhoto) customerPlate(task);
       if (realPlateNeeded(task) && !await advanceImages(task, ['plate'])) return;
+      // real-4: a drawn place is the background of every shot, so the customer sees it first (accept, or redraw twice).
+      if (task.plan.sceneStep && realPlateNeeded(task) && !task.sceneConfirmedAt) { task.status = 'awaiting_scene'; save(task); return; }
       if (!await preflight(task)) return;
       task.status = task.plan.storyboard ? 'drawing_frames' : 'submitting'; save(task);
     }
@@ -1205,6 +1210,27 @@ function createProductVideoService(options = {}) {
       task.status = 'imaging'; save(task); schedule(id); return publicTask(task);
     });
   }
+  // real-4: the customer accepts the drawn place, or has it drawn again (at most twice, charged like any picture).
+  async function confirmScene(id) {
+    return admitTask(id, async () => {
+      const task = read(id);
+      if (!task.plan.sceneStep || task.status !== 'awaiting_scene' || !task.images?.plate?.file) throw fail('product_video_scene_unavailable', '现在没有待确认的场景。');
+      await verifyQuote(task); hold();
+      task.sceneConfirmedAt = new Date().toISOString(); task.status = 'imaging'; save(task); schedule(id); return publicTask(task);
+    });
+  }
+  async function redoScene(id) {
+    return admitTask(id, async () => {
+      const task = read(id);
+      if (!task.plan.sceneStep || task.status !== 'awaiting_scene') throw fail('product_video_scene_unavailable', '现在没有待确认的场景。');
+      if ((task.sceneRedos || 0) >= aiDirector.SCENE_REDRAWS) throw fail('product_video_scene_retry_limit', `场景已经重新生成过${aiDirector.SCENE_REDRAWS}次，可以直接用这张，或者上传一张你自己拍的现场照片再新建。`);
+      hold();
+      if (task.operations.img_plate) { (task.archivedOperations ||= []).push(task.operations.img_plate); delete task.operations.img_plate; }
+      delete task.images.plate; task.sceneRedos = (task.sceneRedos || 0) + 1;
+      await verifyQuote(task); hold();
+      task.status = 'imaging'; save(task); schedule(id); return publicTask(task);
+    });
+  }
   // real-3 storyboard: the customer changes one shot (action, camera, caption). A new action or camera redraws
   // that keyframe (at most twice per shot, charged like any picture); a caption alone changes nothing paid.
   async function updateShot(id, index, change) {
@@ -1293,6 +1319,6 @@ function createProductVideoService(options = {}) {
   }
   async function close() { closed = true; prepareForUpdate(); await Promise.allSettled([...active.values()]); }
   queueMicrotask(resumeAfterUpdate);
-  return { capabilities, importImage, importFacts, create, list, get: (id) => publicTask(read(id)), start, retryShot, refresh, media: preview, shotMedia: shotPreview, confirmSheet, redoSheet, redoShot, updateShot, confirmStoryboard, imageMedia: storyImageMedia, exportVideo, exportSource: (id, destination) => exportVideo(id, destination, true), isBusy, prepareForUpdate, resumeAfterUpdate, close };
+  return { capabilities, importImage, importFacts, create, list, get: (id) => publicTask(read(id)), start, retryShot, refresh, media: preview, shotMedia: shotPreview, confirmSheet, redoSheet, confirmScene, redoScene, redoShot, updateShot, confirmStoryboard, imageMedia: storyImageMedia, exportVideo, exportSource: (id, destination) => exportVideo(id, destination, true), isBusy, prepareForUpdate, resumeAfterUpdate, close };
 }
 module.exports = { createProductVideoService };

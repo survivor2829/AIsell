@@ -122,7 +122,9 @@ const base = { mode: 'product', durationSeconds: 30, deviceId: 'robot_scrubber',
 // list is fixed up front so the price holds, and the director's answer is checked before anything is paid for.
 const aiBase = { mode: 'product', durationSeconds: 30, productName: 'DZ95X 洗地机器人', sceneIds: ['factory'] };
 // These cases check the real-2 flow that videos started before real-3 still run (no storyboard); real-3 is tested below.
-const legacyPlan = ({ storyboard, keyframes, ...plan }) => plan;
+const legacyPlan = ({ storyboard, keyframes, realScene, sceneStep, ...plan }) => plan;
+// real-3 cases (storyboard, no shared place photo): plans made before real-4.
+const real3Plan = ({ realScene, sceneStep, ...plan }) => plan;
 const planDirected = (input) => legacyPlan(ai.planDirected(input));
 const direction = (plan, overrides = {}) => JSON.stringify({ machine: '自主行驶的洗地机器人，底部滚刷和后部刮条', operator: 'none', wet: false, floor: '旧环氧地坪', dirt: '油污和铁屑',
   plate: '工厂仓储通道，两侧货架和周转箱，环氧地坪上有油污和铁屑，顶灯偏冷', shots: plan.shots.map((shot, i) => ({ title: shot.title, caption: shot.caption || `自己会干活${i + 1}`, venue: shot.pointId !== 'lift',
@@ -203,7 +205,7 @@ const direction = (plan, overrides = {}) => JSON.stringify({ machine: '自主行
     [[true, ''], [false, '第3格出现两台机器'], [true, ''], [true, ''], [true, '']]);
   assert.equal(ai.reviewRequest({ plan: directed, images: ['a', 'b'], sheets: ['c'] }).messages[1].content.length, 4);
   // real-3: every shot needs a camera and an action, every selling point a visible proof; unshowable is passed on.
-  const board = ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['lift'] });
+  const board = real3Plan(ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['lift'] }));
   const bare = JSON.parse(direction(board)); bare.shots.forEach((shot) => { delete shot.camera; delete shot.proof; });
   assert.throws(() => ai.parseDirection(JSON.stringify(bare), board), (e) => /camera 只能是/u.test(e.message) && /卖点「自己乘电梯」缺少 proof/u.test(e.message));
   const honest = JSON.parse(direction(board)); honest.shots[board.shots.findIndex((shot) => shot.pointId === 'lift')].unshowable = '画不出电梯里面';
@@ -324,6 +326,11 @@ async function run() {
   const legacyCreate = async (input) => {
     const created = await service.create(input), file = path.join(root, created.id, 'task.json');
     const saved = JSON.parse(fs.readFileSync(file, 'utf8')); saved.plan = legacyPlan(saved.plan); fs.writeFileSync(file, JSON.stringify(saved));
+    return service.get(created.id);
+  };
+  const real3Create = async (input) => {
+    const created = await service.create(input), file = path.join(root, created.id, 'task.json');
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8')); saved.plan = real3Plan(saved.plan); fs.writeFileSync(file, JSON.stringify(saved));
     return service.get(created.id);
   };
   try {
@@ -528,7 +535,7 @@ async function run() {
     // customer checks and may change before any video; the video starts from it; a shot with something extra in it
     // is made again once by itself.
     const sbBefore = posts.length;
-    const sb = await service.create({ mode: 'product', style: 'real', durationSeconds: 15, productName: 'DZ95X 洗地机器人', sceneIds: ['factory'], imageId: front.id, pointIds: ['lift'], customPoints: ['洗拖一体'] });
+    const sb = await real3Create({ mode: 'product', style: 'real', durationSeconds: 15, productName: 'DZ95X 洗地机器人', sceneIds: ['factory'], imageId: front.id, pointIds: ['lift'], customPoints: ['洗拖一体'] });
     assert.equal(sb.plan.storyboard, true); assert.equal(sb.plan.keyframes, sb.plan.shots.length);
     assert.ok(sb.quote.maximumCny > quotePlan(legacyPlan(sb.plan), prices(), 0).maximumCny, 'keyframes and their redraws are in the quote');
     riskCalls = 0; await service.start(sb.id);
@@ -574,7 +581,7 @@ async function run() {
     await assert.rejects(service.confirmStoryboard(sb.id), (e) => e.code === 'product_video_storyboard_unavailable');
     // Review of #372: a failed automatic redo puts the first take back and the video still finishes; a camera
     // named after a built-in object property is refused; nothing counts down while the storyboard waits.
-    const sb2 = await service.create({ mode: 'product', style: 'real', durationSeconds: 15, productName: 'DZ95X 洗地机器人', sceneIds: ['factory'], imageId: front.id, pointIds: ['lift'] });
+    const sb2 = await real3Create({ mode: 'product', style: 'real', durationSeconds: 15, productName: 'DZ95X 洗地机器人', sceneIds: ['factory'], imageId: front.id, pointIds: ['lift'] });
     riskCalls = 0; await service.start(sb2.id);
     await until(sb2.id, (t) => t.status === 'awaiting_sheet'); await service.confirmSheet(sb2.id);
     const waitingBoard = await until(sb2.id, (t) => t.status === 'awaiting_storyboard');
@@ -586,7 +593,8 @@ async function run() {
     assert.match(kept2.redoNote, /自动重拍没有成功[\s\S]*用的是第一次拍的/u); assert.equal(kept2.canExport, true);
     // The safe shot of a still-risky storyboard shot is drawn from the safe move, not the risky action.
     const safeCrew = { inventory: { sides: ['front'] }, risks: [{ index: 0, ok: false }] };
-    const boardPlan = ai.applyDirection(ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['lift'] }), ai.parseDirection(direction(ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['lift'] })), ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['lift'] })));
+    const p3 = () => real3Plan(ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['lift'] }));
+    const boardPlan = ai.applyDirection(p3(), ai.parseDirection(direction(p3()), p3()));
     const safeShot = require('./real-shoot-crew.cjs').applySafeShots(boardPlan, safeCrew).plan.shots[0];
     assert.equal(safeShot.camera, 'top'); assert.match(safeShot.action, /直线匀速/u); assert.match(ai.keyframePrompt(boardPlan, safeShot), /动作：沿一条直线匀速向前清洁/u);
     // Trial 2026-11-27: a selling-point shot that became the safe pass says so on its card; the plain cleaning shot does not;
@@ -597,10 +605,53 @@ async function run() {
     assert.ok(bothSafe.shots.filter((shot) => shot.filler || shot.pointId === 'clean').every((shot) => shot.unshowable === ''));
     assert.equal(ai.editShot(bothSafe, liftIndex, { camera: 'side' }).plan.shots[liftIndex].unshowable, '');
     // Long director text is cut at a clause, never mid-word.
-    const fresh = ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['lift'] }), wordy = JSON.parse(direction(fresh)); wordy.shots[0].action = '机器从画面左端向右匀速直行，刷盘旋转压地，刮条贴地后拖，经过3处明显油斑，污渍被一遍带走不留痕迹';
+    const fresh = p3(), wordy = JSON.parse(direction(fresh)); wordy.shots[0].action = '机器从画面左端向右匀速直行，刷盘旋转压地，刮条贴地后拖，经过3处明显油斑，污渍被一遍带走不留痕迹';
     wordy.shots[0].proof = '画面右侧清晰可见1.2m宽干净带，与左侧未清洁区形成锐利分界；油斑位置原为深褐暗沉，清洁后变为浅灰本色，划痕仍在但变淡，几乎看不出';
     const clipped = ai.parseDirection(JSON.stringify(wordy), fresh).shots[0];
     assert.equal(clipped.action, '机器从画面左端向右匀速直行，刷盘旋转压地，刮条贴地后拖，经过3处明显油斑');
+    // real-4 (2026-11-27, 用户：一眼假、换个产品还适用吗): one place photo for every shot — a drawn one the customer accepts
+    // or redraws — every keyframe continues that photo, and each video prompt is one physical action filmed like a phone in a hand.
+    const r4Before = posts.length, r4Posts = () => posts.slice(r4Before);
+    const r4 = await service.create({ mode: 'product', style: 'real', durationSeconds: 15, productName: 'CC1 Pro 清洁机器人', sceneIds: ['office'], imageId: front.id, pointIds: ['obstacle'] });
+    assert.equal(r4.plan.realScene, true); assert.equal(r4.plan.sceneStep, true);
+    assert.ok(r4.quote.maximumCny > quotePlan(real3Plan(r4.plan), prices(), 0).maximumCny, 'the two scene redraws are in the quote');
+    riskCalls = 0; await service.start(r4.id);
+    await until(r4.id, (t) => t.status === 'awaiting_sheet'); await service.confirmSheet(r4.id);
+    let r4Task = await until(r4.id, (t) => t.status === 'awaiting_scene');
+    const plates = () => r4Posts().filter((p) => p.route.includes('/images/generations') && /人眼高度用手机随手拍的真实现场照片，竖版9:16，不是效果图/u.test(p.body.prompt));
+    assert.equal(r4Task.statusLabel, '请确认场景'); assert.equal(r4Task.sceneRedosLeft, 2); assert.equal(r4Task.etaSeconds, null);
+    assert.equal(plates().length, 1); assert.ok(r4Posts().filter(isDirect).every((p) => /用手机随手拍下的真实作业片段/u.test(p.body.messages[0].content)));
+    assert.equal(r4Posts().filter((p) => p.route.includes('/images/generations') && /视频的第一帧/u.test(p.body.prompt)).length, 0, 'no keyframe before the place is accepted');
+    assert.match((await service.imageMedia(r4.id, 'plate')).dataUrl, /^data:image\/jpeg;base64,/u);
+    await assert.rejects(service.confirmStoryboard(r4.id), (e) => e.code === 'product_video_storyboard_unavailable');
+    await service.redoScene(r4.id);
+    r4Task = await until(r4.id, (t) => t.status === 'awaiting_scene' && t.sceneRedosLeft === 1);
+    assert.equal(plates().length, 2, 'the place is drawn again');
+    await service.redoScene(r4.id); await until(r4.id, (t) => t.status === 'awaiting_scene' && t.sceneRedosLeft === 0);
+    await assert.rejects(service.redoScene(r4.id), (e) => e.code === 'product_video_scene_retry_limit');
+    await service.confirmScene(r4.id);
+    r4Task = await until(r4.id, (t) => t.status === 'awaiting_storyboard');
+    await assert.rejects(service.confirmScene(r4.id), (e) => e.code === 'product_video_scene_unavailable');
+    const r4Keys = r4Posts().filter((p) => p.route.includes('/images/generations') && /视频的第一帧/u.test(p.body.prompt));
+    assert.equal(r4Keys.length, r4Task.plan.shots.length);
+    const venueKeys = r4Keys.filter((p) => /^图1是一张真实的现场手机照片/u.test(p.body.prompt));
+    assert.ok(venueKeys.length >= 1 && venueKeys.every((p) => p.body.image_urls.length === 3), 'venue keyframes: the place photo first, then the photo and the 定妆照');
+    assert.ok(r4Keys.every((p) => /现场照片里的一切保持不变|手机随手拍的真实现场照片/u.test(p.body.prompt) && /机位：侧面经过/u.test(p.body.prompt)));
+    assert.deepEqual(r4Task.storyboard.cameras.map((c) => [c.id, c.name]), [['toward', '迎面开来'], ['side', '侧面经过'], ['away', '背面开走'], ['close', '近处特写']]);
+    await assert.rejects(service.updateShot(r4.id, 0, { camera: 'top' }), /机位/u);
+    await service.updateShot(r4.id, 0, { camera: 'toward', action: '减速绕开前方纸箱后继续直行' });
+    r4Task = await until(r4.id, (t) => t.status === 'awaiting_storyboard');
+    assert.match(r4Posts().filter((p) => /视频的第一帧/u.test(p.body?.prompt || '')).at(-1).body.prompt, /机位：迎面开来[\s\S]*减速绕开前方纸箱/u);
+    await service.confirmStoryboard(r4.id);
+    await until(r4.id, (t) => t.status === 'completed');
+    const r4Videos = r4Posts().filter((p) => p.route.includes('video-synthesis')).map((p) => p.body);
+    assert.ok(r4Videos.length >= r4Task.plan.shots.length && r4Videos.every((b) => b.input.media.length === 1 && b.input.media[0].type === 'first_frame'));
+    assert.ok(r4Videos.every((b) => /坚硬的整体/u.test(b.input.prompt) && /手机随手拍的真实视频/u.test(b.input.prompt) && !/【客户调整/u.test(b.input.prompt) && !/摄影机在机器斜后方同速跟随/u.test(b.input.prompt)),
+      'the video prompt is camera + action + the rigid-machine and phone rules, not the director prose');
+    assert.ok(r4Videos.some((b) => /机位：迎面开来。[\s\S]*动作：减速绕开前方纸箱后继续直行/u.test(b.input.prompt)));
+    // The customer's own site photo is the place: nothing to accept.
+    const r4Own = await service.create({ mode: 'product', style: 'real', durationSeconds: 15, productName: 'CC1 Pro 清洁机器人', sceneText: '公司展厅', venueImageId: site.id, imageId: front.id, pointIds: ['obstacle'] });
+    assert.equal(r4Own.plan.sceneStep, false); assert.equal(r4Own.plan.realScene, true);
     assert.equal(clipped.proof, '画面右侧清晰可见1.2m宽干净带，与左侧未清洁区形成锐利分界；油斑位置原为深褐暗沉，清洁后变为浅灰本色，划痕仍在但变淡');
   } finally { await service.close(); fs.rmSync(root, { recursive: true, force: true }); }
 }

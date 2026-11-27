@@ -118,7 +118,7 @@ function safeShotText({ plan, crew, shot }) {
 function applySafeShots(plan, crew) {
   const flagged = new Set((crew?.risks || []).filter((row) => !row.ok).map((row) => row.index));
   if (!flagged.size) return { plan, fallback: [] };
-  const direction = { operator: plan.operator || 'none', wet: plan.wet === true };
+  const direction = { operator: plan.operator || 'none', wet: plan.wet === true, realScene: plan.realScene };
   const venue = plan.shots.some((row) => row.place === 'venue');
   const shots = plan.shots.map((shot) => {
     if (!flagged.has(shot.index)) return shot;
@@ -126,10 +126,11 @@ function applySafeShots(plan, crew) {
     // real-3 storyboard: the safe description replaces the director's, and the keyframe is drawn from it.
     // The keyframe is drawn from camera/action/proof, so those follow the safe move too (a risky action must not come back as the first frame).
     if (plan.storyboard) {
-      Object.assign(safe, { directorPrompt: safeShotText({ plan, crew, shot }), camera: { side: 'side', front: 'top', back: 'follow' }[safeMove(crew)],
+      Object.assign(safe, { directorPrompt: safeShotText({ plan, crew, shot }), camera: (plan.realScene ? { side: 'side', front: 'toward', back: 'away' } : { side: 'side', front: 'top', back: 'follow' })[safeMove(crew)],
         action: '沿一条直线匀速向前清洁，不转弯、不掉头', proof: '身后留下一条笔直的干净带，和两边没清洁的地面分界清楚',
         // The customer sees why this shot no longer shows its selling point (trial 2026-11-27: 「货架底下也能清」 quietly became a plain pass).
-        unshowable: shot.filler || shot.pointId === 'clean' ? '' : '原来的拍法会露出照片里没有的部分，先换成了稳妥的直行镜头，这个卖点可能看不出来' });
+        unshowable: shot.filler || shot.pointId === 'clean' ? '' : '原来的拍法会露出照片里没有的部分，先换成了稳妥的直行镜头，这个卖点可能看不出来',
+        ...(plan.realScene ? { setup: '' } : {}) });
       safe.prompt = shotPrompt(plan, direction, safe); return safe;
     }
     return { ...safe, prompt: shotPrompt(plan, direction, { prompt: safeShotText({ plan, crew, shot }), venue, seconds: shot.seconds }) };

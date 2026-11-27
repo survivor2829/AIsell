@@ -187,6 +187,25 @@ function KeyframeCard({ taskId, shot, ready, drawing, locked, version, cameras, 
     </div>
   </article>;
 }
+// real-4: the place every shot happens in. A drawn one is shown first; the customer keeps it or has it drawn again.
+export function SceneConfirm({ taskId, redosLeft, busy, imageMedia, onConfirm, onRedo }: { taskId: string; redosLeft: number; busy: boolean;
+  imageMedia: (id: string, key: string) => Promise<MediaResult>; onConfirm: () => void; onRedo: () => void }) {
+  const [picture, setPicture] = useState("");
+  useEffect(() => {
+    let disposed = false; setPicture("");
+    void imageMedia(taskId, "plate").then((result) => { if (!disposed && result.ok && result.data) setPicture(result.data.dataUrl); }).catch(() => {});
+    return () => { disposed = true; };
+  }, [taskId, redosLeft]);
+  return <div className="sv-sheet">
+    <h3>在这里拍，可以吗？</h3>
+    <p>每个镜头都在这个现场拍，机器会放进这张照片里。</p>
+    <div className="sv-sheet-image">{picture ? <img src={picture} alt="拍摄现场" /> : <LoaderCircle size={40} className="spin" />}</div>
+    <div className="sv-sheet-actions">
+      <button type="button" className="pv2-btn is-main" data-product-video-action="confirm-scene" disabled={busy || !picture} onClick={onConfirm}><Check size={20} />就在这里拍</button>
+      <button type="button" className="pv2-btn" data-product-video-action="redo-scene" disabled={busy || redosLeft <= 0} onClick={onRedo}><RefreshCw size={18} />{redosLeft > 0 ? `换一个场景（还能 ${redosLeft} 次）` : "不能再换了"}</button>
+    </div>
+  </div>;
+}
 export function StoryboardConfirm({ task, busy, imageMedia, onSave, onConfirm }: {
   task: { id: string; status: string; imagesReady?: Record<string, boolean>; storyboard?: Storyboard; plan: { shots: StoryboardShot[] } };
   busy: boolean; imageMedia: (id: string, key: string) => Promise<MediaResult>; onSave: (index: number, change: ShotChange) => void; onConfirm: () => void;

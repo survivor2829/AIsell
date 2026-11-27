@@ -95,7 +95,7 @@ const ACTIONS = new Set([
   "product-detail-ai-settings:save", "product-detail-ai-settings:validate", "product-detail:download-update",
   "product-detail:update", "product-video:create", "product-video:export", "product-video:export-source",
   "product-video:import-facts", "product-video:import-image", "product-video:retry-shot", "product-video:start",
-  "product-video:confirm-sheet", "product-video:redo-sheet", "product-video:redo-shot", "product-video:update-shot", "product-video:confirm-storyboard",
+  "product-video:confirm-sheet", "product-video:redo-sheet", "product-video:confirm-scene", "product-video:redo-scene", "product-video:redo-shot", "product-video:update-shot", "product-video:confirm-storyboard",
   "social-accounts:add", "social-accounts:login", "social-accounts:refresh", "social-accounts:remove", "social-accounts:rename",
   "social-acquisition:exportCsv", "social-acquisition:openLead", "social-acquisition:queueActions",
   "social-acquisition:removeTask", "social-acquisition:resolveAction", "social-acquisition:resume",
