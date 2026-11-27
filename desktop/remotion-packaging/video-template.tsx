@@ -45,10 +45,11 @@ const NarrationTypeface: React.FC<React.PropsWithChildren> = ({ children }) => {
   const [handle] = React.useState(() => delayRender("Loading the bundled narration typeface"));
   React.useEffect(() => {
     // The serif (songti_v5) is a Noto Serif SC Black subset: GB2312 characters plus ASCII.
+    // A serif that fails to load only affects songti_v5 (it falls back to a system serif).
     narrationFontReady ??= Promise.all([
-      new FontFace("Narration Sans", `url(${staticFile("narration-font.ttf")})`, { weight: "100 900" }),
-      new FontFace("Narration Serif", `url(${staticFile("narration-serif.ttf")})`, { weight: "900" })
-    ].map((face) => face.load())).then((fonts) => { fonts.forEach((font) => document.fonts.add(font)); });
+      new FontFace("Narration Sans", `url(${staticFile("narration-font.ttf")})`, { weight: "100 900" }).load().then((font) => { document.fonts.add(font); }),
+      new FontFace("Narration Serif", `url(${staticFile("narration-serif.ttf")})`, { weight: "900" }).load().then((font) => { document.fonts.add(font); }, () => undefined)
+    ]).then(() => undefined);
     narrationFontReady.then(() => { setReady(true); continueRender(handle); }).catch(cancelRender);
   }, [handle]);
   return ready ? <>{children}</> : null;
@@ -188,7 +189,7 @@ function cameraState(manifest: MotionManifest, nowMs: number) {
   const transition = index > 0 ? manifest.narrationPlan?.variant?.transition : undefined;
   const origin = `${camera.focusX * 100}% ${camera.focusY * 100}%`;
   return {
-    origin,
+    origin, focusY: camera.focusY,
     scale: shot.scale + (transition === "push" && since < 260 ? 0.06 * (1 - since / 260) : 0)
       + (transition === "circle" && since < 700 ? 0.08 * (1 - since / 700) : 0),
     flash: transition === "flash" && since < 160 ? 0.55 * (1 - since / 160) : 0,
@@ -225,7 +226,7 @@ const VideoBase: React.FC<{ manifest: MotionManifest; pack: StylePack; frame: nu
       />
       {!reference && <AbsoluteFill style={{ background: pack.video.overlay }} />}
       {camera && camera.flash > 0 ? <AbsoluteFill style={{ background: "#fff", opacity: camera.flash }} /> : null}
-      {camera && camera.circle !== null ? <AbsoluteFill style={{ background: `radial-gradient(circle ${camera.circle}px at 50% 46%, transparent 99.6%, #000 100%)` }} /> : null}
+      {camera && camera.circle !== null ? <AbsoluteFill style={{ background: `radial-gradient(circle ${camera.circle}px at 50% ${Math.round(Math.max(.36, Math.min(.56, camera.focusY)) * 100)}%, transparent 99.6%, #000 100%)` }} /> : null}
       {camera && camera.iris !== null ? <AbsoluteFill style={{ background: `radial-gradient(circle at ${camera.origin}, transparent ${camera.iris}%, #000 ${camera.iris + 1}%)` }} /> : null}
     </AbsoluteFill>
   );

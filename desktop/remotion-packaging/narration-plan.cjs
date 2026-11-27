@@ -224,8 +224,9 @@ function buildPlan(task, visual = {}, cues = [], final = false, recent = []) {
   const titleHeight = definition.layout === 'minimal' ? Math.ceil(title.length * 48 / 772) * 60 + 30 : titleLines * titleSize * 1.22 + 26;
   // v5 titles may lie over the hair (2026-11-24 previews the user approved) but stop at the face.
   const titleRoom = Math.max(0, Math.floor(faceTop - 20 - titleTop));
-  // Replica titles sit at the very top over the hair for the whole video, as in the user's videos.
-  const showTitle = REPLICAS.includes(templateId) ? !upper : definition.version === 5 ? !upper && titleRoom >= 150 : !upper && titleTop + titleHeight + safe.facePadding < faceTop;
+  // Replica titles sit at the very top over the hair for the whole video, as in the user's videos,
+  // but never over the eyes: a face starting above y 300 (two title rows end there) hides them.
+  const showTitle = REPLICAS.includes(templateId) ? !upper && faceTop >= 300 : definition.version === 5 ? !upper && titleRoom >= 150 : !upper && titleTop + titleHeight + safe.facePadding < faceTop;
   if (!showTitle && !upper) warnings.push('头部靠近顶部，已隐藏片内装饰标题；标题仍保留在独立封面。');
   const soundEvents = []; let last = -Infinity;
   if (task.soundEffects !== false) for (const page of displayPages) {
