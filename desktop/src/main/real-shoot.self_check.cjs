@@ -589,6 +589,19 @@ async function run() {
     const boardPlan = ai.applyDirection(ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['lift'] }), ai.parseDirection(direction(ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['lift'] })), ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['lift'] })));
     const safeShot = require('./real-shoot-crew.cjs').applySafeShots(boardPlan, safeCrew).plan.shots[0];
     assert.equal(safeShot.camera, 'top'); assert.match(safeShot.action, /直线匀速/u); assert.match(ai.keyframePrompt(boardPlan, safeShot), /动作：沿一条直线匀速向前清洁/u);
+    // Trial 2026-11-27: a selling-point shot that became the safe pass says so on its card; the plain cleaning shot does not;
+    // the customer's own redraw takes the note away.
+    const liftIndex = boardPlan.shots.findIndex((shot) => shot.pointId === 'lift');
+    const bothSafe = require('./real-shoot-crew.cjs').applySafeShots(boardPlan, { inventory: { sides: ['front'] }, risks: boardPlan.shots.map((shot) => ({ index: shot.index, ok: false })) }).plan;
+    assert.match(bothSafe.shots[liftIndex].unshowable, /稳妥的直行镜头/u);
+    assert.ok(bothSafe.shots.filter((shot) => shot.filler || shot.pointId === 'clean').every((shot) => shot.unshowable === ''));
+    assert.equal(ai.editShot(bothSafe, liftIndex, { camera: 'side' }).plan.shots[liftIndex].unshowable, '');
+    // Long director text is cut at a clause, never mid-word.
+    const fresh = ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['lift'] }), wordy = JSON.parse(direction(fresh)); wordy.shots[0].action = '机器从画面左端向右匀速直行，刷盘旋转压地，刮条贴地后拖，经过3处明显油斑，污渍被一遍带走不留痕迹';
+    wordy.shots[0].proof = '画面右侧清晰可见1.2m宽干净带，与左侧未清洁区形成锐利分界；油斑位置原为深褐暗沉，清洁后变为浅灰本色，划痕仍在但变淡，几乎看不出';
+    const clipped = ai.parseDirection(JSON.stringify(wordy), fresh).shots[0];
+    assert.equal(clipped.action, '机器从画面左端向右匀速直行，刷盘旋转压地，刮条贴地后拖，经过3处明显油斑');
+    assert.equal(clipped.proof, '画面右侧清晰可见1.2m宽干净带，与左侧未清洁区形成锐利分界；油斑位置原为深褐暗沉，清洁后变为浅灰本色，划痕仍在但变淡');
   } finally { await service.close(); fs.rmSync(root, { recursive: true, force: true }); }
 }
 run().then(() => console.log('real-shoot self-check passed: AI director (plan, checks, rewrite, flow, AI check, one shot redo), pick lists, plans and prompts, prices, time estimate, scene picture, shots a few at a time, busy service, failed shot redo, one-line subtitles'),

@@ -38,7 +38,15 @@ const CREWS = new Set(['crew-1', CREW]);
 const CUSTOM_LIMIT = 3, CUSTOM_LENGTH = 30, SCENE_LENGTH = 30;
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const clean = (value, limit) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, limit);
-const bare = (text) => String(text || '').replace(/\s+/gu, '');
+// Text the customer reads on the storyboard: too long is cut at the last clause that fits, never mid-word
+// (trial 2026-11-27: the director wrote 50–70 characters and the card showed "…污渍被").
+function clip(value, limit) {
+  const text = clean(value, 10000);
+  if (text.length <= limit) return text;
+  const head = text.slice(0, limit), cut = Math.max(...[...'，。；,;！!'].map((mark) => head.lastIndexOf(mark)));
+  return (cut >= limit / 2 ? head.slice(0, cut) : head).replace(/[，。；、,;:：\s]+$/u, '');
+}
+const bare =(text) => String(text || '').replace(/\s+/gu, '');
 const width = (text) => [...String(text)].reduce((sum, char) => sum + (char.codePointAt(0) <= 0x7f ? 0.5 : 1), 0);
 
 // The look every shot shares (from real-shoot-director: plain venue light, documentary camera).
@@ -205,8 +213,8 @@ function parseDirection(content, plan) {
     if (!caption || width(caption) > catalog.CAPTION_WIDTH) problems.push(`第${i + 1}镜字幕「${caption}」超过10个汉字宽`);
     if (!plan.storyboard) return { title, caption, venue: row.venue !== false, prompt };
     // real-3: what the keyframe shows and the customer may change; a selling point needs a visible proof.
-    const camera = Object.hasOwn(CAMERAS, String(row.camera)) ? row.camera : '', action = reword(clean(row.action, ACTION_LENGTH)), proof = reword(clean(row.proof, 60));
-    const unshowable = clean(row.unshowable, 60);
+    const camera = Object.hasOwn(CAMERAS, String(row.camera)) ? row.camera : '', action = reword(clip(row.action, ACTION_LENGTH)), proof = reword(clip(row.proof, 60));
+    const unshowable = clip(row.unshowable, 60);
     if (!camera) problems.push(`第${i + 1}镜 camera 只能是 side、top、follow 或 close`);
     if (action.length < 6) problems.push(`第${i + 1}镜缺少 action（这一镜机器做什么动作）`);
     if (!slot.filler && slot.pointId !== 'clean' && proof.length < 6) problems.push(`第${i + 1}镜卖点「${slot.title}」缺少 proof：画面里看到什么就能证明它`);
@@ -254,7 +262,8 @@ function editShot(plan, index, change) {
   if (!caption || width(caption) > catalog.CAPTION_WIDTH) throw fail('product_video_invalid_input', '字幕一行，最多10个汉字。');
   if (!plan.wet && LIQUID.test(action)) throw fail('product_video_invalid_input', `动作里不要写「${action.match(LIQUID)[0]}」，视频会凭空画出脏水；写看得见的结果，比如“地面变亮”。`);
   const redraw = action !== shot.action || camera !== shot.camera;
-  const next = { ...shot, action, camera, caption, edited: shot.edited || redraw };
+  // A redraw the customer asked for answers the "may not show" note; it is not shown again on the new picture.
+  const next = { ...shot, action, camera, caption, edited: shot.edited || redraw, ...(redraw ? { unshowable: '' } : {}) };
   next.prompt = storyboardPrompt({ operator: plan.operator, wet: plan.wet }, next);
   if (promptLength(next.prompt) > PROMPT_LIMIT) throw fail('product_video_invalid_input', '动作写得太长了，请精简。');
   return { plan: { ...plan, shots: plan.shots.map((row, i) => i === index ? next : row) }, redraw };
