@@ -8,7 +8,7 @@ const { createDigitalHumanProvider, cleanMessage, fail, remoteUrl } = require('.
 const { withBillingJob } = require('./provider-gateway-client.cjs');
 const wan = require('./bailian-video-provider.cjs');
 const { planVideo, SCENES, SURFACES, DIRT, GOALS, FACT_LIMIT } = require('./video-directors.cjs');
-const { createPriceReader, validPrices, quotePlan, round, DIRECTOR_RESERVE_CNY, crewReserveCalls } = require('./product-video-pricing.cjs');
+const { createPriceReader, validPrices, quotePlan, round, DIRECTOR_RESERVE_CNY, crewReserveCalls, KEYFRAME_REDRAWS } = require('./product-video-pricing.cjs');
 const mediaTools = require('./product-video-media.cjs');
 const story = require('./story-video-director.cjs');
 const real = require('./real-shoot-director.cjs');
@@ -33,7 +33,7 @@ const storyImageKeys = (segments) => ['scene', 'floor', 'person_a', 'person_b',
   ...Array.from({ length: segments }, (_, s) => Array.from({ length: story.SHOTS_PER_SEGMENT }, (_, k) => `frame_${s}_${k}`)).flat()];
 // real-3 storyboard: one keyframe per shot, key_0, key_1, …
 const keyframeKeys = (task) => task.plan.storyboard ? task.plan.shots.map((_, index) => `key_${index}`) : [];
-const KEYFRAME_REDRAWS = 2;
+
 const IMAGE_LABEL = { sheet: '定妆照', scene: '场景图', floor: '地面对照图', person_a: '人物', person_b: '人物', plate: '场景图' };
 const shotPipeline = (task) => task.plan.pipelineVersion >= 5;
 // 无人实拍: the scene picture is made only when a shot happens in the venue (plans before the 定妆照 counted only that picture).
@@ -760,6 +760,7 @@ function createProductVideoService(options = {}) {
     try { await prepareVideoRetry(task); }
     catch (error) { if (error.code === 'product_video_update_pending') throw error; delete task.failedShotIndex; save(task); return false; }
     task.autoRedone = { index: flagged.index, issue: flagged.issue, before: kept, at: new Date().toISOString() };
+    task.redoInProgress = { index: flagged.index, before: kept, automatic: true };
     task.redoneShots = [...(task.redoneShots || []), { index: flagged.index, before: kept, at: task.autoRedone.at, automatic: true }];
     delete task.review; save(task); return true;
   }
@@ -1004,11 +1005,17 @@ function createProductVideoService(options = {}) {
   // A shot redone after the AI check that fails: the earlier take goes back and the finished video stays usable.
   function undoFailedRedo(task, error) {
     const redo = task.redoInProgress;
-    if (!redo || error.outcomeUnknown || !task.finalFile || !fs.existsSync(contained(root, task.finalFile))) return false;
+    // real-3: the automatic redo happens before there is a finished video; the first take goes back and the video is finished with it.
+    if (!redo || error.outcomeUnknown || (!redo.automatic && (!task.finalFile || !fs.existsSync(contained(root, task.finalFile))))) return false;
     const relative = `${task.id}/shot-${redo.index}.mp4`;
     fs.copyFileSync(contained(root, redo.before), contained(root, relative));
     task.shots[redo.index] = { ...task.shots[redo.index], file: relative };
     delete task.shots[redo.index].providerTaskId;
+    if (redo.automatic) {
+      delete task.redoInProgress; task.status = 'assembling'; task.error = ''; task.errorCode = ''; task.finishStartedAt ||= new Date().toISOString();
+      task.redoNote = `第 ${redo.index + 1} 镜自动重拍没有成功（${cleanMessage(error.message || '生成失败')}），用的是第一次拍的。`;
+      save(task); return true; // the scheduler picks it up again (assembling is a running state)
+    }
     if (task.review?.shots?.[redo.index]) task.review.shots[redo.index] = { ...task.review.shots[redo.index], redone: false, redoFailed: true };
     delete task.redoInProgress; task.status = 'completed'; task.error = ''; task.errorCode = '';
     task.redoNote = `重拍第 ${redo.index + 1} 镜没有成功（${cleanMessage(error.message || '生成失败')}），原来的成片还在，可以直接用。`;

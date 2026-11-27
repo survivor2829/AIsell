@@ -405,7 +405,7 @@ SIZES = {
  "video.realshoot.qc.p4@1": 144,
  "video.realshoot.qc.p4@2": 319,
  "video.realshoot.qc.p5@1": 270,
- "video.realshoot.qc.p5@2": 325,
+ "video.realshoot.qc.p5@2": 457,
  "video.realshoot.qc_parts.p1@1": 333,
  "video.realshoot.scene_plate.p1@1": 40,
  "video.realshoot.scene_plate.p2@1": 36,

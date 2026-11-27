@@ -252,16 +252,18 @@ const DIRECTOR_RESERVE_CNY = 0.05;
 // 导演组 (crew-1): the analyst for the 定妆照 and its two redos, the site survey, two risk reviews, and up to three director rewrites they ask for.
 const CREW_RESERVE_CALLS = 9;
 // crew-2: the same, but three risk reviews and two rounds of up to three rewrites (no video while a shot is at risk).
+// real-3: each keyframe may be redrawn this many times (the service enforces it, the quote reserves it).
+const KEYFRAME_REDRAWS = 2;
 const crewReserveCalls = (plan) => !plan?.crew ? 0 : plan.crew === 'crew-1' ? CREW_RESERVE_CALLS : 13;
 function quotePlan(plan, prices, budgetCny) {
   if (plan.pipelineVersion === 6) {
     if (!validStoryPrices(prices)) return { ready: false, budgetCny, estimatedCny: null, reservedCny: 0, actualCny: 0, pendingCny: 0, message: '报价暂不可用，方案已保留。' };
     const seconds = plan.shots.reduce((sum, s) => sum + s.seconds, 0), videoCny = round(seconds * prices.videoCnyPerSecond);
-    // real-3: one keyframe per shot on top of the 定妆照 and the scene picture, and room to redraw each keyframe once.
+    // real-3: one keyframe per shot on top of the 定妆照 and the scene picture, and room for every redraw the page offers.
     const pictures = plan.imageCount + (plan.keyframes || 0);
     const imageReserveCny = pictures * round(prices.imageUsd * prices.fxCnyPerUsd), imageEstimateCny = pictures * prices.estimatedImageUsd * prices.fxCnyPerUsd;
     // One failed shot may be redone, and one failed picture; with a 定妆照, both redos the page offers too.
-    const retryReserveCny = round(((plan.sheet ? 3 : 1) + (plan.keyframes || 0)) * round(prices.imageUsd * prices.fxCnyPerUsd) + Math.max(0, ...plan.shots.map((shot) => shot.seconds)) * prices.videoCnyPerSecond);
+    const retryReserveCny = round(((plan.sheet ? 3 : 1) + KEYFRAME_REDRAWS * (plan.keyframes || 0)) * round(prices.imageUsd * prices.fxCnyPerUsd) + Math.max(0, ...plan.shots.map((shot) => shot.seconds)) * prices.videoCnyPerSecond);
     // AI 导演: up to three looks at the photos to write the shots, and one look at the finished shots.
     // real-3: a second check after the automatic redo of a shot with something extra in it.
     const directorCny = plan.director === 'ai' ? round(((plan.storyboard ? 5 : 4) + crewReserveCalls(plan)) * DIRECTOR_RESERVE_CNY) : 0;
@@ -343,4 +345,4 @@ function createCoverPriceReader({ fetchJson, fetch: fetchImpl, gatewayClient } =
     return pending;
   };
 }
-module.exports = { DIRECTOR_RESERVE_CNY, CREW_RESERVE_CALLS, crewReserveCalls, readText, parseDirectVideoPrices, STORY_IMAGE_MODEL, storyImagePrice, validStoryPrices, createCoverPriceReader, parseCoverPrice, createPriceReader, parsePrices, validPrices, quotePlan, round, createBailianPriceReader, parseBailianPrices, parseDirectPrices, validBailianPrices, createReferencePriceReader };
+module.exports = { KEYFRAME_REDRAWS, DIRECTOR_RESERVE_CNY, CREW_RESERVE_CALLS, crewReserveCalls, readText, parseDirectVideoPrices, STORY_IMAGE_MODEL, storyImagePrice, validStoryPrices, createCoverPriceReader, parseCoverPrice, createPriceReader, parsePrices, validPrices, quotePlan, round, createBailianPriceReader, parseBailianPrices, parseDirectPrices, validBailianPrices, createReferencePriceReader };

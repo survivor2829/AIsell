@@ -124,7 +124,12 @@ function applySafeShots(plan, crew) {
     if (!flagged.has(shot.index)) return shot;
     const safe = { ...shot, place: venue ? 'venue' : shot.place, safe: true };
     // real-3 storyboard: the safe description replaces the director's, and the keyframe is drawn from it.
-    if (plan.storyboard) { safe.directorPrompt = safeShotText({ plan, crew, shot }); safe.prompt = shotPrompt(plan, direction, safe); return safe; }
+    // The keyframe is drawn from camera/action/proof, so those follow the safe move too (a risky action must not come back as the first frame).
+    if (plan.storyboard) {
+      Object.assign(safe, { directorPrompt: safeShotText({ plan, crew, shot }), camera: { side: 'side', front: 'top', back: 'follow' }[safeMove(crew)],
+        action: '沿一条直线匀速向前清洁，不转弯、不掉头', proof: '身后留下一条笔直的干净带，和两边没清洁的地面分界清楚', unshowable: '' });
+      safe.prompt = shotPrompt(plan, direction, safe); return safe;
+    }
     return { ...safe, prompt: shotPrompt(plan, direction, { prompt: safeShotText({ plan, crew, shot }), venue, seconds: shot.seconds }) };
   });
   return { plan: { ...plan, shots }, fallback: [...flagged] };

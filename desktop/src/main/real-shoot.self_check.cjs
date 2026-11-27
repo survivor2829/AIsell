@@ -247,7 +247,7 @@ async function run() {
   const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
   const clip = Buffer.alloc(2048); clip.write('ftyp', 4, 'ascii');
   const posts = [], videoTasks = new Map();
-  let maxRunning = 0, failVideo = '', throttleOnce = false, unknownBusyOnce = false, badCaptionsOnce = false, failSheetOnce = false, riskCalls = 0, riskAlways = false, riskBadSecond = false, reviewExtraOnce = false;
+  let maxRunning = 0, failVideo = '', throttleOnce = false, unknownBusyOnce = false, badCaptionsOnce = false, failSheetOnce = false, riskCalls = 0, riskAlways = false, riskBadSecond = false, reviewExtraOnce = false, failRedoArmed = false, failNextVideo = false;
   // 导演组 (crew-2): the analyst, the site survey and the risk review answer on the director's route.
   const CREW_SYSTEM = /^你是(?:商用清洁设备的产品分析师|拍摄前的场地勘察|视频开拍前的风险审查)/u;
   const isDirect = (p) => p.route === ai.DIRECTOR_ROUTE && !/视频质检员/u.test(p.body.messages[0].content) && !CREW_SYSTEM.test(p.body.messages[0].content);
@@ -271,7 +271,7 @@ async function run() {
         posts.push({ route, body: request.body });
         if (route === ai.DIRECTOR_ROUTE) {
           const text = request.body.messages[1].content.at(-1).text, system = request.body.messages[0].content;
-          if (/视频质检员/u.test(system) && reviewExtraOnce) { reviewExtraOnce = false; return { choices: [{ message: { content: '{"shots":[{"index":1,"ok":false,"issue":"第5格机器身后冒出一个黑色箱体","extra":true}]}' } }] }; }
+          if (/视频质检员/u.test(system) && reviewExtraOnce) { reviewExtraOnce = false; if (failRedoArmed) { failRedoArmed = false; failNextVideo = true; } return { choices: [{ message: { content: '{"shots":[{"index":1,"ok":false,"issue":"第5格机器身后冒出一个黑色箱体","extra":true}]}' } }] }; }
           if (/视频质检员/u.test(system)) return { choices: [{ message: { content: '{"shots":[{"index":3,"ok":false,"issue":"第4格出现两台机器"}]}' } }] };
           if (/产品分析师/u.test(system) && !/风险审查/u.test(system)) return { choices: [{ message: { content: JSON.stringify({ sides: ['front', 'left', 'nonsense'], parts: [{ name: '轮子', count: '左侧2个（前1后1）', where: '车身下方' }], size: 'large', sizeNote: '约长1.6米、宽0.9米', turning: '掉头需要约3米宽', sheetIssues: ['背面为 AI 推测'] }) } }] };
           if (/场地勘察/u.test(system)) return { choices: [{ message: { content: '{"widthM":12,"floor":"环氧地坪","dirt":"施工灰尘","zone":"中央通道直行","canTurn":false,"fits":true,"note":"只直行"}' } }] };
@@ -284,7 +284,7 @@ async function run() {
         if (route.endsWith('/uploads/images')) return { url: 'https://fixture.example/product.png' };
         if (route.includes('/images/')) { const task_id = `img_${posts.length}`; imageTasks.set(task_id, request.body.prompt); return { task_id }; }
         const task_id = `v_${videoTasks.size}`;
-        videoTasks.set(task_id, { status: 'running', polls: 0, prompt: request.body.input.prompt });
+        videoTasks.set(task_id, { status: 'running', polls: 0, prompt: request.body.input.prompt, fail: failNextVideo }); failNextVideo = false;
         maxRunning = Math.max(maxRunning, running());
         return { output: { task_id } };
       }
@@ -293,7 +293,7 @@ async function run() {
         const task = videoTasks.get(task_id); task.polls += 1;
         // Each shot needs two looks, so several are in progress at the same time.
         if (task.polls < 2) return { output: { task_id, task_status: 'RUNNING' } };
-        const failed = failVideo && task.prompt.includes(failVideo); if (failed) failVideo = '';
+        const failed = task.fail || (failVideo && task.prompt.includes(failVideo)); if (failed && !task.fail) failVideo = '';
         task.status = failed ? 'failed' : 'done';
         return failed ? { output: { task_id, task_status: 'FAILED', message: '内容未通过' } } : { output: { task_id, task_status: 'SUCCEEDED', video_url: `https://fixture.example/${task_id}.mp4` } };
       }
@@ -572,6 +572,23 @@ async function run() {
     assert.equal(sbDone.canRedoShot, false, 'the one redo the quote allows was used');
     assert.ok(sbDone.quote.reservedCny <= sbDone.quote.budgetCny + 1e-9);
     await assert.rejects(service.confirmStoryboard(sb.id), (e) => e.code === 'product_video_storyboard_unavailable');
+    // Review of #372: a failed automatic redo puts the first take back and the video still finishes; a camera
+    // named after a built-in object property is refused; nothing counts down while the storyboard waits.
+    const sb2 = await service.create({ mode: 'product', style: 'real', durationSeconds: 15, productName: 'DZ95X 洗地机器人', sceneIds: ['factory'], imageId: front.id, pointIds: ['lift'] });
+    riskCalls = 0; await service.start(sb2.id);
+    await until(sb2.id, (t) => t.status === 'awaiting_sheet'); await service.confirmSheet(sb2.id);
+    const waitingBoard = await until(sb2.id, (t) => t.status === 'awaiting_storyboard');
+    assert.equal(waitingBoard.etaSeconds, null, 'no countdown while the customer looks at the storyboard');
+    await assert.rejects(service.updateShot(sb2.id, 0, { camera: 'constructor' }), /机位/u);
+    reviewExtraOnce = true; failRedoArmed = true;
+    await service.confirmStoryboard(sb2.id);
+    const kept2 = await until(sb2.id, (t) => t.status === 'completed');
+    assert.match(kept2.redoNote, /自动重拍没有成功[\s\S]*用的是第一次拍的/u); assert.equal(kept2.canExport, true);
+    // The safe shot of a still-risky storyboard shot is drawn from the safe move, not the risky action.
+    const safeCrew = { inventory: { sides: ['front'] }, risks: [{ index: 0, ok: false }] };
+    const boardPlan = ai.applyDirection(ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['lift'] }), ai.parseDirection(direction(ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['lift'] })), ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['lift'] })));
+    const safeShot = require('./real-shoot-crew.cjs').applySafeShots(boardPlan, safeCrew).plan.shots[0];
+    assert.equal(safeShot.camera, 'top'); assert.match(safeShot.action, /直线匀速/u); assert.match(ai.keyframePrompt(boardPlan, safeShot), /动作：沿一条直线匀速向前清洁/u);
   } finally { await service.close(); fs.rmSync(root, { recursive: true, force: true }); }
 }
 run().then(() => console.log('real-shoot self-check passed: AI director (plan, checks, rewrite, flow, AI check, one shot redo), pick lists, plans and prompts, prices, time estimate, scene picture, shots a few at a time, busy service, failed shot redo, one-line subtitles'),

@@ -27,6 +27,8 @@ function phaseOf(task: SceneStageTask, status: string) {
     if (task.directorStep && !task.directed) return PHASE.direct;
     return plateNeeded && !task.imagesReady?.plate ? PHASE.plate : PHASE.preflight;
   }
+  // real-3: the keyframes and the customer's look at them come right before filming.
+  if (status === "drawing_frames" || status === "awaiting_storyboard") return PHASE.preflight;
   if (status === "submitting" || status === "generating") return PHASE.shoot;
   if (status === "assembling") return task.directorStep && !task.review ? PHASE.review : PHASE.finish;
   if (status === "packaging") return PHASE.finish;

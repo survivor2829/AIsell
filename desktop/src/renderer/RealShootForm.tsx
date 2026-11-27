@@ -153,8 +153,8 @@ export type StoryboardShot = { index: number; title: string; caption?: string; s
 export type Storyboard = { confirmed: boolean; redrawsLeft: number[]; cameras: Item[]; autoRedone: { index: number; issue: string } | null };
 type MediaResult = { ok: boolean; data?: { dataUrl: string } };
 type ShotChange = { action?: string; camera?: string; caption?: string };
-function KeyframeCard({ taskId, shot, ready, drawing, version, cameras, redrawsLeft, busy, imageMedia, onSave }: {
-  taskId: string; shot: StoryboardShot; ready: boolean; drawing: boolean; version: number; cameras: Item[]; redrawsLeft: number; busy: boolean;
+function KeyframeCard({ taskId, shot, ready, drawing, locked, version, cameras, redrawsLeft, busy, imageMedia, onSave }: {
+  taskId: string; shot: StoryboardShot; ready: boolean; drawing: boolean; locked: boolean; version: number; cameras: Item[]; redrawsLeft: number; busy: boolean;
   imageMedia: (id: string, key: string) => Promise<MediaResult>; onSave: (change: ShotChange) => void;
 }) {
   const [picture, setPicture] = useState("");
@@ -179,10 +179,10 @@ function KeyframeCard({ taskId, shot, ready, drawing, version, cameras, redrawsL
       {shot.proof && <p>画面证明：{shot.proof}</p>}
       {shot.unshowable && <p className="rs-crew-warn"><AlertTriangle size={15} />{shot.unshowable}，可以改一下动作再画</p>}
       <div className="rs-board-cams" role="radiogroup" aria-label="机位">{cameras.map((row) => <button key={row.id} type="button" role="radio" aria-checked={camera === row.id}
-        className={camera === row.id ? "is-on" : ""} disabled={busy || drawing} onClick={() => setCamera(row.id)}>{row.name}</button>)}</div>
-      <label><span>动作</span><input maxLength={40} value={action} disabled={busy || drawing} onChange={(event) => setAction(event.target.value)} /></label>
-      <label><span>字幕</span><input maxLength={10} value={caption} disabled={busy || drawing} onChange={(event) => setCaption(event.target.value)} /></label>
-      {changed && <button type="button" className="pv2-btn" data-product-video-action="update-shot" disabled={busy || drawing || (redraw && redrawsLeft <= 0) || !action.trim() || !caption.trim()}
+        className={camera === row.id ? "is-on" : ""} disabled={busy || locked} onClick={() => setCamera(row.id)}>{row.name}</button>)}</div>
+      <label><span>动作</span><input maxLength={40} value={action} disabled={busy || locked} onChange={(event) => setAction(event.target.value)} /></label>
+      <label><span>字幕</span><input maxLength={10} value={caption} disabled={busy || locked} onChange={(event) => setCaption(event.target.value)} /></label>
+      {changed && <button type="button" className="pv2-btn" data-product-video-action="update-shot" disabled={busy || locked || (redraw && redrawsLeft <= 0) || !action.trim() || !caption.trim()}
         onClick={() => onSave(change)}><RefreshCw size={16} />{redraw ? (redrawsLeft > 0 ? `按这个重画（还能 ${redrawsLeft} 次）` : "这一镜不能再重画了") : "保存字幕"}</button>}
     </div>
   </article>;
@@ -197,7 +197,7 @@ export function StoryboardConfirm({ task, busy, imageMedia, onSave, onConfirm }:
   return <div className="rs-board">
     <div className="rs-board-head"><h3>{drawing ? "正在画分镜" : "看看每个镜头"}</h3>
       {!drawing && <button type="button" className="pv2-btn is-main" data-product-video-action="confirm-storyboard" disabled={busy || !allReady} onClick={onConfirm}><Check size={20} />分镜没问题，开始拍视频</button>}</div>
-    <div className="rs-board-grid">{task.plan.shots.map((shot) => <KeyframeCard key={shot.index} taskId={task.id} shot={shot} ready={Boolean(task.imagesReady?.[`key_${shot.index}`])} drawing={drawing && !task.imagesReady?.[`key_${shot.index}`]}
+    <div className="rs-board-grid">{task.plan.shots.map((shot) => <KeyframeCard key={shot.index} taskId={task.id} shot={shot} ready={Boolean(task.imagesReady?.[`key_${shot.index}`])} drawing={drawing && !task.imagesReady?.[`key_${shot.index}`]} locked={drawing}
       version={board.redrawsLeft[shot.index] ?? 0} cameras={board.cameras} redrawsLeft={board.redrawsLeft[shot.index] ?? 0} busy={busy} imageMedia={imageMedia} onSave={(change) => onSave(shot.index, change)} />)}</div>
   </div>;
 }

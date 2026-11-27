@@ -205,7 +205,7 @@ function parseDirection(content, plan) {
     if (!caption || width(caption) > catalog.CAPTION_WIDTH) problems.push(`第${i + 1}镜字幕「${caption}」超过10个汉字宽`);
     if (!plan.storyboard) return { title, caption, venue: row.venue !== false, prompt };
     // real-3: what the keyframe shows and the customer may change; a selling point needs a visible proof.
-    const camera = CAMERAS[row.camera] ? row.camera : '', action = reword(clean(row.action, ACTION_LENGTH)), proof = reword(clean(row.proof, 60));
+    const camera = Object.hasOwn(CAMERAS, String(row.camera)) ? row.camera : '', action = reword(clean(row.action, ACTION_LENGTH)), proof = reword(clean(row.proof, 60));
     const unshowable = clean(row.unshowable, 60);
     if (!camera) problems.push(`第${i + 1}镜 camera 只能是 side、top、follow 或 close`);
     if (action.length < 6) problems.push(`第${i + 1}镜缺少 action（这一镜机器做什么动作）`);
@@ -224,7 +224,7 @@ function parseDirection(content, plan) {
 
 // real-3: the shot starts from its keyframe, the only picture Wan3 gets (a first frame cannot be combined with
 // reference images), so the keyframe carries the machine's looks and the prompt says to keep them.
-function cameraLine(shot) { return CAMERAS[shot.camera] ? `机位：${CAMERAS[shot.camera].name}。${CAMERAS[shot.camera].prompt()}` : ''; }
+function cameraLine(shot) { return Object.hasOwn(CAMERAS, String(shot.camera)) ? `机位：${CAMERAS[shot.camera].name}。${CAMERAS[shot.camera].prompt()}` : ''; }
 function storyboardPrompt(direction, shot) {
   const tail = `【底线】${shot.seconds}${promptRef("video.realshoot.shot_tail.p1")}${PEOPLE[direction.operator]}${!direction.wet ? '地面上不凭空出现任何液体或水痕。' : ''}${promptRef("video.realshoot.shot_tail.p2")}${STYLE}
 ${NEG}`;
@@ -250,7 +250,7 @@ function editShot(plan, index, change) {
   const camera = change.camera === undefined ? shot.camera : change.camera;
   const caption = change.caption === undefined ? shot.caption : clean(change.caption, 30);
   if (action.length < 4) throw fail('product_video_invalid_input', '动作至少写几个字，说清楚机器在这一镜做什么。');
-  if (!CAMERAS[camera]) throw fail('product_video_invalid_input', '请选择一个机位。');
+  if (!Object.hasOwn(CAMERAS, String(camera))) throw fail('product_video_invalid_input', '请选择一个机位。');
   if (!caption || width(caption) > catalog.CAPTION_WIDTH) throw fail('product_video_invalid_input', '字幕一行，最多10个汉字。');
   if (!plan.wet && LIQUID.test(action)) throw fail('product_video_invalid_input', `动作里不要写「${action.match(LIQUID)[0]}」，视频会凭空画出脏水；写看得见的结果，比如“地面变亮”。`);
   const redraw = action !== shot.action || camera !== shot.camera;
