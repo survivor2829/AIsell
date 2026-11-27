@@ -196,14 +196,14 @@ function replicaLines(title: string, max: number, limit: number) {
     for (let i = 0; i < count; i += 1) lines.push(chars.slice(i * size, (i + 1) * size).join(''));
   }
   if (lines.length <= limit) return lines;
-  const all = Array.from(lines.join('').replace(/s+/gu, '')), size = Math.ceil(all.length / limit);
+  const all = Array.from(lines.join('').replace(/\s+/gu, '')), size = Math.ceil(all.length / limit);
   return Array.from({ length: limit }, (_, i) => all.slice(i * size, (i + 1) * size).join('')).filter(Boolean);
 }
 
 const longest = (lines: string[]) => Math.max(1, ...lines.map((line) => Array.from(line).length));
 
-function ReplicaLayout({ styleId, title, cues, nowMs, emphasis, plan }: {
-  styleId: string; title: string; cues: NarrationCue[]; nowMs: number; emphasis: string[]; plan?: NarrationPlan;
+function ReplicaLayout({ styleId, title, cues, nowMs, emphasis, plan, showTitle }: {
+  styleId: string; title: string; cues: NarrationCue[]; nowMs: number; emphasis: string[]; plan?: NarrationPlan; showTitle: boolean;
 }) {
   const accent = catalog.templates.find((item) => item.id === styleId)!.accent;
   const layout = plan?.layout;
@@ -213,7 +213,7 @@ function ReplicaLayout({ styleId, title, cues, nowMs, emphasis, plan }: {
   const chars = page ? charsOf(page, cues, phrasesFor(page, emphasis)) : [];
   // Captions moved above the face (plan region starts high) take the top; the title then gives way.
   const upper = !!layout && layout.top < 900;
-  const visibleTitle = !!title && !upper;
+  const visibleTitle = !!title && !upper && (layout ? layout.showTitle : showTitle);
 
   let titleNode: React.ReactNode = null;
   if (visibleTitle && styleId === 'songti_v5') {
@@ -243,7 +243,7 @@ function ReplicaLayout({ styleId, title, cues, nowMs, emphasis, plan }: {
     // One line while it fits at a readable size; a longer page (no word times: a whole sentence)
     // wraps onto more lines rather than shrinking.
     const keys = chars.filter((char) => char.key).length;
-    if (styleId === 'tagline_v5') { size = 80; lineHeight = 1.24; lines = Math.ceil(count * size / 940); }
+    if (styleId === 'tagline_v5') { size = 80; lineHeight = 1.24; lines = Math.ceil(count * size / 880); }
     else if (styleId === 'songti_v5') { size = Math.max(80, Math.min(104, Math.floor(960 / count))); lineHeight = 1.2; lines = Math.ceil(count * size / 960); }
     else { size = Math.max(60, Math.min(72, Math.floor(900 / (count + 0.3 * keys)))); lineHeight = 1.25; lines = Math.ceil((count + 0.3 * keys) * size / 900); }
     const wrap = lines > 1 ? 'normal' : 'nowrap';
@@ -289,7 +289,7 @@ function ReplicaLayout({ styleId, title, cues, nowMs, emphasis, plan }: {
 export function NarrationLayoutV5({ styleId, title, cues, nowMs, emphasis = [], plan, showTitle = true }: {
   styleId: string; title: string; cues: NarrationCue[]; nowMs: number; emphasis?: string[]; plan?: NarrationPlan; showTitle?: boolean;
 }) {
-  if (REPLICAS.includes(styleId)) return <ReplicaLayout styleId={styleId} title={title} cues={cues} nowMs={nowMs} emphasis={emphasis} plan={plan} />;
+  if (REPLICAS.includes(styleId)) return <ReplicaLayout styleId={styleId} title={title} cues={cues} nowMs={nowMs} emphasis={emphasis} plan={plan} showTitle={showTitle} />;
   const template = catalog.templates.find((item) => item.id === styleId)!;
   const accent = plan?.variant?.accent || template.accent;
   const layout = plan?.layout;

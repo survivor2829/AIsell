@@ -1425,6 +1425,11 @@ class NarratedBatchDomain:
         if settings.get("brand_profile_id"):
             self.d._brand_row(settings["brand_profile_id"])
         if not b:
+            # A new batch stores its template now, so a later default change never switches looks
+            # partway through it; batches saved without one keep the legacy default.
+            if "caption_style_id" not in settings:
+                from .video_presentation import DEFAULT_MIX_CAPTION_STYLE
+                settings = {**settings, "caption_style_id": DEFAULT_MIX_CAPTION_STYLE}
             now = self.d._now()
             b = {"batch_id": self.d._new_id("narrated_batch"), "project_id": self.d._new_id("creative_project"),
                  "version": VERSION, "candidates": [], "available_shots": [], "recommended_count": 0,

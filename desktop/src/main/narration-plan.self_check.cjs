@@ -31,11 +31,13 @@ for (let n = 0; n < 5; n += 1) {
   plan.validatePlan(built, built.templateId);
   assert.equal(built.templateId, 'redbar_v5', `第 ${n + 1} 条仍是红条标题`);
   assert.equal(built.variant.transition, 'circle');
-  assert.equal(built.layout.showTitle, true, '红条标题撑满全片，可以压在头发上');
+  assert.equal(built.layout.showTitle, false, '脸太靠上（y 230）时红条标题让开眼睛');
   if (recent[0]) assert.notEqual(built.variant.rhythm, recent[0].variant.rhythm, '镜头节奏交替');
   assert.ok(!recent.slice(0, 3).some((r) => r.variant.palette === built.variant.palette), '最近三条配色不重复');
   recent.unshift({ templateId: built.templateId, variant: built.variant });
 }
+// 脸在 y 380 以下时红条标题撑满全片（可以压在头发上）
+assert.equal(plan.buildPlan({ id: 'rh_low', script }, { ...visual, union: { ...visual.union, y: .2 } }, cues).layout.showTitle, true);
 // 报价时定下的组合，出片时（final）保持不变
 const quoted = plan.buildPlan({ id: 'rh_q', script, emphasisPhrases: ['干满八小时', '按这三点去比'] }, visual, cues, false, recent);
 const final = plan.buildPlan({ id: 'rh_q', script, emphasisPhrases: ['干满八小时', '按这三点去比'], packagingPlan: quoted }, visual, cues, true, []);

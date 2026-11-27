@@ -15,6 +15,8 @@ CAPTION_STYLES = {"bold_yellow", "word_highlight", "keyword_pop", "moving_pill",
 # copied one to one from the user's own best videos (2026-11-26); mixes default to tagline_v5.
 MIX_CAPTION_STYLES = ("tagline_v5", "redbar_v5", "songti_v5", "rise_v5", "kinetic_v5", "glow_v5")
 DEFAULT_MIX_CAPTION_STYLE = "tagline_v5"
+# Batches saved before 1.3.79 without a template keep the look their first videos got.
+LEGACY_MIX_CAPTION_STYLE = "rise_v5"
 # A batch may ask for "random": its videos take the copied looks in turn from a start picked by the
 # batch, so neighbours differ (user 2026-11-24; copied looks only since 2026-11-26).
 MIX_RANDOM_STYLES = ("tagline_v5", "redbar_v5", "songti_v5")
@@ -39,7 +41,7 @@ def mix_look(order):
 
 def mix_caption_style(choice, batch_id, order):
     if choice != RANDOM_MIX_CAPTION_STYLE:
-        return choice or DEFAULT_MIX_CAPTION_STYLE
+        return choice or LEGACY_MIX_CAPTION_STYLE
     import hashlib
     start = int(hashlib.sha256(str(batch_id).encode("utf-8")).hexdigest()[:8], 16)
     return MIX_RANDOM_STYLES[(start + int(order)) % len(MIX_RANDOM_STYLES)]

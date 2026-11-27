@@ -619,7 +619,7 @@ class MixTemplateChoiceTests(unittest.TestCase):
         starts = {mix_caption_style("random", f"batch-{index}", 0) for index in range(30)}
         self.assertGreater(len(starts), 1, "batches start from different templates")
         self.assertEqual("kinetic_v5", mix_caption_style("kinetic_v5", "batch-a", 4))
-        self.assertEqual("tagline_v5", mix_caption_style(None, "batch-a", 0), "mixes default to the title tag")
+        self.assertEqual("rise_v5", mix_caption_style(None, "batch-a", 0), "a batch saved without a template keeps the old default")
 
 
 class MixLookTests(unittest.TestCase):
