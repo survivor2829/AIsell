@@ -6,7 +6,8 @@ import { AgentStage } from "./AgentStage";
 import { sceneStageModel } from "./scene-stage";
 import { SceneIcon } from "./SceneIcons";
 import { formatWan } from "./BillingBadge";
-// 有人剧情 is gone from this page (user 2026-11-27: 场景效果视频只做无人实拍，剧情以后做进漫剧工厂); older 剧情 tasks are not listed.
+// 有人剧情 is gone from this page (user 2026-11-27: 场景效果视频只做无人实拍，剧情以后做进漫剧工厂); older 剧情 tasks stay listed
+// with the plain progress view, so a finished one exports and one waiting at its 定妆照 can still be confirmed.
 import { Countdown, CrewCard, MAX_PHOTOS, ProductPhotos, RealShootFields, RealShootProgress, ShotReviewPanel, SceneConfirm, SheetConfirm, StoryboardConfirm, initialReal, minutes, realEstimate, type Crew, type ProductImage, type RealCatalog, type RealDraft, realSceneReady, type ShotReview, type Storyboard, type StoryboardShot, type Timing } from "./RealShootForm";
 
 type Choice = { id: string; name: string };
@@ -92,7 +93,7 @@ export function ProductVideoPage() {
       if (disposed) return;
       if (caps.ok && caps.data) setCapability(caps.data);
       else if (caps.error) setError(caps.error);
-      if (tasks.ok && tasks.data) setItems(tasks.data.items.filter(task => task.mode === "product" && !task.storyPipeline));
+      if (tasks.ok && tasks.data) setItems(tasks.data.items.filter(task => task.mode === "product"));
     }).catch(cause => { if (!disposed) setError(String(cause)); });
     return () => { disposed = true; };
   }, [api]);
@@ -233,6 +234,9 @@ export function ProductVideoPage() {
                 <i><b style={{ width: state === "done" ? "100%" : state === "now" ? "45%" : "0%" }} /></i></div>; })}</div>}
             </div>
             {selected.realPipeline && STUCK.has(selected.status) && <AgentStage model={sceneStageModel(selected)} label="AI 导演组工作台" />}
+            {selected.storyPipeline && selected.status === "awaiting_sheet" && <SheetConfirm taskId={selected.id} redos={selected.sheetRedos || 0} busy={!!busy} imageMedia={(id, key) => api ? api.imageMedia(id, key) : Promise.resolve({ ok: false })}
+              onConfirm={() => api && void perform("confirm", () => unwrap(api.confirmSheet(selected.id)), updateTask)}
+              onRedo={() => api && void perform("redo", () => unwrap(api.redoSheet(selected.id)), updateTask)} />}
             <div className="pv2-shots">{shots.map((shot, index) => { const src = shotVideos[`${selected.id}:${index}`]; const state = shotState(index);
               return state === "done" && src && src !== "error" ? <figure key={shot.index}><video src={src} muted controls preload="metadata" /><figcaption>镜头 {index + 1} ✓</figcaption></figure>
                 : <div key={shot.index} className={`pv2-shot-wait is-${state}`}>{state === "done" ? (src === "error" ? <Check size={28} /> : <LoaderCircle size={28} className="spin" />) : state === "now" ? <Clapperboard size={30} /> : state === "stuck" ? <AlertTriangle size={30} /> : <Hourglass size={28} />}<span>镜头 {index + 1} {state === "done" ? (src === "error" ? "画面打不开，成片里会有" : "加载画面") : state === "now" ? "拍摄中" : state === "stuck" ? "停住了" : "排队"}</span></div>; })}</div>

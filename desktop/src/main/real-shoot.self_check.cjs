@@ -237,6 +237,23 @@ const direction = (plan, overrides = {}) => JSON.stringify({ machine: '自主行
   assert.match(awayShot.end, /^车尾朝手机，距手机约3\.5米；开远$/u, 'an away shot ends farther');
   const toRight = ai.settleGeometry({ pointId: 'narrow', camera: 'toward', start: '距手机约4米，在过道里', end: '向画面右侧转过90度，距手机约3米', action: '到尽头向画面右侧转90度' });
   assert.match(toRight.end, /^车头朝画面右边，距手机约3米；/u, 'a turn from facing the phone goes to the side the move names');
+  // Review of #374–#376: scene words with 侧面 stay; only facing phrases go.
+  assert.match(ai.settleGeometry({ pointId: 'clean', camera: 'side', start: '车头朝画面左边，距手机约3米', end: '停在货架侧面旁边，露出左侧面的滚刷，机身侧面对着手机' }).end, /停在货架侧面旁边，露出左侧面的滚刷$/u);
+  assert.match(ai.settleGeometry({ pointId: 'clean', camera: 'toward', start: '距手机约1米', end: '距手机约1米' }).start, /^车头朝手机，距手机约2\.5米；/u, 'a toward shot never starts at the phone');
+  // A selling point without a template keeps its own filming hint for the director.
+  const slope = ai.planDirected({ ...aiBase, durationSeconds: 15, pointIds: ['slope'], customPoints: ['货架底下也能清'] });
+  const slopeBrief = ai.directorMessages({ plan: slope, images: [] })[1].content.at(-1).text;
+  assert.match(slopeBrief, /卖点「爬坡有力」｜[\s\S]*动作模板：清洁作业[\s\S]*这个卖点的拍法：/u); assert.match(slopeBrief, /客户自己写的卖点：先想清楚画面里看到什么/u);
+  // The customer's new camera re-settles facing and distance; a new action drops the old props.
+  const settledPlan = ai.applyDirection(four, ai.parseDirection(JSON.stringify(Object.assign(JSON.parse(direction(four)), { shots: JSON.parse(direction(four)).shots.map((row, i) => i ? row : { ...row, camera: 'toward', setup: '前方地上一个纸箱', start: '车头朝手机，距手机约5米，前方2.5米一个纸箱', end: '车头朝手机，距手机约1.2米，纸箱在原位' }) })), four));
+  const turnedAway = ai.editShot(settledPlan, 0, { camera: 'away' }).plan.shots[0];
+  assert.match(turnedAway.start, /^车尾朝手机，/u); assert.ok(ai.settleGeometry({ pointId: 'obstacle', camera: 'away', start: turnedAway.start, end: turnedAway.end }).end === turnedAway.end);
+  const newMove = ai.editShot(settledPlan, 0, { action: '沿墙边匀速开过去' }).plan.shots[0];
+  assert.equal(newMove.setup, ''); assert.match(newMove.start, /^车头朝手机，距手机约\d/u); assert.match(newMove.end, /^车头朝手机，距手机约[\d.]+米；/u);
+  // A real-4 shot that falls back to the safe pass films the safe pass: start, end and timeline follow it.
+  const safe4 = require('./real-shoot-crew.cjs').applySafeShots(settledPlan, { inventory: { sides: ['front'] }, risks: [{ index: 0, ok: false }] }).plan.shots[0];
+  assert.equal(safe4.camera, 'toward'); assert.match(safe4.timeline, /沿一条直线匀速前进/u); assert.doesNotMatch(`${safe4.start}${safe4.end}${safe4.prompt}`, /纸箱/u);
+  assert.match(safe4.end, /^车头朝手机，距手机约[\d.]+米；/u);
   assert.match(ai.directorMessages({ plan: four, images: [] })[1].content.at(-1).text, /动作模板：自动避障：开始画面——障碍物[\s\S]*动作模板：窄道灵活：[\s\S]*90度/u);
   assert.deepEqual(four.shots.map((shot) => shot.seconds), [8, 7], 'two functions in 15 seconds: no filler, 8 + 7 seconds');
 }

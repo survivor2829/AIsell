@@ -7,7 +7,7 @@
 // The director and the final check get their findings. Nothing here pays for a picture or a video again.
 // Why (任务 pv_87e32caf, 驾驶式扫地车 / 小区): one front photo, the 定妆照 had no real back, the director wrote a
 // shot from behind, and the video model turned the machine round on a narrow path and painted extra wheels.
-const { DIRECTOR_MODEL, CREW: VERSION, shotPrompt } = require('./real-shoot-ai-director.cjs');
+const { DIRECTOR_MODEL, CREW: VERSION, shotPrompt, settleGeometry } = require('./real-shoot-ai-director.cjs');
 const { promptRef } = require("../shared/prompt-ref.cjs");
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
@@ -133,6 +133,9 @@ function applySafeShots(plan, crew) {
         // The customer sees why this shot no longer shows its selling point (trial 2026-11-27: 「货架底下也能清」 quietly became a plain pass).
         unshowable: shot.filler || shot.pointId === 'clean' ? '' : '原来的拍法会露出照片里没有的部分，先换成了稳妥的直行镜头，这个卖点可能看不出来',
         ...(plan.realScene ? { setup: '' } : {}) });
+      // real-4: the start and end pictures and the timed move follow the safe pass, or the risky move is still filmed.
+      if (plan.realScene) Object.assign(safe, settleGeometry({ pointId: 'clean', camera: safe.camera, start: '机器在作业区里，前方是日常有浮灰的地面', end: '机器沿直线开过约三米，经过的地方略微变亮，仍在画面里' }),
+        { timeline: `0到${shot.seconds}秒：机器沿一条直线匀速前进约三米，不转弯、不掉头、不倒车。` });
       safe.prompt = shotPrompt(plan, direction, safe); return safe;
     }
     return { ...safe, prompt: shotPrompt(plan, direction, { prompt: safeShotText({ plan, crew, shot }), venue, seconds: shot.seconds }) };

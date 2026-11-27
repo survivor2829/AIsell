@@ -27,10 +27,12 @@ export function realEstimate(timing: Timing | undefined, catalog: RealCatalog | 
   const limit = catalog.pointLimit[durationSeconds] || 5;
   const points = draft.pointIds.map((id) => catalog.points.find((row) => row.id === id)).filter(Boolean) as RealCatalog["points"];
   const picked = points.length + draft.customPoints.length;
-  // Same as the plan: a cleaning shot leads when none was picked and there is room; extra cleaning shots make up short lists.
-  const shots = Math.max(catalog.minShots[durationSeconds] || 3, picked + (!points.some((point) => point.cleaning) && picked < limit ? 1 : 0));
-  // The 定妆照, the AI director, the scene picture (none with a site photo), the keyframes a few at a time, then the shots.
-  return 10 + (draft.venue ? 1 : 2) * timing.image + timing.story + Math.ceil(shots / timing.imageSlots) * timing.image + Math.ceil(shots / timing.shotSlots) * videoSeconds(timing, durationSeconds / shots) + timing.finish;
+  // Same as the plan (real-4): a cleaning shot leads only when none was picked and the minimum is not met.
+  const minimum = catalog.minShots[durationSeconds] || 3;
+  const shots = Math.max(minimum, Math.min(limit, picked + (!points.some((point) => point.cleaning) && picked < minimum ? 1 : 0)));
+  // The 定妆照, the AI director, the scene picture (none with a site photo), the start pictures then the end pictures
+  // a few at a time, then the shots.
+  return 10 + (draft.venue ? 1 : 2) * timing.image + timing.story + 2 * Math.ceil(shots / timing.imageSlots) * timing.image + Math.ceil(shots / timing.shotSlots) * videoSeconds(timing, durationSeconds / shots) + timing.finish;
 }
 export const minutes = (seconds: number) => seconds < 90 ? "1 分钟左右" : `${Math.round(seconds / 60)} 分钟左右`;
 

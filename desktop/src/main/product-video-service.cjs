@@ -102,7 +102,7 @@ function createProductVideoService(options = {}) {
     // Storyboard plans: the pictures before filming are a real part of the wait (2026-11-27 实测：确认分镜时还显示 10%).
     if (task.plan.pipelineVersion === 6 && task.plan.storyboard) {
       const keys = keyframeKeys(task), drawn = keys.filter((key) => task.images?.[key]?.file).length;
-      return Math.min(97, Math.round((task.sheetConfirmedAt || !task.plan.sheet ? 8 : task.images?.sheet?.file ? 5 : 0) + (task.plan.directed ? 5 : 0)
+      return Math.min(97, Math.round((task.sheetConfirmedAt || !task.plan.sheet ? 8 : task.images?.sheet?.file ? 5 : 0) + (task.plan.directed || task.crew?.riskRounds ? 5 : 0)
         + (task.images?.plate?.file || !realPlateNeeded(task) ? (task.plan.sceneStep && !task.sceneConfirmedAt ? 5 : 7) : 0)
         + drawn / Math.max(1, keys.length) * 20 + (task.storyboardConfirmedAt ? 5 : 0) + done / total * 45 + finishing * 5));
     }
