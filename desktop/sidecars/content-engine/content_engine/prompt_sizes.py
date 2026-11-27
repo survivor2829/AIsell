@@ -313,6 +313,8 @@ SIZES = {
  "video.crew.site_survey.p2@1": 21,
  "video.crew.site_survey.p3@1": 48,
  "video.crew.site_survey.p4@1": 922,
+ "video.crew.v4.risk_review.p1@1": 1008,
+ "video.crew.v4.risk_review.p3@1": 305,
  "video.crew.work@1": 150,
  "video.digital.portrait_sheet.p1@1": 243,
  "video.digital.portrait_sheet.p2@1": 36,

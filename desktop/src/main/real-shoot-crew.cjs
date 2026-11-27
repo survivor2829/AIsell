@@ -78,8 +78,10 @@ function briefing(crew) {
 function riskRequest({ plan, crew, photos, sheet, plate }) {
   const images = [...photos, ...(sheet ? [sheet] : []), ...(plate ? [plate] : [])];
   const list = plan.shots.map((shot) => `第${shot.index + 1}镜（${shot.seconds}秒，${shot.place === 'venue' ? '在场地图里' : '在别处'}）：${shot.prompt}`).join('\n\n');
-  const system = `${promptRef("video.crew.risk_review.p1")}${photos.length}${promptRef("video.crew.risk_review.p2")}${sheet ? '，下一张是定妆图' : ''}${plate ? '，最后一张是拍摄场地' : ''}。
-${briefing(crew)}${promptRef("video.crew.risk_review.p3")}`;
+  // real-4: the clip is a plain phone recording, so "the clean strip must show" is no longer a risk (2026-11-27 实测：它把三个卖点镜头全换成了直行).
+  const v4 = plan.realScene;
+  const system = `${promptRef(v4 ? "video.crew.v4.risk_review.p1" : "video.crew.risk_review.p1")}${photos.length}${promptRef("video.crew.risk_review.p2")}${sheet ? '，下一张是定妆图' : ''}${plate ? '，最后一张是拍摄场地' : ''}。
+${briefing(crew)}${promptRef(v4 ? "video.crew.v4.risk_review.p3" : "video.crew.risk_review.p3")}`;
   return { model: DIRECTOR_MODEL, temperature: 0.2, max_tokens: 1500, messages: message(system, images, `分镜提示词：\n${list}`) };
 }
 function parseRisk(content, plan) {
