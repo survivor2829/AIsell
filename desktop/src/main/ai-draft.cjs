@@ -156,6 +156,15 @@ function sanitizeAiMessage(content) {
   return text.length >= 2 && text.length <= 260 ? text : "";
 }
 
+// The customer's own emoji and WeChat codes ([微笑]) survive the polish: any the AI dropped (2026-11-27 sample: 「您好[微笑]」
+// lost its code together with the old greeting) go back right after the greeting, where such openings usually carry them.
+const OWN_EMOJI_RE = /\[[一-龥A-Za-z]{1,6}\]|\p{Extended_Pictographic}(?:️|‍\p{Extended_Pictographic})*/gu;
+function keepOwnEmoji(script, message, greeting) {
+  const missing = [...new Set(String(script || '').match(OWN_EMOJI_RE) || [])].filter((mark) => !message.includes(mark));
+  if (!missing.length || !message.startsWith(greeting)) return message;
+  return `${greeting}${missing.join('')}${message.slice(greeting.length)}`;
+}
+
 async function generatePersonalizedDraft({ client, task, result, onSalutationError }) {
   const salutation = await resolveSalutation(result.contact, client, onSalutationError);
   result.salutation = salutation;
@@ -175,7 +184,7 @@ async function generatePersonalizedDraft({ client, task, result, onSalutationErr
     error.code = "AI_RESPONSE_INVALID";
     throw error;
   }
-  return { message, usedAi: true, reason: "" };
+  return { message: keepOwnEmoji(task?.script, message, greeting), usedAi: true, reason: "" };
 }
 
 function generateFixedScriptFallback({ task, result, error } = {}) {

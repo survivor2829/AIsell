@@ -97,6 +97,12 @@ async function main() {
     task: { script: "{称呼}，您好，想和您沟通一下设备需求。", aiPolish: true }, result: { contact }
   });
   assert.equal(valid.message.startsWith(greetingForContact(contact)), true);
+  // 2026-11-27 sample: the AI dropped the customer's own [微笑] with the old greeting; it goes back after the greeting.
+  const keptEmoji = await generatePersonalizedDraft({
+    client: { async draft({ result }) { return { draft: `${result.greeting}\n\n年底活动来啦 😊 活动价32800。\n\n🎁 送配件包 👍` }; } },
+    task: { script: "您好[微笑]年底活动来啦！活动价32800，送配件包👍", aiPolish: true }, result: { contact }
+  });
+  assert.equal(keptEmoji.message, `${greetingForContact(contact)}[微笑]\n\n年底活动来啦 😊 活动价32800。\n\n🎁 送配件包 👍`);
   await assert.rejects(() => generatePersonalizedDraft({
     client: { async draft() { return { draft: "黄佳佳，您好，想和您沟通一下设备需求。" }; } },
     task: { script: "{称呼}，您好，想和您沟通一下设备需求。", aiPolish: true },
