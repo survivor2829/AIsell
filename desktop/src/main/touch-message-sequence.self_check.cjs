@@ -788,7 +788,8 @@ $dialogAccepted = Wait-PasteAccepted 1000
   const genericCapsules = [];
   const stopGenericDiagnostics = require("./diagnostics.cjs").diagnostics().subscribe((entry) => {
     if (entry.event === "workflow_contact_send.failed") genericDiagnostics.push(entry);
-    if (entry.module === "active_touch" && String(entry.code || "").startsWith("touch_")) genericCapsules.push(entry);
+    // The polish fallback (no AI client in this test, 2026-11-27) is its own warning, not the skip under test.
+    if (entry.module === "active_touch" && String(entry.code || "").startsWith("touch_") && entry.code !== "touch_polish_fallback") genericCapsules.push(entry);
   });
   result = await genericFailureWorkflow.runWorkflowStep(genericRecord, context);
   assert.equal(result.status, "pending");

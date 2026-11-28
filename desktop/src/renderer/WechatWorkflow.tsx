@@ -42,7 +42,7 @@ export type WorkflowTask = Omit<WorkflowTaskInput, "payload"> & {
   title: string;
   status: "pending" | "running" | "completed" | "cancelled" | "needs_attention" | "missed";
   createdAt: string;
-  progress: { done: number; total: number; liked?: number; commented?: number; skipped?: number; alreadyLiked?: number };
+  progress: { done: number; total: number; liked?: number; commented?: number; skipped?: number; alreadyLiked?: number; polishFallback?: number };
   error?: string;
   lastCompletedDate?: string;
   media?: WorkflowMedia;
@@ -661,7 +661,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
       <div className="workflow-task-copy">
         <div className="workflow-task-title"><strong>{task.title || TASK_LABELS[task.type]}</strong><span className={`workflow-task-status is-${isWaiting ? "waiting" : task.status}`}>{isWaiting ? task.waitingReason === "touch_safety_interval" ? "安全间隔" : "等待恢复" : TASK_STATUS[task.status]}</span></div>
         <div className="workflow-task-meta"><span><Clock3 size={13} />{formatTaskTime(task)}</span>{task.progress?.total > 0 && <span>{task.progress.done}/{task.progress.total} {task.type === "touch" ? "人" : "条"}</span>}{task.repeat === "daily" && task.lastCompletedDate && <span>最近完成：{task.lastCompletedDate}</span>}</div>
-        {task.type === "touch" && <p className="touch-sum-mode">{task.aiPolish === undefined ? "文案方式：请编辑确认" : task.aiPolish ? "AI 润色后发送" : "原文发送"}</p>}
+        {task.type === "touch" && <p className="touch-sum-mode">AI 润色后发送{task.progress?.polishFallback ? `（${task.progress.polishFallback} 条润色没成功，按原文发了）` : ""}</p>}
         {isWaiting && <p className="workflow-small-note">{task.waitingReason !== "touch_safety_interval" && `${recoveryWaitText(task)}。`}{waitingDetail}</p>}
         {task.id === state.currentExecution?.taskId && <p className="workflow-small-note">{executionDetail}</p>}
         {task.type === "interact" && task.progress.liked !== undefined && <p className="workflow-small-note">累计点赞 {task.progress.liked} · 评论 {task.progress.commented || 0} · 跳过评论 {task.progress.skipped || 0}</p>}
@@ -774,9 +774,8 @@ function WorkflowTaskEditor({ request, workflow, contacts, syncBusy, syncError, 
   const payload = task?.payload || {};
   const [title, setTitle] = useState(task?.title || "");
   const [script, setScript] = useState(payload.script || "");
-  // New touch tasks, copies included, always polish with AI (user 2026-11-13: no checkbox to tick). A
-  // task saved earlier keeps its own mode, so an original-text task is never switched to AI (and billed) silently.
-  const aiPolish = task && !duplicate ? payload.aiPolish === true : true;
+  // Every touch task polishes with AI (user 2026-11-13: no checkbox; 2026-11-27: older original-text tasks too).
+  const aiPolish = true;
   const [images, setImages] = useState<TouchImage[]>(task?.images || []);
   const [content, setContent] = useState(payload.content || "");
   const [selectedIds, setSelectedIds] = useState<string[]>(payload.contactIds || []);
@@ -879,7 +878,7 @@ function WorkflowTaskEditor({ request, workflow, contacts, syncBusy, syncError, 
       </div> : <p className="workflow-small-note">先同步微信联系人，就可以选择本次触达对象。{state.enabled ? "请先暂停程序再同步。" : ""}</p>}
       {syncError && <p className="workflow-inline-warning" role="alert">{syncError}</p>}
       {missingCount > 0 && <p className="workflow-inline-warning">{missingCount} 位联系人已失效。{startedTouchEdit ? "任务已开始，保留原名单；执行时会核对并跳过失效联系人。" : <button type="button" className="text-button" onClick={() => setSelectedIds((ids) => ids.filter((id) => eligible.some((contact) => contact.id === id)))}>移除失效联系人</button>}</p>}
-      <label className="workflow-field"><span>触达话术 · {aiPolish ? "AI 润色" : "原文发送（旧任务）"}</span><textarea value={script} onChange={(event) => setScript(event.target.value)} disabled={locked} placeholder="写下要发的正文，系统会在开头加上称呼和时间问候。" rows={4} /><small>{aiPolish ? "保留业务信息、分行和原有表情，不新增问句；润色失败时使用原文。" : "正文、换行和[加油]等表情码保持原样；无法识别称呼时只加时间问候。"}</small></label>
+      <label className="workflow-field"><span>触达话术 · AI 润色</span><textarea value={script} onChange={(event) => setScript(event.target.value)} disabled={locked} placeholder="写下要发的正文，系统会在开头加上称呼和时间问候。" rows={4} /><small>{aiPolish ? "保留业务信息、分行和原有表情，不新增问句；润色失败时使用原文。" : "正文、换行和[加油]等表情码保持原样；无法识别称呼时只加时间问候。"}</small></label>
       <div className="workflow-media-field"><div><strong>接着发图片 <small>选填</small></strong><span>按下方顺序逐张发送 · 最多 9 张</span></div><button type="button" data-xiaoxi-touch-images className="secondary-button" disabled={locked || images.length >= 9} onClick={() => void chooseTouchImages()}><ImagePlus size={16} />{mediaBusy ? "正在添加…" : "添加图片"}</button></div>
       {images.length > 0 && <ol className="workflow-touch-images" aria-label="图片发送顺序">{images.map((image, index) => <li key={image.id}>
         <div className="workflow-touch-image-preview">{image.preview ? <img src={image.preview} alt={image.name} /> : <span>图片无法读取</span>}</div>

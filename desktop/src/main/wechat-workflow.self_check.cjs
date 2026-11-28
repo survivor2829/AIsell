@@ -124,17 +124,32 @@ async function checkTouchCopyModes() {
     client:{async draft({result}) { drafts++; return {draft:result.greeting+'，润色第一行\n润色第二行。'}; }},
     execute:async input=>{ messages.push(input.message); return {ok:true,state:{real_send_status:'sent_verified'}}; }
   });
+  // 2026-11-27 (客户：旧任务一直原文发送): a task saved as original text keeps its signature but is polished too.
   const original = touch.prepareWorkflowTask({script,contactIds:[contact.id]});
   assert.equal(original.aiPolish,false);
   await touch.runWorkflowStep({id:'original',payload:original},{isEnabled:()=>true});
-  assert.equal(drafts,0);
-  assert.ok(messages[0].endsWith('，'+script));
+  assert.equal(drafts,1);
+  assert.ok(messages[0].includes('润色第一行\n润色第二行'));
   assert.ok(messages[0].startsWith('黄总，'));
   assert.throws(()=>touch.prepareWorkflowTask({script:'字'.repeat(2000),contactIds:[contact.id]}),/保护上限/u);
   const polished = touch.prepareWorkflowTask({script,contactIds:[contact.id],aiPolish:true});
   await touch.runWorkflowStep({id:'polished',payload:polished},{isEnabled:()=>true});
-  assert.equal(drafts,1);
+  assert.equal(drafts,2);
   assert.ok(messages[1].includes('\n'));
+  // The polish fails: the original text still goes out, counted on the task card and reported (user 2026-11-27).
+  const events = [];
+  const unsubscribeDiagnostics = configureDiagnostics({ rootDir: path.join(root, 'diagnostics') }).subscribe((entry) => { if (entry.event === 'draft.polish_failed') events.push(entry); });
+  const failing = createTouchWorkflow({ dataDir:path.join(root,'touch-fail'), readContacts:()=>[contact],
+    coordinator:{acquire:()=>({ok:true,lock:{owner:'test'}}),release(){}},
+    passport:{recordEvent(){},bindTrace(){},writeRunBill(){},recordFailure(){}},
+    client:{async draft() { throw Object.assign(new Error('rate limited'),{code:'AI_RATE_LIMITED'}); }},
+    execute:async input=>{ messages.push(input.message); return {ok:true,state:{real_send_status:'sent_verified'}}; }
+  });
+  const fellBack = await failing.runWorkflowStep({id:'fallback',payload:failing.prepareWorkflowTask({script,contactIds:[contact.id],aiPolish:true})},{isEnabled:()=>true});
+  assert.ok(messages.at(-1).endsWith('，'+script), 'the original text goes out when the polish fails');
+  assert.equal(fellBack.progress.polishFallback,1);
+  unsubscribeDiagnostics();
+  assert.ok(events.some((row)=>row.details?.ai_error_code==='AI_RATE_LIMITED' && row.code==='touch_polish_fallback'), JSON.stringify(events).slice(0, 300));
   const taskDir = path.join(root,'touch','workflow-tasks',require('node:crypto').createHash('sha256').update('original').digest('hex'));
   const bindingPath = path.join(taskDir,'workflow-binding.json');
   const binding = JSON.parse(fs.readFileSync(bindingPath,'utf8'));
@@ -144,10 +159,11 @@ async function checkTouchCopyModes() {
   legacy.status='running'; legacy.current_index=0;
   Object.assign(legacy.results[0],{status:'generated',message:'历史 AI 草稿',retry_blocked:false,send_attempted:false});
   saveTaskState(taskDir,legacy);
+  const sentBefore = messages.length;
   const blocked = await touch.runWorkflowStep({id:'original',payload:original},{isEnabled:()=>true});
   assert.equal(blocked.status,'needs_attention');
   assert.match(blocked.error,/历史生成文案/u);
-  assert.equal(messages.length,2,'a historical AI draft cannot be sent while claiming original mode');
+  assert.equal(messages.length,sentBefore,'a historical AI draft cannot be sent while claiming original mode');
   assert.deepEqual(failures.at(-1).rawReading,{copyModeConfirmationRequired:true});
   const controller = createWechatWorkflowController({rootDir:root,activeTouchDir:path.join(root,'touch'),autoReplyDir:path.join(root,'reply'),momentsDir:path.join(root,'moments'),autoSchedule:false,getAccount:()=>contact.wechatAccountId,
     executors:{touch:{...touch,prepareWorkflowTask:(_id,input)=>touch.prepareWorkflowTask(input)}}});
