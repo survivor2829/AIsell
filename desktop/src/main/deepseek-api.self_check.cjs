@@ -166,7 +166,7 @@ async function main() {
   // @2 (客户 2026-11-27：挤成一堆、没有表情): short paragraphs and a few fitting emoji, every fact kept.
   assert.match(messages[0].content, /可以直接发送/);
   assert.match(messages[0].content, /保留全部业务信息/);
-  assert.match(messages[0].content, /段落之间空一行/);
+  assert.match(messages[0].content, /段落之间必须空一行/);
   assert.match(messages[0].content, /1 到 4 个/);
   assert.match(messages[0].content, /原样保留/);
   assert.match(messages[0].content, /不新增问句/);
