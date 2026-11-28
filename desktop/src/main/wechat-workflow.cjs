@@ -248,7 +248,7 @@ function createWechatWorkflowController(options) {
       || done < 0 || total < done) {
       throw new Error("发送结果处理失败，请保留数据并查看日志。");
     }
-    task.progress = { done, total };
+    task.progress = { ...task.progress, done, total };
     task.error = "";
     task.status = outcome.completed ? "completed" : "pending";
     if (outcome.completed) {
@@ -1042,7 +1042,7 @@ function createWechatWorkflowController(options) {
     if (task.type !== "touch" || typeof executors.touch?.retrySkippedWorkflowTask !== "function") throw new Error("这项任务没有可重试的跳过联系人。");
     const retried = executors.touch.retrySkippedWorkflowTask(task, contactIds);
     if (!retried?.ok) throw Object.assign(new Error(retried?.error || "跳过联系人未能重新加入。"), { code: retried?.blocked_reason });
-    task.progress = { done: retried.task.current_index, total: retried.task.total };
+    task.progress = { ...task.progress, done: retried.task.current_index, total: retried.task.total };
     task.status = "pending";
     task.error = "";
     delete task.skippedSettledAt;

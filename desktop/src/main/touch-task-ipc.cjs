@@ -463,8 +463,9 @@ async function runStep(task, result, command, args, blockReason, parentTraceId =
 async function draftMessageForContact(task, result) {
   const existingMessage = String(result?.message || "").trim();
   if (existingMessage) return { message: existingMessage, usedAi: result.ai_status === "generated", reason: result.ai_reason || "" };
-  if (task?.aiPolish === true && !deepSeekClient) throw new Error("DeepSeek 服务未初始化，任务已暂停。");
-  return generatePersonalizedDraft({ client: deepSeekClient, task, result });
+  // Every touch is polished (2026-11-27), whatever the task was saved with.
+  if (!deepSeekClient) throw new Error("DeepSeek 服务未初始化，任务已暂停。");
+  return generatePersonalizedDraft({ client: deepSeekClient, task: { ...task, aiPolish: true }, result });
 }
 
 async function draftMessageWithRetry(task, result) {

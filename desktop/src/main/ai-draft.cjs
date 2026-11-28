@@ -1,3 +1,4 @@
+const { WECHAT_STICKERS } = require("./spoken-script.cjs");
 const TOP_SURNAMES = new Set("王李张刘陈杨黄赵吴周徐孙马朱胡郭何高林罗郑梁谢宋唐许韩冯邓曹彭曾肖田董袁潘于蒋蔡余杜叶程苏魏吕丁任沈姚卢姜崔钟谭陆汪范金石廖贾夏韦方白邹孟熊秦邱江尹薛闫段雷侯龙史陶黎贺顾毛郝龚邵万钱严覃武戴莫孔向汤");
 const PERSON_TITLE_RE = /^[\u4e00-\u9fa5]{1,6}(总|姐|哥|老师|老板|经理|先生|女士|总监|主任)$/;
 const SEP = String.raw`[\s,，、;；:：_·/|\p{Pd}−]`;
@@ -103,7 +104,7 @@ function timeGreeting(at = new Date()) {
 // afternoon and retried the next morning still opened with 下午好 (customer
 // computer, 1.2.53, 2026-11-05). Every draft starts with the greeting of the
 // moment it was written, optionally after a salutation; swap only that word.
-const STALE_GREETING_RE = /^((?:[^，,s]{1,8}[，,])?)(早上好|中午好|下午好|晚上好|您好)/u;
+const STALE_GREETING_RE = /^((?:[^，,\s]{1,8}[，,])?)(早上好|中午好|下午好|晚上好|您好)/u;
 function refreshGreeting(message, at = new Date()) {
   const text = String(message ?? "");
   const match = text.match(STALE_GREETING_RE);
@@ -158,21 +159,35 @@ function sanitizeAiMessage(content) {
 
 // The customer's own emoji and WeChat codes ([微笑]) survive the polish: any the AI dropped (2026-11-27 sample: 「您好[微笑]」
 // lost its code together with the old greeting) go back right after the greeting, where such openings usually carry them.
-const OWN_EMOJI_RE = /\[[一-龥A-Za-z]{1,6}\]|\p{Extended_Pictographic}(?:️|‍\p{Extended_Pictographic})*/gu;
+// Only real WeChat codes and emoji count ([型号A] or ® do not), compared without variation selectors and skin tones.
+const OWN_MARK_RE = /\[([^\[\]\n]{1,8})\]|\p{Emoji_Presentation}[️\u{1F3FB}-\u{1F3FF}]*(?:‍\p{Extended_Pictographic}️?)*|\p{Extended_Pictographic}️(?:‍\p{Extended_Pictographic}️?)*/gu;
+const bareMark = (mark) => mark.replace(/[️\u{1F3FB}-\u{1F3FF}]/gu, '');
 function keepOwnEmoji(script, message, greeting) {
-  const missing = [...new Set(String(script || '').match(OWN_EMOJI_RE) || [])].filter((mark) => !message.includes(mark));
+  const marks = [...String(script || '').matchAll(OWN_MARK_RE)].filter((m) => m[1] === undefined || WECHAT_STICKERS.has(m[1])).map((m) => m[0]);
+  const plain = bareMark(message);
+  const missing = [...new Set(marks)].filter((mark) => !plain.includes(bareMark(mark)));
   if (!missing.length || !message.startsWith(greeting)) return message;
-  return `${greeting}${missing.join('')}${message.slice(greeting.length)}`;
+  try { return validateTouchMessage(`${greeting}${missing.join('')}${message.slice(greeting.length)}`) || message; } catch { return message; }
 }
 
-async function generatePersonalizedDraft({ client, task, result, onSalutationError }) {
+async function generatePersonalizedDraft({ client, task, result, onSalutationError, retry = {} }) {
+  const draftRetry = { wait: retry.wait || pause, delays: retry.delays || SALUTATION_RETRY_DELAYS_MS };
   const salutation = await resolveSalutation(result.contact, client, onSalutationError);
   result.salutation = salutation;
   const greeting = greetingForContact(result.contact, new Date(), salutation);
   if (task?.aiPolish !== true) {
     return { message: validateTouchMessage(fillRespectfulTemplate(task?.script, result.contact, new Date(), salutation)), usedAi: false, reason: '' };
   }
-  const data = await client.draft({ task, result: { ...result, salutation, greeting } });
+  // A rate limit is retried a couple of times before the original text is used (review 2026-11-27: one burst
+  // otherwise sends a whole batch unpolished, the complaint this fixes).
+  let data;
+  for (let attempt = 0; ; attempt++) {
+    try { data = await client.draft({ task, result: { ...result, salutation, greeting } }); break; }
+    catch (error) {
+      if (attempt < draftRetry.delays.length && SALUTATION_RETRY.has(String(error?.code || ""))) { await draftRetry.wait(draftRetry.delays[attempt]); continue; }
+      throw error;
+    }
+  }
   const message = validateTouchMessage(String(data.draft ?? '').trim());
   if (!message) throw new Error("DeepSeek 未返回可用文案。");
   if (!message.startsWith(greeting)

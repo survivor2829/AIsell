@@ -484,7 +484,7 @@ function createTouchWorkflow(options = {}) {
         : task?.current_index || 0,
       total: task?.total || contacts.length,
       // Messages sent as the original text because the AI polish failed (shown on the task card, user 2026-11-27).
-      polishFallback: (task?.results || []).filter((row) => row?.ai_status === 'fixed_script' && row?.ai_reason).length
+      polishFallback: (task?.results || []).filter((row) => row?.ai_status === 'fixed_script' && row?.ai_reason && row?.status === 'sent_verified').length
     });
     const reportProgress = (detail) => {
       const row = task?.results?.[task.current_index];
@@ -704,12 +704,9 @@ function createTouchWorkflow(options = {}) {
         current = task.results[task.current_index];
       }
       if (!isBatchAuthorized(task)) return attention("本次任务授权无效，已阻断真实发送", null, "batch_authorization_missing");
-      if (legacyCopyMode) {
-        if (task.results.slice(task.current_index).some(row => row.message && !COMPLETED_ROW_STATES.has(row.status))) {
-          return attention('旧任务含历史生成文案，请暂停并编辑任务，确认文案模式后保存再继续；已发送和结果不明的内容不会重发。', { copyModeConfirmationRequired: true }, TOUCH_WORKFLOW_REASON_CODES.payloadIncomplete);
-        }
-        writeJsonAtomic(bindingFile, { taskId: id, signature, copyMode: aiPolish ? 'polish' : 'original' });
-      }
+      // Every touch is polished now (2026-11-27), so a binding from before copy modes just records that; its unsent
+      // original-text drafts are written again below.
+      if (legacyCopyMode) writeJsonAtomic(bindingFile, { taskId: id, signature, copyMode: 'polish' });
       markPrepare("task_ready");
       if (Date.parse(task.next_send_not_before || "") > now().getTime()) {
         // Propagate the persisted send interval to the unified scheduler.  Without
@@ -752,7 +749,7 @@ function createTouchWorkflow(options = {}) {
         reportProgress({ stage: "draft_generation", partKind: "text", partIndex: 1 });
         let draft;
         try {
-          draft = await generatePersonalizedDraft({ client: options.client, task: { ...task, script, aiPolish: true }, result: current,
+          draft = await generatePersonalizedDraft({ client: options.client, task: { ...task, script, aiPolish: true }, result: current, retry: options.draftRetry,
             // Silent failure (user decision 2026-10-30): the message still goes out, but without the
             // salutation the remark may hold, so it is reported as an error and becomes a capsule.
             onSalutationError: (error) => diagnostics().event("active_touch", "salutation.ai_failed",
