@@ -482,7 +482,9 @@ function createTouchWorkflow(options = {}) {
       done: task?.auto_retry_round_done && task.status !== "completed"
         ? (task.results || []).filter((row) => COMPLETED_ROW_STATES.has(row?.status)).length
         : task?.current_index || 0,
-      total: task?.total || contacts.length
+      total: task?.total || contacts.length,
+      // Messages sent as the original text because the AI polish failed (shown on the task card, user 2026-11-27).
+      polishFallback: (task?.results || []).filter((row) => row?.ai_status === 'fixed_script' && row?.ai_reason && row?.status === 'sent_verified').length
     });
     const reportProgress = (detail) => {
       const row = task?.results?.[task.current_index];
@@ -702,12 +704,9 @@ function createTouchWorkflow(options = {}) {
         current = task.results[task.current_index];
       }
       if (!isBatchAuthorized(task)) return attention("本次任务授权无效，已阻断真实发送", null, "batch_authorization_missing");
-      if (legacyCopyMode) {
-        if (task.results.slice(task.current_index).some(row => row.message && !COMPLETED_ROW_STATES.has(row.status))) {
-          return attention('旧任务含历史生成文案，请暂停并编辑任务，确认文案模式后保存再继续；已发送和结果不明的内容不会重发。', { copyModeConfirmationRequired: true }, TOUCH_WORKFLOW_REASON_CODES.payloadIncomplete);
-        }
-        writeJsonAtomic(bindingFile, { taskId: id, signature, copyMode: aiPolish ? 'polish' : 'original' });
-      }
+      // Every touch is polished now (2026-11-27), so a binding from before copy modes just records that; its unsent
+      // original-text drafts are written again below.
+      if (legacyCopyMode) writeJsonAtomic(bindingFile, { taskId: id, signature, copyMode: 'polish' });
       markPrepare("task_ready");
       if (Date.parse(task.next_send_not_before || "") > now().getTime()) {
         // Propagate the persisted send interval to the unified scheduler.  Without
@@ -738,12 +737,19 @@ function createTouchWorkflow(options = {}) {
         return response(task.status === "completed" ? "completed" : "pending", { result: { deliveryStatus, skipped: true } });
       }
       if (typeof options.execute !== "function") return attention("当前版本未连接触达执行器", null, TOUCH_WORKFLOW_REASON_CODES.executorUnavailable);
+      // Every touch is polished now (客户 2026-11-27：旧任务一直原文发送，挤成一堆没表情；用户：旧任务全部改成 AI 润色).
+      // A task saved as original text keeps its frozen signature; only its messages are written with AI. A message an older
+      // version prepared from the original text and never started sending is written again.
+      if (current.message && current.ai_status === 'fixed_script' && !current.ai_reason && current.send_attempted === false
+        && !current.message_parts?.some((part) => !['pending', 'not_attempted'].includes(part?.status))) {
+        current.message = ''; current.ai_status = ''; delete current.message_parts; persist();
+      }
       if (!current.message) {
         markPrepare("copy_started");
         reportProgress({ stage: "draft_generation", partKind: "text", partIndex: 1 });
         let draft;
         try {
-          draft = await generatePersonalizedDraft({ client: options.client, task: { ...task, script, aiPolish }, result: current,
+          draft = await generatePersonalizedDraft({ client: options.client, task: { ...task, script, aiPolish: true }, result: current, retry: options.draftRetry,
             // Silent failure (user decision 2026-10-30): the message still goes out, but without the
             // salutation the remark may hold, so it is reported as an error and becomes a capsule.
             onSalutationError: (error) => diagnostics().event("active_touch", "salutation.ai_failed",
@@ -751,6 +757,9 @@ function createTouchWorkflow(options = {}) {
               { task_id: id, current_index: task.current_index, ai_error_code: String(error?.code || "unknown") },
               { trace: true, level: "error", code: "touch_salutation_unavailable" }) });
         } catch (error) {
+          // The polish failed: the message still goes out as the original text (user 2026-11-27), counted on the task card and reported.
+          try { diagnostics().event("active_touch", "draft.polish_failed", { task_id: id, current_index: task.current_index, ai_error_code: String(error?.code || "unknown") },
+            { trace: true, level: "warn", code: "touch_polish_fallback" }); } catch { /* Diagnostics never stop the task. */ }
           try { draft = generateFixedScriptFallback({ task: { ...task, script }, result: current, error }); }
           catch (fallbackError) { return attention(fallbackError.message, { deliveryStatus:'not_attempted' }, TOUCH_WORKFLOW_REASON_CODES.draftGenerationFailed); }
           if (!draft) return attention(error.message || "触达文案生成失败，请修改话术后重新添加任务", { deliveryStatus:'not_attempted' }, TOUCH_WORKFLOW_REASON_CODES.draftGenerationFailed);

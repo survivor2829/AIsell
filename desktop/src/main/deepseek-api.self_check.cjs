@@ -163,11 +163,13 @@ async function main() {
   assert.throws(() => unreadableStore.read(), (error) => error.code === "API_KEY_UNREADABLE");
   assert.equal(fs.existsSync(unreadableKeyFile), true, "a key encrypted for another Windows user must not be deleted automatically");
   const messages = prompt({ salutation: "张总", script: "{称呼}，您好，我们这边有清洁设备短租方案。" });
-  assert.match(messages[0].content, /完整微信消息/);
+  // @2 (客户 2026-11-27：挤成一堆、没有表情): short paragraphs and a few fitting emoji, every fact kept.
+  assert.match(messages[0].content, /可以直接发送/);
   assert.match(messages[0].content, /保留全部业务信息/);
-  assert.match(messages[0].content, /原文分行/);
-  assert.match(messages[0].content, /不得新增问句/);
-  assert.match(messages[0].content, /不得额外添加/);
+  assert.match(messages[0].content, /段落之间必须空一行/);
+  assert.match(messages[0].content, /1 到 4 个/);
+  assert.match(messages[0].content, /原样保留/);
+  assert.match(messages[0].content, /不新增问句/);
   assert.equal(messages[1].content, "首句问候语：张总，您好\n基础话术：我们这边有清洁设备短租方案。");
   assert.equal(prompt({ salutation: "", script: "{称呼}，您好，欢迎了解。" })[1].content, "首句问候语：您好\n基础话术：欢迎了解。");
   // 用户 2026-10-30：AI 给出最终尊称（姓名 → 姓+总，带职务 → 姓+职务），并带回依据的原文片段。

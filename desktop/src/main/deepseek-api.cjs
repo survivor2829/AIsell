@@ -97,7 +97,8 @@ function prompt({ salutation, greeting, script }) {
   return [
     {
       role: "system",
-      content: promptRef("wechat.touch.polish")
+      // @2 (客户 2026-11-27：发出去挤成一堆、没有表情): lays the message out in short paragraphs and adds a few fitting emoji.
+      content: promptRef("wechat.touch.polish", 2)
     },
     { role: "user", content: `首句问候语：${opening}\n基础话术：${baseScript}` }
   ];
